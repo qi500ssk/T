@@ -1,0 +1,34 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime data
+data/
+*.db
+*.sqlite*
+*.log
+
+# Next.js / Node.js
+apps/web/node_modules/
+apps/web/.next/
+apps/web/.env.local
+apps/web/.env.*.local
+
+# Editors and local agent state
+.idea/
+.vscode/
+.zcode/
+
+# Operating systems
+.DS_Store
+Thumbs.db

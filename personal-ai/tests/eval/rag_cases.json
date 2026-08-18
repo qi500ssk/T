@@ -1,0 +1,22 @@
+[
+  {"question":"核心办公时间是什么时候？","expect_document":"星港员工手册.md","expect_section":"考勤制度","expect_keywords":["上午十点","下午四点"]},
+  {"question":"一个月能远程办公几次？","expect_document":"星港员工手册.md","expect_section":"考勤制度","expect_keywords":["两次","北极星系统"]},
+  {"question":"工作三年以后年假怎么增加？","expect_document":"星港员工手册.md","expect_section":"年假政策","expect_keywords":["三年","两天"]},
+  {"question":"返程多久之内提交差旅报销？","expect_document":"星港员工手册.md","expect_section":"报销流程","expect_keywords":["十五个自然日"]},
+  {"question":"安全响应组的内部分机是多少？","expect_document":"星港员工手册.md","expect_section":"信息安全","expect_keywords":["7719"]},
+  {"question":"晨星七号要种植什么作物？","expect_document":"晨星项目说明.md","expect_section":"项目目标","expect_keywords":["番茄","生菜"]},
+  {"question":"火星温室项目负责人是谁？","expect_document":"晨星项目说明.md","expect_section":"项目目标","expect_keywords":["林岚"]},
+  {"question":"HX-42 多久采样一次？","expect_document":"晨星项目说明.md","expect_section":"传感器配置","expect_keywords":["每十秒"]},
+  {"question":"E17 错误码表示什么？","expect_document":"晨星项目说明.md","expect_section":"故障处理","expect_keywords":["水循环压力不足"]},
+  {"question":"正式发射窗口是哪几天？","expect_document":"晨星项目说明.md","expect_section":"发布计划","expect_keywords":["十一月三日","十一月七日"]},
+  {"question":"从机场去市中心坐哪条线？","expect_document":"青岚旅行指南.md","expect_section":"城际交通","expect_keywords":["R3 快线"]},
+  {"question":"海风博物馆星期几不开放？","expect_document":"青岚旅行指南.md","expect_section":"博物馆","expect_keywords":["每周一闭馆"]},
+  {"question":"云脊步道有多长？","expect_document":"青岚旅行指南.md","expect_section":"山区徒步","expect_keywords":["十二公里"]},
+  {"question":"山区救援联络点编号是什么？","expect_document":"青岚旅行指南.md","expect_section":"山区徒步","expect_keywords":["YJ-08"]},
+  {"question":"旧港市场什么菜最有名？","expect_document":"青岚旅行指南.md","expect_section":"当地餐饮","expect_keywords":["紫苏鱼汤"]},
+  {"question":"生产库全量备份在什么时候？","expect_document":"玄武数据库运维.md","expect_section":"备份策略","expect_keywords":["每周日","凌晨一点"]},
+  {"question":"数据库备份保存多少天？","expect_document":"玄武数据库运维.md","expect_section":"备份策略","expect_keywords":["三十五天"]},
+  {"question":"主节点失联多久才能切换？","expect_document":"玄武数据库运维.md","expect_section":"故障切换","expect_keywords":["九十秒"]},
+  {"question":"线上连接池最多多少连接？","expect_document":"玄武数据库运维.md","expect_section":"连接池","expect_keywords":["一百二十"]},
+  {"question":"数据库结构变更窗口是什么时候？","expect_document":"玄武数据库运维.md","expect_section":"变更窗口","expect_keywords":["周四晚上十点","十二点"]}
+]
