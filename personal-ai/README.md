@@ -1,8 +1,8 @@
-# Personal AI Agent（P2：理解资料）
+# Personal AI Agent（P3：开始做事）
 
-Chat-first Personal AI：支持流式聊天、长期记忆与个人资料知识库，回答可携带可追溯的文档引用。
+Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识库，以及经过权限控制的本地工具执行。
 
-完整交付说明见 [P2 阶段开发报告](docs/P2.md)。
+完整交付说明见 [P3 阶段开发报告](docs/P3.md)。
 
 ## 已完成功能
 
@@ -16,6 +16,10 @@ Chat-first Personal AI：支持流式聊天、长期记忆与个人资料知识�
 - `rag.retrieved` SSE 事件、引用白名单、消息引用持久化
 - 对话 / 记忆 / 知识库三个主视图，支持上传、状态、预览、检索和删除
 - 固定 20 条中文检索评测，输出 Recall@1/3/5、MRR、章节与关键词命中率
+- OpenAI 兼容 Tool Calling，多回合执行后由模型基于工具结果回答
+- `get_time`、安全计算、沙箱文件读取和审批后写入
+- SKILL.md 指令加载与请求级工具白名单
+- 工具状态、写入审批卡片、`tool_runs` 执行记录和结构化日志
 
 ## 快速开始
 
@@ -50,7 +54,11 @@ personal-ai/
 │   ├── rag/              解析、分块、入库、混合检索
 │   ├── embedding.py      Embedding Provider
 │   ├── context.py        Memory/RAG/Summary/历史预算组装
-│   └── agent.py          Run 生命周期、SSE 和引用持久化
+│   ├── tools.py          工具注册、安全校验与沙箱执行
+│   ├── skills.py         SKILL.md 加载与工具白名单
+│   ├── permissions.py    单进程审批等待器
+│   └── agent.py          Run 生命周期、工具循环、SSE 和持久化
+├── skills/               启用的本地 Skill 指令包
 ├── infrastructure/       配置、SQLite 模型与兼容迁移
 ├── prompts/              System、Memory、Summary、RAG 提示词
 ├── evaluation/           离线检索评测入口
@@ -75,15 +83,17 @@ personal-ai/
 | GET | `/api/documents/{id}/content` | 查看或下载原文件 |
 | DELETE | `/api/documents/{id}` | 删除文档、chunk 和原文件 |
 | GET | `/api/search?q=&limit=` | 混合检索预览 |
+| POST | `/api/approval` | 批准或拒绝待执行的高风险工具 |
+| GET | `/api/tools` | 已注册工具及固定风险等级 |
 
-新增 SSE 事件在首个 `message.delta` 前发送：
+除 `rag.retrieved` 外，P3 新增以下 SSE 事件：
 
 ```text
-event: rag.retrieved
-data: {"sources": [{"citation_id":"c1", "document_id":"...", "excerpt":"..."}]}
+agent.status / tool.started / tool.completed
+approval.required / approval.completed
 ```
 
-无检索结果时不发送该事件，P0/P1 客户端行为保持兼容。
+无工具调用时，既有聊天事件和消息保存行为保持兼容。
 
 ## 验证
 
@@ -96,8 +106,8 @@ npm run lint
 npm run build
 ```
 
-当前验收结果：`37 passed`；真实本地 BGE 的 20 条固定评测 `Recall@1/3/5 = 1.000`、`MRR = 1.000`。
+当前验收结果：`53 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。前端 ESLint、TypeScript 和生产构建通过。
 
 ## 当前边界
 
-P2 使用 SQLite JSON 保存向量并在应用层计算相似度，适合单用户、小规模个人知识库。OCR、Reranker、Query Rewrite、异步索引 Worker、PostgreSQL/pgvector、认证与多租户留到后续阶段。
+P3 使用单进程内存保存待审批 waiter，适合单用户本地运行；服务重启恢复、多用户权限、动态风险、删除工具和外部连接留到后续阶段。P2 的 SQLite JSON 向量边界保持不变。

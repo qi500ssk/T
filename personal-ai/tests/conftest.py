@@ -8,6 +8,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.gettempdir()}/personal_ai_tes
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["EMBEDDING_PROVIDER"] = "mock"
 os.environ["FILE_STORAGE_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_uploads"
+os.environ["SANDBOX_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_sandbox"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,12 +24,20 @@ def clean_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     upload_dir = Path(settings.file_storage_dir)
+    sandbox_dir = Path(settings.sandbox_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    sandbox_dir.mkdir(parents=True, exist_ok=True)
     for path in upload_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+    for path in sandbox_dir.iterdir():
         if path.is_file():
             path.unlink()
     yield
     for path in upload_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+    for path in sandbox_dir.iterdir():
         if path.is_file():
             path.unlink()
 

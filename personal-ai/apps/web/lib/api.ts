@@ -79,6 +79,10 @@ export interface AgentEvent {
   data: Record<string, unknown>;
 }
 
+export interface ApprovalResponse {
+  ok: boolean;
+}
+
 export type MemoryKind = "episodic" | "semantic" | "profile";
 
 export interface Memory {
@@ -160,6 +164,13 @@ export const updateMemory = (
 
 export const deleteMemory = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/memories/${id}`, { method: "DELETE" });
+
+export const submitApproval = (approvalId: string, approved: boolean) =>
+  req<ApprovalResponse>(`${API_URL}/approval`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approval_id: approvalId, approved }),
+  });
 
 function parseEventBlock(block: string): AgentEvent | null {
   let event = "";

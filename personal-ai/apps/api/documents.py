@@ -83,8 +83,13 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
             .filter(Document.user_id == "default", Document.content_hash == digest)
             .first()
         )
-        if existing:
+        if existing and existing.status != "failed":
             raise HTTPException(409, {"message": "相同文件已存在", "document_id": existing.id})
+        if existing:  # 旧记录解析失败：清理后允许重传修复
+            session.query(DocumentChunk).filter(DocumentChunk.document_id == existing.id).delete()
+            resolve_stored_file(existing.stored_filename, settings).unlink(missing_ok=True)
+            session.delete(existing)
+            session.commit()
 
     stored_filename = save_file(data, extension, settings)
     provider = request.app.state.embedding_provider

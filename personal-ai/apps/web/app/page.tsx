@@ -51,7 +51,7 @@ export default function Home() {
   );
 
   return (
-    <div className="flex h-dvh flex-col bg-white text-gray-900 md:flex-row">
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-white text-gray-900 md:flex-row">
       <Sidebar
         conversations={conversations}
         activeId={activeId}

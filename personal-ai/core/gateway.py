@@ -21,6 +21,7 @@ class StreamChunk:
     text: str = ""
     finish_reason: str | None = None
     usage: dict | None = None
+    tool_calls_delta: list[dict] | None = None
 
 
 class OpenAICompatibleProvider:
@@ -34,7 +35,12 @@ class OpenAICompatibleProvider:
             timeout=timeout,
         )
 
-    async def stream(self, messages: list[dict], temperature: float = 0.7) -> AsyncIterator[StreamChunk]:
+    async def stream(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
         payload = {
             "model": self.model,
             "messages": messages,
@@ -42,6 +48,8 @@ class OpenAICompatibleProvider:
             "temperature": temperature,
             "stream_options": {"include_usage": True},
         }
+        if tools:
+            payload["tools"] = tools
         async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
             if resp.status_code != 200:
                 body = (await resp.aread()).decode("utf-8", "ignore")[:300]
@@ -61,6 +69,8 @@ class OpenAICompatibleProvider:
                 delta = choices[0].get("delta") or {}
                 if delta.get("content"):
                     yield StreamChunk(text=delta["content"])
+                if delta.get("tool_calls"):
+                    yield StreamChunk(tool_calls_delta=delta["tool_calls"])
                 if choices[0].get("finish_reason"):
                     yield StreamChunk(finish_reason=choices[0]["finish_reason"])
 
@@ -91,8 +101,50 @@ class MockProvider:
     def __init__(self, delay: float = 0.02):
         self.delay = delay
 
-    async def stream(self, messages: list[dict], temperature: float = 0.7) -> AsyncIterator[StreamChunk]:
-        last = messages[-1]["content"] if messages else ""
+    async def stream(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        last_message = messages[-1] if messages else {}
+        last = str(last_message.get("content") or "")
+        if last_message.get("role") == "tool":
+            tool_results: list[str] = []
+            for item in reversed(messages):
+                if item.get("role") != "tool":
+                    break
+                tool_results.append(str(item.get("content") or ""))
+            reply = "（Mock 工具回复）" + "\n".join(reversed(tool_results))
+            async for chunk in self._stream_reply(reply):
+                yield chunk
+            return
+
+        available = {
+            str(item.get("function", {}).get("name")) for item in (tools or [])
+        }
+        selected = self._select_tool(last, available)
+        if selected is not None:
+            name, arguments = selected
+            yield StreamChunk(
+                tool_calls_delta=[
+                    {
+                        "index": 0,
+                        "id": f"mock-{name}-call",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        },
+                    }
+                ]
+            )
+            yield StreamChunk(
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 8, "completion_tokens": 4},
+            )
+            return
+
         reply = (
             f"（Mock 回复）收到：{last[:60]}\n\n"
             "这是 P0 联调用的 Mock 模型回复。在 .env 中配置 LLM_PROVIDER=openai-compatible "
@@ -100,6 +152,10 @@ class MockProvider:
         )
         if any('citation_id="c1"' in item.get("content", "") for item in messages):
             reply += " [c1]"
+        async for chunk in self._stream_reply(reply):
+            yield chunk
+
+    async def _stream_reply(self, reply: str) -> AsyncIterator[StreamChunk]:
         for i in range(0, len(reply), 4):
             yield StreamChunk(text=reply[i : i + 4])
             await asyncio.sleep(self.delay)
@@ -107,6 +163,22 @@ class MockProvider:
             finish_reason="stop",
             usage={"prompt_tokens": 8, "completion_tokens": len(reply) // 2},
         )
+
+    @staticmethod
+    def _select_tool(text: str, available: set[str]) -> tuple[str, dict] | None:
+        if "get_time" in available and any(token in text for token in ("时间", "几点", "日期")):
+            return "get_time", {}
+        if "calculate" in available and "计算" in text:
+            expression = text.split("计算", 1)[1].strip(" ：:，,。") or "0"
+            return "calculate", {"expression": expression}
+        if "read_file" in available and any(token in text for token in ("读取文件", "查看笔记")):
+            match = re.search(r"(?:读取文件|查看笔记)[：:\s]*([^，。\s]+)", text)
+            return "read_file", {"path": match.group(1) if match else "notes.md"}
+        if "write_file" in available and any(token in text for token in ("写入", "保存笔记")):
+            match = re.search(r"(?:写入|保存笔记)[：:\s]*(.*)", text, flags=re.DOTALL)
+            content = (match.group(1) if match else text).strip() or text
+            return "write_file", {"path": "notes.md", "content": content}
+        return None
 
     async def complete(self, messages: list[dict], temperature: float = 0.0) -> str:
         """为本地联调提供可预测的摘要和常见偏好提取。"""

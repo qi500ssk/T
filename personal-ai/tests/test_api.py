@@ -168,3 +168,19 @@ def test_postprocess_failure_does_not_fail_chat(client):
     types = [event for event, _ in parse_sse(response.text)]
     assert "run.completed" in types
     assert "run.failed" not in types
+
+
+def test_tools_list(client):
+    response = client.get("/api/tools")
+    assert response.status_code == 200
+    tools = {item["name"]: item for item in response.json()}
+    assert set(tools) == {"get_time", "calculate", "read_file", "write_file"}
+    assert tools["write_file"]["risk_level"] == "high"
+
+
+def test_unknown_approval_returns_404(client):
+    response = client.post(
+        "/api/approval",
+        json={"approval_id": "0" * 32, "approved": True},
+    )
+    assert response.status_code == 404

@@ -79,6 +79,26 @@ class AgentRun(Base):
     )
 
 
+class ToolRun(Base):
+    __tablename__ = "tool_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(String(32), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(32), index=True)
+    tool_call_id: Mapped[str] = mapped_column(String(100), index=True)
+    step_index: Mapped[int] = mapped_column(Integer)
+    tool: Mapped[str] = mapped_column(String(100))
+    args_summary: Mapped[str] = mapped_column(Text, default="")
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(20))
+    approval_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="running")
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Memory(Base):
     __tablename__ = "memories"
     __table_args__ = (

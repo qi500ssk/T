@@ -22,8 +22,8 @@ export default function Sidebar({
   onViewChange,
 }: SidebarProps) {
   return (
-    <aside className="flex max-h-48 w-full shrink-0 flex-col border-b border-gray-200 bg-gray-50 md:max-h-none md:w-64 md:border-r md:border-b-0">
-      <nav className="m-3 grid h-9 shrink-0 grid-cols-3 rounded-md bg-gray-200 p-0.5" aria-label="主导航">
+    <aside className="flex max-h-48 min-w-0 w-full shrink-0 flex-col overflow-hidden border-b border-gray-200 bg-gray-50 md:max-h-none md:w-64 md:border-r md:border-b-0">
+      <nav className="m-3 grid min-h-11 min-w-0 shrink-0 grid-cols-3 rounded-md bg-gray-200 p-0.5" aria-label="主导航">
         <button
           type="button"
           onClick={() => onViewChange("chat")}
@@ -51,7 +51,7 @@ export default function Sidebar({
           onViewChange("chat");
           onCreate();
         }}
-        className="mx-3 mb-3 rounded-md bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+        className="mx-3 mb-3 min-h-11 rounded-md bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
       >
         + 新对话
       </button>

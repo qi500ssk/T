@@ -27,6 +27,7 @@ async def chat(req: ChatRequest, request: Request):
             req.conversation_id,
             req.message,
             embedding_provider=request.app.state.embedding_provider,
+            skills=request.app.state.skills,
         ):
             yield sse_packet(event.type, event.data)
 

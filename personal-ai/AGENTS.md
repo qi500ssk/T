@@ -76,9 +76,9 @@ npm run build                              # 改动前端后必须构建通过
 | P0 聊天 MVP | ✅ 完成 | 流式聊天、会话管理、Agent Run、Context Engine、Model Gateway、Character |
 | P1 认识用户 | ✅ 完成 | 长时记忆自动提取、会话摘要、记忆召回、Memory UI |
 | P2 理解资料 | ✅ 完成 | 安全文件上传、PDF/DOCX/TXT/MD、BGE、Vector+BM25+RRF、引用、Knowledge UI、评测 |
-| P3 开始做事 | 未开始 | Skill、Tool Calling、权限审批、Observability |
+| P3 开始做事 | ✅ 完成 | Skill、Tool Calling、权限审批、Observability |
 | P4 连接外部 | 未开始 | MCP、Web Search、Browser |
 | P5 主动工作 | 未开始 | Activity、Scheduler、Job Queue、Worker |
 | P6 高级 Agent | 未开始 | Planner、自主活动、插件注册表 |
 
-下一阶段是 P3：在现有受控 Context/RAG 边界上增加 Skill、Tool Calling、权限审批与可观测性。
+下一阶段是 P4：在现有工具、权限和观测边界上接入 MCP 与外部连接能力。

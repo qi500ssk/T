@@ -127,6 +127,13 @@ def parse_docx(path: Path, settings) -> ParseResult:
             headings.append(content)
             continue
         blocks.append(ParsedBlock(" > ".join(headings) or "正文", content))
+    # 表格（简历等文档内容常位于表格中，段落循环不会覆盖）
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in dict.fromkeys(row.cells)]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                blocks.append(ParsedBlock(" > ".join(headings) or "正文", " | ".join(cells)))
     return ParseResult(blocks)
 
 

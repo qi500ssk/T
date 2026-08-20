@@ -1,6 +1,7 @@
 """FastAPI 应用装配：会话 / 记忆 CRUD + Chat SSE（P0）。"""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,9 @@ from apps.api.documents import router as documents_router
 from core.embedding import build_embedding_provider
 from core.gateway import build_provider
 from core.memory import contains_sensitive_information, normalize_memory_key
+from core.permissions import reject_all_approvals, resolve_approval
+from core.skills import load_skills
+from core.tools import list_tools as registered_tools
 from infrastructure.config import settings
 from infrastructure.database import Conversation, Memory, Message, SessionLocal, init_db
 
@@ -20,11 +24,14 @@ from infrastructure.database import Conversation, Memory, Message, SessionLocal,
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    Path(settings.sandbox_dir).mkdir(parents=True, exist_ok=True)
     app.state.provider = build_provider(settings)
     app.state.embedding_provider = build_embedding_provider(settings)
+    app.state.skills = load_skills()
     try:
         yield
     finally:
+        reject_all_approvals()
         await app.state.provider.close()
         app.state.embedding_provider.close()
 
@@ -38,6 +45,23 @@ app.add_middleware(
 )
 app.include_router(chat_router)
 app.include_router(documents_router)
+
+
+class ApprovalRequest(BaseModel):
+    approval_id: str = Field(min_length=32, max_length=32)
+    approved: bool
+
+
+@app.post("/api/approval")
+def submit_approval(body: ApprovalRequest):
+    if not resolve_approval(body.approval_id, body.approved):
+        raise HTTPException(404, "approval not found or expired")
+    return {"ok": True}
+
+
+@app.get("/api/tools")
+def get_tools():
+    return registered_tools()
 
 
 def _conv_dict(c: Conversation) -> dict:

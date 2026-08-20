@@ -57,13 +57,17 @@ def build_context(
     exclude_message_id: str | None = None,
     embedding_provider=None,
     rag_settings=None,
+    system_addendum: str = "",
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
     context_message = _truncate_to_budget(message, max_tokens)
     query_cost = estimate_tokens(context_message)
     system_budget = max(0, max_tokens - query_cost)
-    base_system = _truncate_to_budget(system_prompt, system_budget)
+    combined_system = system_prompt
+    if system_addendum:
+        combined_system += "\n\n" + system_addendum
+    base_system = _truncate_to_budget(combined_system, system_budget)
     system_parts = [base_system] if base_system else []
     memory_ids: list[str] = []
     sources: list[dict] = []

@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import {
   documentContentUrl,
   fetchMessages,
+  submitApproval,
   streamChat,
   type ChatMessage,
   type CitationSource,
@@ -18,6 +19,120 @@ interface ChatViewProps {
   onAutoCreate: () => Promise<string>;
   /** 一次 Run 结束后刷新会话列表（标题可能变化） */
   onFinished: () => void;
+}
+
+type ToolStatus = "running" | "completed" | "rejected" | "failed" | "timeout";
+
+interface ToolActivity {
+  key: string;
+  tool: string;
+  status: ToolStatus;
+  result: string;
+}
+
+interface ApprovalItem {
+  approvalId: string;
+  tool: string;
+  argsSummary: string;
+  state: "pending" | "submitting" | "approved" | "rejected" | "expired";
+  error: string;
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  get_time: "查询时间",
+  calculate: "执行计算",
+  read_file: "读取文件",
+  write_file: "写入文件",
+};
+
+const STATUS_LABELS: Record<ToolStatus, string> = {
+  running: "执行中",
+  completed: "已完成",
+  rejected: "已拒绝",
+  failed: "失败",
+  timeout: "已超时",
+};
+
+function ToolActivityList({ items }: { items: ToolActivity[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="flex justify-start" aria-live="polite" aria-label="工具执行状态">
+      <div className="w-full max-w-[80%] space-y-1.5 border-l-2 border-gray-200 pl-3 text-xs text-gray-600">
+        {items.map((item) => (
+          <div key={item.key} className="flex min-w-0 items-center gap-2 py-0.5">
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                item.status === "completed"
+                  ? "bg-emerald-500"
+                  : item.status === "running"
+                    ? "animate-pulse bg-blue-500 motion-reduce:animate-none"
+                    : "bg-red-500"
+              }`}
+              aria-hidden="true"
+            />
+            <span className="truncate font-medium text-gray-700">
+              {TOOL_LABELS[item.tool] ?? item.tool}
+            </span>
+            <span className="ml-auto shrink-0">{STATUS_LABELS[item.status]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ApprovalCard({
+  item,
+  onSubmit,
+}: {
+  item: ApprovalItem;
+  onSubmit: (approvalId: string, approved: boolean) => void;
+}) {
+  const waiting = item.state === "pending";
+  return (
+    <div className="flex justify-start">
+      <section
+        className="w-full max-w-[80%] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-gray-800"
+        aria-label="写入操作确认"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-semibold">确认写入文件</h3>
+          <span className="shrink-0 text-xs font-medium text-amber-800">高风险</span>
+        </div>
+        <p className="mt-1 break-words text-xs leading-5 text-gray-600">{item.argsSummary}</p>
+        {item.error && (
+          <p className="mt-2 text-xs text-red-700" role="alert">
+            {item.error}
+          </p>
+        )}
+        {waiting ? (
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => onSubmit(item.approvalId, true)}
+              className="min-h-11 flex-1 rounded-md bg-blue-600 px-3 font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            >
+              确认写入
+            </button>
+            <button
+              type="button"
+              onClick={() => onSubmit(item.approvalId, false)}
+              className="min-h-11 flex-1 rounded-md border border-gray-300 bg-white px-3 font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2"
+            >
+              拒绝
+            </button>
+          </div>
+        ) : (
+          <p className="mt-2 text-xs font-medium text-gray-700" aria-live="polite">
+            {item.state === "submitting" && "正在提交决定…"}
+            {item.state === "approved" && "已批准，正在执行"}
+            {item.state === "rejected" && "已拒绝，未执行写入"}
+            {item.state === "expired" && "审批已失效"}
+          </p>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function MessageBubble({
@@ -89,6 +204,8 @@ export default function ChatView({
   const [loading, setLoading] = useState(Boolean(conversationId));
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState("");
+  const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -97,7 +214,11 @@ export default function ChatView({
     let cancelled = false;
     fetchMessages(conversationId)
       .then((rows) => {
-        if (!cancelled) setMessages(rows);
+        if (!cancelled) {
+          setMessages(rows);
+          setToolActivities([]);
+          setApprovals([]);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -112,7 +233,43 @@ export default function ChatView({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+  }, [messages, streaming, toolActivities, approvals]);
+
+  const updateToolActivity = useCallback(
+    (key: string, tool: string, status: ToolStatus, result = "") => {
+      setToolActivities((items) => {
+        const existing = items.findIndex((item) => item.key === key);
+        const next = { key, tool, status, result };
+        if (existing < 0) return [...items, next];
+        return items.map((item, index) => (index === existing ? next : item));
+      });
+    },
+    [],
+  );
+
+  const handleApproval = useCallback(async (approvalId: string, approved: boolean) => {
+    setApprovals((items) =>
+      items.map((item) =>
+        item.approvalId === approvalId ? { ...item, state: "submitting", error: "" } : item,
+      ),
+    );
+    try {
+      await submitApproval(approvalId, approved);
+    } catch (approvalError) {
+      const message = String(approvalError);
+      setApprovals((items) =>
+        items.map((item) =>
+          item.approvalId === approvalId
+            ? {
+                ...item,
+                state: message.includes("404") ? "expired" : "pending",
+                error: message.includes("404") ? "" : message,
+              }
+            : item,
+        ),
+      );
+    }
+  }, []);
 
   const send = useCallback(
     async (text: string) => {
@@ -128,6 +285,8 @@ export default function ChatView({
       setError("");
       setStreaming("");
       setStreamingSources([]);
+      setToolActivities([]);
+      setApprovals([]);
       setMessages((ms) => [
         ...ms,
         { id: `local-${Date.now()}`, role: "user", content: text, citations: [], created_at: "" },
@@ -144,6 +303,38 @@ export default function ChatView({
               setStreaming((s) => s + String(ev.data.content ?? ""));
             } else if (ev.event === "rag.retrieved") {
               setStreamingSources((ev.data.sources as CitationSource[]) ?? []);
+            } else if (ev.event === "tool.started") {
+              const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
+              updateToolActivity(key, String(ev.data.tool ?? "tool"), "running");
+            } else if (ev.event === "tool.completed") {
+              const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
+              updateToolActivity(
+                key,
+                String(ev.data.tool ?? "tool"),
+                String(ev.data.status ?? "failed") as ToolStatus,
+                String(ev.data.result_summary ?? ""),
+              );
+            } else if (ev.event === "approval.required") {
+              setApprovals((items) => [
+                ...items,
+                {
+                  approvalId: String(ev.data.approval_id),
+                  tool: String(ev.data.tool ?? "write_file"),
+                  argsSummary: String(ev.data.args_summary ?? ""),
+                  state: "pending",
+                  error: "",
+                },
+              ]);
+            } else if (ev.event === "approval.completed") {
+              const approvalId = String(ev.data.approval_id);
+              const approved = Boolean(ev.data.approved);
+              setApprovals((items) =>
+                items.map((item) =>
+                  item.approvalId === approvalId
+                    ? { ...item, state: approved ? "approved" : "rejected" }
+                    : item,
+                ),
+              );
             } else if (ev.event === "run.failed") {
               setError(String(ev.data.error ?? "运行失败"));
             }
@@ -162,7 +353,7 @@ export default function ChatView({
         setIsStreaming(false);
       }
     },
-    [conversationId, onAutoCreate, onFinished],
+    [conversationId, onAutoCreate, onFinished, updateToolActivity],
   );
 
   const stop = () => abortRef.current?.abort();
@@ -191,6 +382,10 @@ export default function ChatView({
         {messages.map((m) => (
           <MessageBubble key={m.id} role={m.role} content={m.content} citations={m.citations} />
         ))}
+        <ToolActivityList items={toolActivities} />
+        {approvals.map((item) => (
+          <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />
+        ))}
         {(streaming !== "" || (loading && conversationId)) && (
           <MessageBubble
             role="assistant"
@@ -199,7 +394,11 @@ export default function ChatView({
             streaming={streaming !== ""}
           />
         )}
-        {error && <div className="text-sm text-red-500">{error}</div>}
+        {error && (
+          <div className="text-sm text-red-600" role="alert">
+            {error}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -209,13 +408,13 @@ export default function ChatView({
             <span>正在生成…</span>
             <button
               onClick={stop}
-              className="rounded border px-2 py-1 hover:bg-gray-100"
+              className="min-h-11 rounded border px-3 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2"
             >
               停止
             </button>
           </div>
         )}
-        <form onSubmit={submit} className="flex gap-2">
+        <form onSubmit={submit} className="flex min-w-0 gap-2">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -227,12 +426,12 @@ export default function ChatView({
             }}
             rows={1}
             placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-            className="max-h-40 flex-1 resize-none rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="min-h-11 min-w-0 max-h-40 flex-1 resize-none rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <button
             type="submit"
             disabled={!input.trim() || isStreaming}
-            className="rounded-lg bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+            className="min-h-11 shrink-0 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:opacity-40"
           >
             发送
           </button>

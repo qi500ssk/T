@@ -16,9 +16,16 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
 
     # ---- Agent Runtime ----
-    agent_max_steps: int = 10
-    agent_timeout_seconds: float = 120.0
+    agent_max_steps: int = 8
+    agent_timeout_seconds: float = 180.0
     agent_max_retries: int = 2
+
+    # ---- Tools / Approval ----
+    tools_enabled: bool = True
+    tool_timeout_seconds: float = 15.0
+    approval_timeout_seconds: float = 60.0
+    sandbox_dir: str = "./data/sandbox"
+    skills_dir: str = "./skills"
 
     # ---- Context Engine ----
     context_max_tokens: int = 8000
