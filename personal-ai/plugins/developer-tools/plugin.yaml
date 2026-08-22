@@ -1,0 +1,5 @@
+id: developer-tools
+name: Developer Tools
+description: 在受限编码工作区中读取、搜索、创建和精确修改代码，并运行预定义检查。
+version: 0.1.0
+enabled: false

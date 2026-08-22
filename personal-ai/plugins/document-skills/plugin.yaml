@@ -1,0 +1,26 @@
+id: document-skills
+name: Document Skills
+description: 创建 DOCX、PDF、PPTX 和 XLSX 文件，并通过安全下载链接交付。
+version: 1.0.0
+enabled: false
+mcp_servers:
+  generator:
+    transport: stdio
+    command: python
+    args:
+    - -m
+    - mcp_servers.document_skills.server
+    enabled: true
+    default_risk_level: medium
+    allowed_tools:
+    - create_docx
+    - append_docx
+    - create_pdf
+    - create_pptx
+    - create_xlsx
+    tool_risk_levels:
+      create_docx: medium
+      append_docx: high
+      create_pdf: medium
+      create_pptx: medium
+      create_xlsx: medium

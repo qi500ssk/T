@@ -1,7 +1,7 @@
 [project]
 name = "personal-ai"
 version = "0.1.0"
-description = "Personal AI Agent - P2: chat, memory and RAG knowledge base"
+description = "Personal AI Agent - chat, memory, RAG, tools and MCP"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
@@ -17,9 +17,13 @@ dependencies = [
     "pypdf>=5.0",
     "pdfplumber>=0.11",
     "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    "reportlab>=4.2",
     "jieba>=0.42",
     "rank-bm25>=0.2.2",
     "python-multipart>=0.0.9",
+    "mcp>=1.28,<2",
 ]
 
 [dependency-groups]

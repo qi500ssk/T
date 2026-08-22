@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 import jieba
@@ -14,6 +15,52 @@ from infrastructure.database import Document, DocumentChunk
 
 
 jieba.setLogLevel(logging.WARNING)
+
+
+_EXPLICIT_KNOWLEDGE_PATTERN = re.compile(
+    r"(?:知识库|我上传的|上传的(?:资料|文档|文件|附件)|(?:简历|文档|资料|报告)(?:中|里|内|上)|"
+    r"(?:根据|结合|查找|检索|查询)(?:这份|该|我的)?(?:资料|文档|文件|附件|简历|报告))",
+    re.IGNORECASE,
+)
+_SIMPLE_CHAT_PATTERN = re.compile(
+    r"^(?:你?好|嗨|hi|hello|谢谢|多谢|再见|早上好|中午好|下午好|晚上好)[!！。,.，?？]*$",
+    re.IGNORECASE,
+)
+_CURRENT_INFO_PATTERN = re.compile(
+    r"^(?=.{1,40}$)(?=.*(?:现在|当前|今天|明天))"
+    r"(?=.*(?:几点|时间|日期|星期|天气|位置|地点)).*$"
+)
+_WRITE_ACTION_PATTERN = re.compile(
+    r"^(?:(?:请|帮我|请帮我)?(?:写入|保存|记录)(?:一?条)?(?:笔记|文件|备忘))"
+)
+
+
+def should_retrieve_knowledge(query: str) -> bool:
+    """轻量查询门控：只跳过明确无需个人资料库的请求。"""
+    text = re.sub(r"\s+", "", query).strip()
+    if not text:
+        return False
+    if _EXPLICIT_KNOWLEDGE_PATTERN.search(text) or re.search(
+        r"\.(?:pdf|docx|txt|md)\b", text, re.IGNORECASE
+    ):
+        return True
+    if (
+        _SIMPLE_CHAT_PATTERN.fullmatch(text)
+        or _CURRENT_INFO_PATTERN.fullmatch(text)
+        or _WRITE_ACTION_PATTERN.match(text)
+    ):
+        return False
+    expression = re.sub(
+        r"^(?:(?:请帮我|帮我|请)?(?:计算一下|计算出?|算一下|算出?|求))",
+        "",
+        text,
+    )
+    expression = re.sub(r"(?:等于多少|是多少|的结果)?[?？。]*$", "", expression)
+    if re.fullmatch(r"[0-9０-９+\-*/×÷%^().（）]+", expression) and re.search(
+        r"[+\-*/×÷%^]", expression
+    ):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -35,7 +82,12 @@ class RetrievalResult:
 
 
 def tokenize_for_bm25(text: str) -> list[str]:
-    return [token.strip().lower() for token in jieba.lcut(text) if token.strip()]
+    return [
+        token
+        for raw in jieba.lcut(text)
+        if (token := raw.strip().lower())
+        and re.search(r"[a-z0-9\u4e00-\u9fff]", token, re.IGNORECASE)
+    ]
 
 
 def retrieve(

@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import ChatView from "@/components/ChatView";
+import ActivityView from "@/components/ActivityView";
 import MemoryView from "@/components/MemoryView";
 import KnowledgeView from "@/components/KnowledgeView";
-import Sidebar from "@/components/Sidebar";
+import SettingsSidebar, { type SettingsView } from "@/components/SettingsSidebar";
+import Sidebar, { type WorkspaceView } from "@/components/Sidebar";
+import SkillView from "@/components/SkillView";
+import McpView from "@/components/McpView";
+import PluginView from "@/components/PluginView";
 import {
   createConversation,
   deleteConversation,
@@ -16,7 +21,8 @@ import {
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "memories" | "knowledge">("chat");
+  const [view, setView] = useState<WorkspaceView | "settings">("chat");
+  const [settingsView, setSettingsView] = useState<SettingsView>("skills");
 
   const refresh = useCallback(async () => {
     setConversations(await fetchConversations());
@@ -50,18 +56,43 @@ export default function Home() {
     [activeId, refresh],
   );
 
+  const handleOpenActivityConversation = useCallback(
+    async (id: string) => {
+      setActiveId(id);
+      setView("chat");
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const handleOpenWorkspace = useCallback((nextView: WorkspaceView) => {
+    setView(nextView);
+  }, []);
+
   return (
-    <div className="flex h-dvh w-full flex-col overflow-hidden bg-white text-gray-900 md:flex-row">
-      <Sidebar
-        conversations={conversations}
-        activeId={activeId}
-        onSelect={setActiveId}
-        onCreate={() => void handleCreate()}
-        onDelete={(id) => void handleDelete(id)}
-        view={view}
-        onViewChange={setView}
-      />
-      {view === "chat" ? (
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-white text-zinc-900 md:flex-row">
+      {view === "settings" ? (
+        <SettingsSidebar
+          onBack={() => setView("chat")}
+          onOpenWorkspace={handleOpenWorkspace}
+          view={settingsView}
+          onViewChange={setSettingsView}
+        />
+      ) : (
+        <Sidebar
+          conversations={conversations}
+          activeId={activeId}
+          onSelect={setActiveId}
+          onCreate={() => void handleCreate()}
+          onDelete={(id) => void handleDelete(id)}
+          view={view}
+          onViewChange={setView}
+          onOpenSettings={() => setView("settings")}
+        />
+      )}
+      {view === "settings" ? (
+        settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />
+      ) : view === "chat" ? (
         <ChatView
           key={activeId ?? "new"}
           conversationId={activeId}
@@ -70,9 +101,11 @@ export default function Home() {
         />
       ) : view === "memories" ? (
         <MemoryView />
-      ) : (
+      ) : view === "knowledge" ? (
         <KnowledgeView />
-      )}
+      ) : view === "activities" ? (
+        <ActivityView onOpenConversation={(id) => void handleOpenActivityConversation(id)} />
+      ) : null}
     </div>
   );
 }

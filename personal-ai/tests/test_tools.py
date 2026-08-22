@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from core.tools import TOOLS, Tool, execute_tool
+from core.execution.tools import TOOLS, Tool, execute_tool
 from infrastructure.config import settings
 
 

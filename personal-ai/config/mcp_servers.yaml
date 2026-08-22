@@ -1,0 +1,15 @@
+mcp_servers:
+  demo:
+    transport: stdio
+    enabled: true
+    default_risk_level: high
+    command: python
+    args:
+    - -m
+    - scripts.mcp_demo_server
+    allowed_tools:
+    - echo
+    - random_number
+    tool_risk_levels:
+      echo: low
+      random_number: high

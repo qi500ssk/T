@@ -1,5 +1,6 @@
 """FastAPI 应用装配：会话 / 记忆 CRUD + Chat SSE（P0）。"""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -10,28 +11,88 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from apps.api.chat import router as chat_router
+from apps.api.activities import router as activities_router
 from apps.api.documents import router as documents_router
-from core.embedding import build_embedding_provider
-from core.gateway import build_provider
-from core.memory import contains_sensitive_information, normalize_memory_key
-from core.permissions import reject_all_approvals, resolve_approval
-from core.skills import load_skills
-from core.tools import list_tools as registered_tools
+from apps.api.plans import router as plans_router
+from apps.api.skills import refresh_skill_runtime, router as skills_router
+from apps.api.mcp_servers import router as mcp_servers_router
+from apps.api.plugins import router as plugins_router
+from apps.api.artifacts import router as artifacts_router
+from core.automation.activity import activity_worker, recover_interrupted_activities
+from core.rag.embedding import build_embedding_provider
+from core.chat.gateway import build_provider
+from core.chat.memory import contains_sensitive_information, normalize_memory_key
+from core.capabilities.mcp_manager import McpManager
+from core.capabilities.plugins import PluginManager
+from core.capabilities.skill_registry import build_default_skill_registry
+from core.execution.permissions import reject_all_approvals, resolve_approval
+from core.execution.tools import list_tools as registered_tools
 from infrastructure.config import settings
-from infrastructure.database import Conversation, Memory, Message, SessionLocal, init_db
+from infrastructure.database import (
+    Activity,
+    AgentRun,
+    Conversation,
+    Memory,
+    Message,
+    Plan,
+    PlanStep,
+    SessionLocal,
+    ToolRun,
+    init_db,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     Path(settings.sandbox_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.artifacts_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.coding_workspace_dir).mkdir(parents=True, exist_ok=True)
     app.state.provider = build_provider(settings)
     app.state.embedding_provider = build_embedding_provider(settings)
-    app.state.skills = load_skills()
+    app.state.mcp_manager = McpManager(
+        settings.mcp_config_file,
+        cwd=Path.cwd(),
+        runtime_enabled=settings.mcp_enabled,
+    )
+    await app.state.mcp_manager.startup()
+    app.state.skill_registry = build_default_skill_registry()
+    app.state.plugin_manager = PluginManager(
+        app.state.skill_registry,
+        app.state.mcp_manager,
+        root=settings.plugins_dir,
+        trash_root=settings.plugin_trash_dir,
+    )
+    await app.state.plugin_manager.refresh()
+    app.state.mcp_clients = app.state.mcp_manager.clients
+    app.state.skills = []
+    refresh_skill_runtime(app)
+    app.state.activity_stop_event = None
+    app.state.activity_task = None
+    if settings.activity_enabled:
+        recover_interrupted_activities()
+        app.state.activity_stop_event = asyncio.Event()
+        app.state.activity_task = asyncio.create_task(
+            activity_worker(
+                app.state.activity_stop_event,
+                app.state.provider,
+                app.state.embedding_provider,
+                app.state.skills,
+            ),
+            name="activity-worker",
+        )
     try:
         yield
     finally:
+        if app.state.activity_task is not None:
+            app.state.activity_stop_event.set()
+            app.state.activity_task.cancel()
+            try:
+                await app.state.activity_task
+            except asyncio.CancelledError:
+                pass
         reject_all_approvals()
+        await app.state.mcp_manager.shutdown()
         await app.state.provider.close()
         app.state.embedding_provider.close()
 
@@ -45,6 +106,12 @@ app.add_middleware(
 )
 app.include_router(chat_router)
 app.include_router(documents_router)
+app.include_router(activities_router)
+app.include_router(plans_router)
+app.include_router(skills_router)
+app.include_router(mcp_servers_router)
+app.include_router(plugins_router)
+app.include_router(artifacts_router)
 
 
 class ApprovalRequest(BaseModel):
@@ -141,6 +208,27 @@ def delete_conversation(conv_id: str):
         conv = session.get(Conversation, conv_id)
         if conv is None:
             raise HTTPException(404, "conversation not found")
+        if session.query(Activity).filter(Activity.conversation_id == conv_id).first():
+            raise HTTPException(409, "请先删除引用此会话的活动")
+        runs = session.query(AgentRun).filter(AgentRun.conversation_id == conv_id)
+        if runs.filter(AgentRun.status == "running").first():
+            raise HTTPException(409, "运行中的会话不能删除")
+        run_ids = [row.id for row in runs.all()]
+        plan_ids = [
+            row.id for row in session.query(Plan).filter(Plan.conversation_id == conv_id).all()
+        ]
+        if plan_ids:
+            session.query(PlanStep).filter(PlanStep.plan_id.in_(plan_ids)).delete(
+                synchronize_session=False
+            )
+            session.query(Plan).filter(Plan.id.in_(plan_ids)).delete(synchronize_session=False)
+        if run_ids:
+            session.query(ToolRun).filter(ToolRun.run_id.in_(run_ids)).delete(
+                synchronize_session=False
+            )
+            session.query(AgentRun).filter(AgentRun.id.in_(run_ids)).delete(
+                synchronize_session=False
+            )
         session.query(Message).filter(Message.conversation_id == conv_id).delete()
         session.delete(conv)
         session.commit()

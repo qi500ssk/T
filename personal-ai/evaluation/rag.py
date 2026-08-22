@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from core.embedding import build_embedding_provider
+from core.rag.embedding import build_embedding_provider
 from core.rag.chunking import split_into_chunks
 from core.rag.parsers import parse_document
 from core.rag.retrieval import retrieve

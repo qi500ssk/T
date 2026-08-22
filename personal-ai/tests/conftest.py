@@ -9,6 +9,8 @@ os.environ["LLM_PROVIDER"] = "mock"
 os.environ["EMBEDDING_PROVIDER"] = "mock"
 os.environ["FILE_STORAGE_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_uploads"
 os.environ["SANDBOX_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_sandbox"
+os.environ["MCP_ENABLED"] = "false"
+os.environ["ACTIVITY_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -1,0 +1,5 @@
+id: starter-pack
+name: 入门助手包
+description: 用于验证插件安装、启停和 Skill 热加载的安全示例，不连接外部服务。
+version: 1.0.0
+enabled: false

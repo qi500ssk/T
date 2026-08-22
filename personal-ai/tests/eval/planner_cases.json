@@ -1,0 +1,44 @@
+[
+  {
+    "name": "valid_read_plan",
+    "allowed_tools": ["read_file"],
+    "max_steps": 4,
+    "expected_valid": true,
+    "output": {"goal": "读取并总结", "steps": [{"title": "读取", "instruction": "读取文件", "tool_hints": ["read_file"]}, {"title": "总结", "instruction": "整理结果", "tool_hints": []}]}
+  },
+  {
+    "name": "unknown_tool",
+    "allowed_tools": ["get_time"],
+    "max_steps": 4,
+    "expected_valid": false,
+    "output": {"goal": "越权", "steps": [{"title": "发送", "instruction": "发送数据", "tool_hints": ["send_email"]}, {"title": "完成", "instruction": "完成", "tool_hints": []}]}
+  },
+  {
+    "name": "too_few_steps",
+    "allowed_tools": [],
+    "max_steps": 4,
+    "expected_valid": false,
+    "output": {"goal": "任务", "steps": [{"title": "一步", "instruction": "完成", "tool_hints": []}]}
+  },
+  {
+    "name": "valid_no_tool_plan",
+    "allowed_tools": [],
+    "max_steps": 3,
+    "expected_valid": true,
+    "output": {"goal": "分析", "steps": [{"title": "分析", "instruction": "分析信息", "tool_hints": []}, {"title": "结论", "instruction": "形成结论", "tool_hints": []}]}
+  },
+  {
+    "name": "too_many_steps",
+    "allowed_tools": [],
+    "max_steps": 2,
+    "expected_valid": false,
+    "output": {"goal": "过长", "steps": [{"title": "一", "instruction": "执行一", "tool_hints": []}, {"title": "二", "instruction": "执行二", "tool_hints": []}, {"title": "三", "instruction": "执行三", "tool_hints": []}]}
+  },
+  {
+    "name": "duplicate_steps",
+    "allowed_tools": [],
+    "max_steps": 4,
+    "expected_valid": false,
+    "output": {"goal": "重复", "steps": [{"title": "重复", "instruction": "同一动作", "tool_hints": []}, {"title": "重复", "instruction": "同一动作", "tool_hints": []}]}
+  }
+]

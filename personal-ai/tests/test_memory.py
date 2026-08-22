@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
-from core.memory import (
+from core.chat.memory import (
     MemoryCandidate,
     contains_sensitive_information,
     extract_memories,

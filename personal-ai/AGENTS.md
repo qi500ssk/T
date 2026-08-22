@@ -4,12 +4,12 @@
 
 ## 项目概览
 
-Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P2 阶段：理解资料**，交付安全文件入库、混合检索、引用与知识库界面闭环。
+Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P11 阶段：可选的简单编码能力**，在插件运行时上增加默认关闭、工作区隔离且写操作需要审批的 Developer Tools。
 
 - 后端：FastAPI（8787）+ SQLite + SQLAlchemy，SSE 流式聊天
 - 前端：Next.js 16 + React 19 + TypeScript + Tailwind v4（4321）
 - 架构依据：`E:\Pycharm\JQ\personal_ai_agent_architecture_merged.md`（合并版架构文档）
-- 阶段报告：`E:\Pycharm\JQ\baogao\P2.md`
+- 最新阶段报告：`E:\Pycharm\JQ\personal-ai\docs\P11.md`
 
 ## 开发原则（最高优先级）
 
@@ -26,16 +26,15 @@ Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P2 
 personal-ai/
 ├── apps/api/          # FastAPI：main.py（装配）、chat.py（SSE）、documents.py（知识库 API）
 ├── apps/web/          # Next.js：app/page.tsx（布局）、components/（Sidebar、ChatView）、lib/api.ts（API+SSE 解析）
-├── core/              # 核心业务（扁平模块，P0 不拆子目录）
-│   ├── gateway.py     # Model Gateway：openai-compatible / mock 双 provider
-│   ├── character.py   # Character 加载 + System Prompt 渲染（core/character.yaml）
-│   ├── context.py     # Context Engine：摘要/记忆注入 + token 预算裁剪
-│   ├── agent.py       # Agent Runtime：Agent Run 生命周期 + SSE 事件
-│   ├── memory.py      # 长期记忆提取、去重、召回
-│   ├── summary.py     # 会话增量摘要
-│   ├── embedding.py   # 独立 Embedding Gateway
-│   └── rag/           # 解析、分块、入库、混合检索
+├── core/              # 核心业务，按功能域分组
+│   ├── chat/          # Agent、Gateway、Context、Character、Memory、Summary
+│   ├── execution/     # Tool、Executor、审批和前后置 Hook
+│   ├── capabilities/  # Skill、MCP Client/Manager、Plugin、能力快照
+│   ├── automation/    # Activity、Planner 和 Replan
+│   ├── rag/           # 解析、分块、Embedding、入库、混合检索
+│   └── files/         # Artifact UUID 存储、元数据和安全定位
 ├── infrastructure/    # config.py（.env 配置）、database.py（SQLAlchemy 模型）
+├── mcp_servers/       # 内置信任的 MCP 实现；插件目录不放可执行 Python
 ├── prompts/system/    # System Prompt 模板（与业务代码解耦）
 ├── tests/             # pytest（conftest 使用临时库 + mock provider）
 └── data/              # 运行时生成的 SQLite
@@ -43,17 +42,30 @@ personal-ai/
 
 ## 关键约束（改代码前必读）
 
-1. **LLM 调用必须走 `core/gateway.py`**，业务代码禁止直接调用模型 SDK；新增 provider 在此文件实现。
-2. **禁止 `messages = all_history`**：上下文必须经 `core/context.py` 的 build_context（token 预算裁剪）。
+1. **LLM 调用必须走 `core/chat/gateway.py`**，业务代码禁止直接调用模型 SDK；新增 provider 在此文件实现。
+2. **禁止 `messages = all_history`**：上下文必须经 `core/chat/context.py` 的 build_context（token 预算裁剪）。
 3. **前端不做决策**：调哪个 Tool / 读哪条 Memory / 执行哪个 Skill 都由后端控制，前端只渲染后端下发的事件。
 4. **SSE 事件协议固定**：`run.started / message.delta / message.completed / run.completed / run.failed`，事件结构为 `event: <type>` + `data: <json>`；新增事件类型不得破坏前端解析。
-5. **Character 与 Prompt 与代码解耦**：身份人格改 `core/character.yaml`，话术改 `prompts/system/main.md`，不改代码。
+5. **Character 与 Prompt 与代码解耦**：身份人格改 `core/chat/character.yaml`，话术改 `prompts/system/main.md`，不改代码。
 6. **端口约定**：后端 8787、前端 4321。改端口必须同步 4 处：`.env`（API_PORT、CORS_ORIGINS）、`apps/web/package.json`（-p）、`apps/web/.env.local`（NEXT_PUBLIC_API_URL）、README.md。
 7. **配置**：`.env`（模型/预算/超时，模板见 `.env.example`）；`.env` 不入库。
-8. **数据库模型集中在 `infrastructure/database.py`**（Conversation / Message / AgentRun / Memory / Document / DocumentChunk），新增模型放这里。
+8. **数据库模型集中在 `infrastructure/database.py`**（包括 Plan / PlanStep），新增模型放这里。
 9. **RAG 引用由后端决定**：只有实际装入 Context 的 chunk 才能进入 `rag.retrieved` 和消息 citations；前端不得自行构造来源。
 10. **文件路径不可使用原文件名**：上传只用 UUID 落盘，读取必须通过 document_id 查库并验证路径仍在 `FILE_STORAGE_DIR` 内。
 11. **中文消息**：前后端均 UTF-8；控制台乱码是 GBK 显示问题，不代表数据错误。
+12. **Planner 不能执行或授权**：Plan 只保存语义步骤和工具提示；实际调用必须经过共享 Executor、请求级白名单和既有审批。
+13. **默认兼容**：Chat 与 Activity 的 `execution_mode` 默认必须是 `direct`；禁止增加隐式 auto planning。
+14. **有限执行**：planned Run 必须共享总超时、工具次数和观察预算；Replan 只能在 blocked 后触发且次数受配置限制。
+15. **Skill 渐进加载**：初始 Prompt 只允许 Skill ID、名称和描述；完整正文必须通过本次 Run 绑定的 `skill_load` 获取。
+16. **能力可解释**：新 Agent Run 必须持久化 capability_version 和 capability_snapshot；不得保存完整 Skill 正文。
+17. **Tool Hook 安全**：前置策略异常必须 fail-closed；第三方策略不得绕过白名单、审批、超时和 ToolRun 记录。
+18. **插件不执行任意代码**：本地插件只允许声明式 Skill/MCP 内容；新安装默认关闭，可执行文件必须拒绝。
+19. **MCP 密钥不回显**：API 只返回环境变量/Header 键名；stdio 子进程不得继承无关 API Key。
+20. **生成文件隔离**：Artifact 必须使用 UUID 目录、受限后缀和大小上限；下载时重新验证路径，不得直接暴露用户提供的本地路径。
+21. **文档能力可撤销**：Document Skills 默认关闭；关闭插件后必须同时撤销其 Skill 和 MCP Tool，不得把生成器硬编码进基础聊天能力。
+22. **编码工作区隔离**：所有编码路径必须位于 `CODING_WORKSPACE_DIR`；拒绝越界、符号链接、敏感文件和依赖目录。
+23. **编码写入需审批**：创建、精确修改和运行检查均为 high 风险；不得绕过统一 Executor、请求白名单、超时与 ToolRun 审计。
+24. **不提供任意执行**：Developer Tools 不得加入任意 Shell、依赖安装、删除/移动文件或 Git commit/push/reset；新命令只能作为固定参数的预定义检查评审后加入。
 
 ## 常用命令
 
@@ -77,8 +89,13 @@ npm run build                              # 改动前端后必须构建通过
 | P1 认识用户 | ✅ 完成 | 长时记忆自动提取、会话摘要、记忆召回、Memory UI |
 | P2 理解资料 | ✅ 完成 | 安全文件上传、PDF/DOCX/TXT/MD、BGE、Vector+BM25+RRF、引用、Knowledge UI、评测 |
 | P3 开始做事 | ✅ 完成 | Skill、Tool Calling、权限审批、Observability |
-| P4 连接外部 | 未开始 | MCP、Web Search、Browser |
-| P5 主动工作 | 未开始 | Activity、Scheduler、Job Queue、Worker |
-| P6 高级 Agent | 未开始 | Planner、自主活动、插件注册表 |
+| P4 连接外部 | ✅ 完成 | stdio MCP Client、Tool 适配、Demo Server、故障隔离 |
+| P5 主动工作 | ✅ 完成 | Activity、持久化调度、单进程 Worker、重启恢复 |
+| P6 高级 Agent | ✅ 完成 | 受限 Planner、共享 Executor、有界 Replan、Plan UI/API、Capability Registry |
+| P7 本地技能管理 | ✅ 完成 | Skill 动态扫描、持久化开关、刷新 API、内置技能和独立设置页 |
+| P8 渐进式能力运行时 | ✅ 完成 | Skill 按需加载、Provider Registry、Run 能力版本、Tool 安全 Hook |
+| P9 MCP 与插件管理 | ✅ 完成 | stdio/HTTP MCP Manager、热启停、普通文件夹声明式插件、三页设置中心 |
+| P10 Document Skills | ✅ 完成 | 默认关闭的文档插件、四类 Skill、隔离生成 Worker、Artifact 下载 |
+| P11 简单编码能力 | ✅ 完成 | 默认关闭的 Developer Tools、工作区隔离、精确编辑、Git diff、预定义检查 |
 
-下一阶段是 P4：在现有工具、权限和观测边界上接入 MCP 与外部连接能力。
+P11 后续可做工作区选择、变更预览、GitHub Skill/Plugin 手工导入向导、来源与权限预览；进程内任意代码插件、多 Agent 和分布式 Worker 均不提前引入。

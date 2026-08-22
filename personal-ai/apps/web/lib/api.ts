@@ -83,6 +83,138 @@ export interface ApprovalResponse {
   ok: boolean;
 }
 
+export type ActivityStatus =
+  | "scheduled"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export interface Activity {
+  id: string;
+  conversation_id: string;
+  title: string;
+  prompt: string;
+  execution_mode: "direct" | "planned";
+  schedule_type: "once" | "interval";
+  interval_minutes: number | null;
+  next_run_at: string;
+  status: ActivityStatus;
+  last_run_id: string | null;
+  last_error: string | null;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanStep {
+  id: string;
+  version: number;
+  position: number;
+  title: string;
+  instruction: string;
+  tool_hints: string[];
+  status: "pending" | "running" | "completed" | "blocked" | "failed" | "superseded" | "cancelled";
+  output_summary: string | null;
+  error: string | null;
+}
+
+export interface Plan {
+  id: string;
+  run_id: string;
+  conversation_id: string;
+  activity_id: string | null;
+  goal: string;
+  status: "planning" | "running" | "completed" | "failed" | "cancelled";
+  current_version: number;
+  replan_count: number;
+  error: string | null;
+  steps: PlanStep[];
+}
+
+export interface Capability {
+  kind: "tool" | "skill" | "mcp_server";
+  name: string;
+  description: string;
+  source: string;
+  risk_level: "low" | "medium" | "high" | null;
+  required_tools: string[];
+  enabled: boolean;
+  available: boolean;
+}
+
+export type SkillStatus = "enabled" | "disabled" | "missing_dependencies" | "invalid";
+
+export interface SkillItem {
+  id: string;
+  name: string;
+  description: string;
+  source: "builtin" | "local" | "online" | "demo";
+  required_tools: string[];
+  enabled: boolean;
+  available: boolean;
+  status: SkillStatus;
+  error: string | null;
+  instructions: string;
+  deletable: boolean;
+}
+
+export type McpTransport = "stdio" | "streamable_http";
+
+export interface McpServerItem {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  url: string;
+  enabled: boolean;
+  connected: boolean;
+  status: "connected" | "disabled" | "error";
+  error: string | null;
+  source: string;
+  default_risk_level: "low" | "medium" | "high";
+  allowed_tools: string[];
+  tool_risk_levels: Record<string, "low" | "medium" | "high">;
+  env_keys: string[];
+  header_keys: string[];
+  server_info: Record<string, unknown> | null;
+  tools: string[];
+}
+
+export interface McpServerInput {
+  name: string;
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  url: string;
+  env: Record<string, string>;
+  headers: Record<string, string>;
+  enabled: boolean;
+  default_risk_level: "low" | "medium" | "high";
+  allowed_tools: string[];
+  tool_risk_levels: Record<string, "low" | "medium" | "high">;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  server_info: Record<string, unknown> | null;
+  tools: { name: string; description: string }[];
+}
+
+export interface PluginItem {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  enabled: boolean;
+  skill_count: number;
+  mcp_server_count: number;
+  status: "enabled" | "disabled" | "invalid";
+  error: string | null;
+  deletable: boolean;
+}
+
 export type MemoryKind = "episodic" | "semantic" | "profile";
 
 export interface Memory {
@@ -99,7 +231,17 @@ export interface Memory {
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
-  if (!resp.ok) throw new Error(`请求失败 ${resp.status}: ${await resp.text()}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      detail = parsed.detail ?? text;
+    } catch {
+      // 非 JSON 错误保留后端原文。
+    }
+    throw new Error(`请求失败 ${resp.status}: ${detail}`);
+  }
   return resp.json();
 }
 
@@ -172,6 +314,137 @@ export const submitApproval = (approvalId: string, approved: boolean) =>
     body: JSON.stringify({ approval_id: approvalId, approved }),
   });
 
+export const fetchActivities = () => req<Activity[]>(`${API_URL}/activities`);
+
+export const createActivity = (body: {
+  title: string;
+  prompt: string;
+  schedule_type: "once" | "interval";
+  interval_minutes: number | null;
+  next_run_at: string;
+  execution_mode: "direct" | "planned";
+}) =>
+  req<Activity>(`${API_URL}/activities`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const pauseActivity = (id: string) =>
+  req<Activity>(`${API_URL}/activities/${id}/pause`, { method: "POST" });
+
+export const resumeActivity = (id: string) =>
+  req<Activity>(`${API_URL}/activities/${id}/resume`, { method: "POST" });
+
+export const runActivityNow = (id: string) =>
+  req<Activity>(`${API_URL}/activities/${id}/run-now`, { method: "POST" });
+
+export const deleteActivity = (id: string) =>
+  req<{ ok: boolean }>(`${API_URL}/activities/${id}`, { method: "DELETE" });
+
+export const fetchConversationPlans = (conversationId: string) =>
+  req<Plan[]>(`${API_URL}/conversations/${conversationId}/plans`);
+
+export const fetchCapabilities = () => req<Capability[]>(`${API_URL}/capabilities`);
+
+export const fetchSkills = () => req<SkillItem[]>(`${API_URL}/skills`);
+
+export const refreshSkills = () =>
+  req<SkillItem[]>(`${API_URL}/skills/refresh`, { method: "POST" });
+
+export const updateSkill = (id: string, enabled: boolean) =>
+  req<SkillItem>(`${API_URL}/skills/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+
+export const importSkillFolder = (files: File[]) => {
+  const body = new FormData();
+  for (const file of files) {
+    const relativePath = file.webkitRelativePath || file.name;
+    body.append("paths", relativePath);
+    body.append("files", file, file.name);
+  }
+  return req<SkillItem>(`${API_URL}/skills/import-folder`, { method: "POST", body });
+};
+
+export const createSkill = (body: {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  required_tools: string[];
+}) =>
+  req<SkillItem>(`${API_URL}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const deleteSkill = (id: string) =>
+  req<{ ok: boolean; recoverable: boolean }>(`${API_URL}/skills/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+export const fetchMcpServers = () => req<McpServerItem[]>(`${API_URL}/mcp-servers`);
+
+export const refreshMcpServers = () =>
+  req<McpServerItem[]>(`${API_URL}/mcp-servers/refresh`, { method: "POST" });
+
+export const testMcpServer = (body: McpServerInput) =>
+  req<McpTestResult>(`${API_URL}/mcp-servers/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const saveMcpServer = (body: McpServerInput) =>
+  req<McpServerItem>(`${API_URL}/mcp-servers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const updateMcpServer = (name: string, enabled: boolean) =>
+  req<McpServerItem>(`${API_URL}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+
+export const deleteMcpServer = (name: string) =>
+  req<{ ok: boolean }>(`${API_URL}/mcp-servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+
+export const fetchPlugins = () => req<PluginItem[]>(`${API_URL}/plugins`);
+
+export const refreshPlugins = () =>
+  req<PluginItem[]>(`${API_URL}/plugins/refresh`, { method: "POST" });
+
+export const updatePlugin = (id: string, enabled: boolean) =>
+  req<PluginItem>(`${API_URL}/plugins/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+
+export const deletePlugin = (id: string) =>
+  req<{ ok: boolean; recoverable: boolean }>(`${API_URL}/plugins/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+export const importPluginFolder = (files: File[]) => {
+  const body = new FormData();
+  for (const file of files) {
+    const relativePath = file.webkitRelativePath || file.name;
+    body.append("paths", relativePath);
+    body.append("files", file, file.name);
+  }
+  return req<PluginItem>(`${API_URL}/plugins/import-folder`, { method: "POST", body });
+};
+
 function parseEventBlock(block: string): AgentEvent | null {
   let event = "";
   let data = "";
@@ -189,11 +462,12 @@ export async function streamChat(
   message: string,
   onEvent: (ev: AgentEvent) => void,
   signal?: AbortSignal,
+  executionMode: "direct" | "planned" = "direct",
 ): Promise<void> {
   const resp = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ conversation_id: convId, message }),
+    body: JSON.stringify({ conversation_id: convId, message, execution_mode: executionMode }),
     signal,
   });
   if (!resp.ok || !resp.body) throw new Error(`聊天失败 ${resp.status}`);

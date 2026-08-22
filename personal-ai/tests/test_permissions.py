@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from core.permissions import (
+from core.execution.permissions import (
     APPROVAL_WAITERS,
     create_approval,
     resolve_approval,

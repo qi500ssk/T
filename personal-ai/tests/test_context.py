@@ -1,4 +1,4 @@
-from core.context import build_context, estimate_tokens
+from core.chat.context import build_context, estimate_tokens
 from infrastructure.database import Conversation, Memory, Message, SessionLocal
 
 

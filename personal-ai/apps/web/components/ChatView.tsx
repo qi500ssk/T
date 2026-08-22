@@ -6,12 +6,16 @@ import remarkGfm from "remark-gfm";
 
 import {
   documentContentUrl,
+  fetchConversationPlans,
   fetchMessages,
   submitApproval,
   streamChat,
   type ChatMessage,
   type CitationSource,
+  type Plan,
+  type PlanStep,
 } from "@/lib/api";
+import PlanProgress from "@/components/PlanProgress";
 
 interface ChatViewProps {
   conversationId: string | null;
@@ -43,6 +47,18 @@ const TOOL_LABELS: Record<string, string> = {
   calculate: "执行计算",
   read_file: "读取文件",
   write_file: "写入文件",
+  code_list_files: "列出项目文件",
+  code_search: "搜索代码",
+  code_read: "读取代码",
+  code_create_file: "创建代码文件",
+  code_edit: "修改代码",
+  code_git_diff: "查看代码改动",
+  code_run_check: "运行代码检查",
+  "mcp_document-skills-generator_create_docx": "生成 Word 文档",
+  "mcp_document-skills-generator_append_docx": "更新 Word 文档",
+  "mcp_document-skills-generator_create_pdf": "生成 PDF",
+  "mcp_document-skills-generator_create_pptx": "生成演示文稿",
+  "mcp_document-skills-generator_create_xlsx": "生成工作簿",
 };
 
 const STATUS_LABELS: Record<ToolStatus, string> = {
@@ -58,8 +74,17 @@ function ToolActivityList({ items }: { items: ToolActivity[] }) {
   return (
     <div className="flex justify-start" aria-live="polite" aria-label="工具执行状态">
       <div className="w-full max-w-[80%] space-y-1.5 border-l-2 border-gray-200 pl-3 text-xs text-gray-600">
-        {items.map((item) => (
-          <div key={item.key} className="flex min-w-0 items-center gap-2 py-0.5">
+        {items.map((item) => {
+          let artifact: { filename: string; download_url: string } | null = null;
+          if (item.result.startsWith("ARTIFACT_JSON:")) {
+            try {
+              artifact = JSON.parse(item.result.split("\n", 1)[0].slice("ARTIFACT_JSON:".length));
+            } catch {
+              artifact = null;
+            }
+          }
+          return <div key={item.key} className="py-0.5">
+            <div className="flex min-w-0 items-center gap-2">
             <span
               className={`h-2 w-2 shrink-0 rounded-full ${
                 item.status === "completed"
@@ -74,8 +99,14 @@ function ToolActivityList({ items }: { items: ToolActivity[] }) {
               {TOOL_LABELS[item.tool] ?? item.tool}
             </span>
             <span className="ml-auto shrink-0">{STATUS_LABELS[item.status]}</span>
+            </div>
+            {artifact && item.status === "completed" && (
+              <a href={artifact.download_url} target="_blank" rel="noreferrer" className="mt-1 inline-flex min-h-8 items-center rounded-lg bg-blue-50 px-3 font-medium text-blue-700 hover:bg-blue-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
+                下载 {artifact.filename}
+              </a>
+            )}
           </div>
-        ))}
+        })}
       </div>
     </div>
   );
@@ -147,6 +178,9 @@ function MessageBubble({
   citations?: CitationSource[];
 }) {
   const isUser = role === "user";
+  const usedCitations = citations.filter((source) =>
+    content.toLowerCase().includes(`[${source.citation_id.toLowerCase()}]`),
+  );
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -164,9 +198,9 @@ function MessageBubble({
             {streaming && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-gray-400 align-middle" />
             )}
-            {citations.length > 0 && (
+            {usedCitations.length > 0 && (
               <div className="mt-3 space-y-2 border-t border-gray-200 pt-3" aria-label="回答引用">
-                {citations.map((source) => (
+                {usedCitations.map((source) => (
                   <a
                     key={source.citation_id}
                     href={documentContentUrl(source.document_id, source.page_start)}
@@ -206,6 +240,8 @@ export default function ChatView({
   const [error, setError] = useState("");
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
+  const [executionMode, setExecutionMode] = useState<"direct" | "planned">("direct");
+  const [plan, setPlan] = useState<Plan | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -226,6 +262,9 @@ export default function ChatView({
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    fetchConversationPlans(conversationId)
+      .then((rows) => { if (!cancelled) setPlan(rows[0] ?? null); })
+      .catch(() => { if (!cancelled) setPlan(null); });
     return () => {
       cancelled = true;
     };
@@ -287,6 +326,7 @@ export default function ChatView({
       setStreamingSources([]);
       setToolActivities([]);
       setApprovals([]);
+      setPlan(null);
       setMessages((ms) => [
         ...ms,
         { id: `local-${Date.now()}`, role: "user", content: text, citations: [], created_at: "" },
@@ -337,9 +377,48 @@ export default function ChatView({
               );
             } else if (ev.event === "run.failed") {
               setError(String(ev.data.error ?? "运行失败"));
+            } else if (ev.event === "plan.created") {
+              setPlan({
+                id: String(ev.data.plan_id),
+                run_id: "",
+                conversation_id: convId,
+                activity_id: null,
+                goal: String(ev.data.goal ?? text),
+                status: "running",
+                current_version: Number(ev.data.version ?? 1),
+                replan_count: 0,
+                error: null,
+                steps: normalizePlanSteps(ev.data.steps),
+              });
+            } else if (ev.event.startsWith("plan.step.")) {
+              const stepId = String(ev.data.step_id);
+              setPlan((current) => current ? {
+                ...current,
+                steps: current.steps.map((step) => step.id === stepId ? {
+                  ...step,
+                  status: String(ev.data.status ?? step.status) as PlanStep["status"],
+                  output_summary: ev.data.output_summary ? String(ev.data.output_summary) : step.output_summary,
+                  error: ev.data.error ? String(ev.data.error) : step.error,
+                } : step),
+              } : current);
+            } else if (ev.event === "plan.replanned") {
+              setPlan((current) => current ? {
+                ...current,
+                current_version: Number(ev.data.version),
+                replan_count: current.replan_count + 1,
+                steps: [
+                  ...current.steps.map((step) => ["pending", "blocked"].includes(step.status) ? { ...step, status: "superseded" as const } : step),
+                  ...normalizePlanSteps(ev.data.steps),
+                ],
+              } : current);
+            } else if (ev.event === "plan.completed") {
+              setPlan((current) => current ? { ...current, status: "completed" } : current);
+            } else if (ev.event === "plan.failed") {
+              setPlan((current) => current ? { ...current, status: "failed", error: String(ev.data.error ?? "计划失败") } : current);
             }
           },
           controller.signal,
+          executionMode,
         );
         const msgs = await fetchMessages(convId);
         setMessages(msgs);
@@ -353,7 +432,7 @@ export default function ChatView({
         setIsStreaming(false);
       }
     },
-    [conversationId, onAutoCreate, onFinished, updateToolActivity],
+    [conversationId, executionMode, onAutoCreate, onFinished, updateToolActivity],
   );
 
   const stop = () => abortRef.current?.abort();
@@ -382,6 +461,7 @@ export default function ChatView({
         {messages.map((m) => (
           <MessageBubble key={m.id} role={m.role} content={m.content} citations={m.citations} />
         ))}
+        <PlanProgress plan={plan} />
         <ToolActivityList items={toolActivities} />
         {approvals.map((item) => (
           <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />
@@ -414,6 +494,20 @@ export default function ChatView({
             </button>
           </div>
         )}
+        <div className="mb-2 flex items-center gap-1" aria-label="执行模式">
+          {(["direct", "planned"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={executionMode === mode}
+              disabled={isStreaming}
+              onClick={() => setExecutionMode(mode)}
+              className={`rounded-full px-3 py-1 text-xs ${executionMode === mode ? "bg-blue-100 font-medium text-blue-700" : "text-gray-500 hover:bg-gray-100"}`}
+            >
+              {mode === "direct" ? "直接回答" : "规划执行"}
+            </button>
+          ))}
+        </div>
         <form onSubmit={submit} className="flex min-w-0 gap-2">
           <textarea
             value={input}
@@ -449,4 +543,22 @@ export default function ChatView({
       </div>
     </main>
   );
+}
+
+function normalizePlanSteps(value: unknown): PlanStep[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const step = item as Record<string, unknown>;
+    return {
+      id: String(step.step_id ?? step.id),
+      version: Number(step.version ?? 1),
+      position: Number(step.position ?? 0),
+      title: String(step.title ?? "计划步骤"),
+      instruction: String(step.instruction ?? ""),
+      tool_hints: Array.isArray(step.tool_hints) ? step.tool_hints.map(String) : [],
+      status: String(step.status ?? "pending") as PlanStep["status"],
+      output_summary: step.output_summary ? String(step.output_summary) : null,
+      error: step.error ? String(step.error) : null,
+    };
+  });
 }

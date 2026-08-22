@@ -1,5 +1,6 @@
 """全局配置：环境变量 + .env 文件（pydantic-settings）。"""
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +19,6 @@ class Settings(BaseSettings):
     # ---- Agent Runtime ----
     agent_max_steps: int = 8
     agent_timeout_seconds: float = 180.0
-    agent_max_retries: int = 2
 
     # ---- Tools / Approval ----
     tools_enabled: bool = True
@@ -26,6 +26,30 @@ class Settings(BaseSettings):
     approval_timeout_seconds: float = 60.0
     sandbox_dir: str = "./data/sandbox"
     skills_dir: str = "./skills"
+    skill_trash_dir: str = "./data/skill-trash"
+    plugins_dir: str = "./plugins"
+    plugin_trash_dir: str = "./data/plugin-trash"
+    artifacts_dir: str = "./data/artifacts"
+    artifact_max_bytes: int = 52_428_800
+    artifact_public_base_url: str = "http://localhost:8787"
+    coding_workspace_dir: str = "./data/coding-workspace"
+    coding_check_timeout_seconds: float = 120.0
+
+    # ---- MCP ----
+    mcp_enabled: bool = True
+    mcp_config_file: str = "./config/mcp_servers.yaml"
+
+    # ---- Activity Worker ----
+    activity_enabled: bool = True
+    activity_poll_seconds: int = Field(default=5, ge=1, le=60)
+
+    # ---- Planner ----
+    planner_enabled: bool = True
+    planner_max_steps: int = Field(default=6, ge=2, le=10)
+    planner_max_replans: int = Field(default=1, ge=0, le=2)
+    planner_step_max_turns: int = Field(default=3, ge=1, le=5)
+    planner_max_tool_calls: int = Field(default=12, ge=1, le=30)
+    planner_observation_tokens_budget: int = Field(default=1200, ge=200, le=3000)
 
     # ---- Context Engine ----
     context_max_tokens: int = 8000
@@ -44,6 +68,7 @@ class Settings(BaseSettings):
 
     # ---- RAG / Chunking ----
     rag_enabled: bool = True
+    rag_query_gate_enabled: bool = True
     rag_vector_top_k: int = 12
     rag_bm25_top_k: int = 12
     rag_final_top_k: int = 5
@@ -87,7 +112,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:4321"
 
     # ---- Character / Prompts ----
-    character_file: str = "core/character.yaml"
+    character_file: str = "core/chat/character.yaml"
     system_prompt_file: str = "prompts/system/main.md"
     rag_context_prompt_file: str = "prompts/rag/context.md"
 

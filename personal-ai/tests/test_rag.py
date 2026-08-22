@@ -7,7 +7,8 @@ import pytest
 from docx import Document as WordDocument
 from pypdf import PdfWriter
 
-from core.embedding import MockEmbeddingProvider
+from core.rag.embedding import MockEmbeddingProvider
+from core.chat.gateway import MockProvider, StreamChunk
 from core.rag.chunking import split_into_chunks
 from core.rag.parsers import (
     ParsedBlock,
@@ -17,6 +18,7 @@ from core.rag.parsers import (
     parse_pdf,
     parse_plain_text,
 )
+from core.rag.retrieval import should_retrieve_knowledge, tokenize_for_bm25
 from infrastructure.config import settings
 
 
@@ -43,6 +45,14 @@ def test_mock_embedding_is_deterministic_normalized_and_dimensioned():
     assert first == second
     assert len(first) == 64
     assert math.isclose(sum(value * value for value in first), 1.0)
+
+
+def test_rag_query_gate_skips_non_knowledge_requests():
+    for query in ["你好", "计算出122+22", "请算一下 (12+3)*4", "现在几点？", "查询当前时间和地点还有天气", "帮我写入笔记：P6完成"]:
+        assert should_retrieve_knowledge(query) is False
+    for query in ["火星计划代号是什么？", "根据资料总结项目", "简历中的工作经历是什么？"]:
+        assert should_retrieve_knowledge(query) is True
+    assert "+" not in tokenize_for_bm25("Agent+RAG 122+22")
 
 
 def test_text_markdown_and_docx_parsers_preserve_structure(tmp_path):
@@ -133,7 +143,8 @@ def test_upload_search_chat_citations_and_delete(client):
     events = parse_sse(response.text)
     types = [event for event, _ in events]
     assert "rag.retrieved" in types
-    assert types.index("rag.retrieved") < types.index("message.delta")
+    assert types.index("message.delta") < types.index("rag.retrieved")
+    assert types.index("rag.retrieved") < types.index("message.completed")
     sources = next(data["sources"] for event, data in events if event == "rag.retrieved")
     assert sources[0]["citation_id"] == "c1"
     assert sources[0]["char_start"] is not None
@@ -147,6 +158,57 @@ def test_upload_search_chat_citations_and_delete(client):
     assert deleted.status_code == 200
     assert client.get("/api/documents").json() == []
     assert client.get(f"/api/documents/{document['id']}/content").status_code == 404
+
+
+def test_calculation_bypasses_rag_even_when_documents_exist(client, monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    upload = client.post(
+        "/api/files",
+        files={"file": ("无关资料.md", "# 项目\n项目负责人是林岚。".encode("utf-8"), "text/markdown")},
+    )
+    assert upload.status_code == 201
+    conversation = client.post("/api/conversations", json={}).json()
+    response = client.post(
+        "/api/chat",
+        json={"conversation_id": conversation["id"], "message": "计算出122+22"},
+    )
+    events = parse_sse(response.text)
+    assert "rag.retrieved" not in [event for event, _ in events]
+    messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+    assert "144" in messages[-1]["content"]
+    assert messages[-1]["citations"] == []
+
+
+def test_uncited_retrieval_candidates_are_not_exposed_as_sources(client, monkeypatch):
+    class NoCitationProvider(MockProvider):
+        async def stream(self, messages, temperature=0.7, tools=None):
+            yield StreamChunk(text="这是未引用资料的回答。")
+            yield StreamChunk(
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    client.app.state.provider = NoCitationProvider(delay=0)
+    upload = client.post(
+        "/api/files",
+        files={
+            "file": (
+                "火星计划.md",
+                "# 火星计划\n内部代号是晨星七号。".encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    assert upload.status_code == 201
+    conversation = client.post("/api/conversations", json={}).json()
+    response = client.post(
+        "/api/chat",
+        json={"conversation_id": conversation["id"], "message": "火星计划代号是什么？"},
+    )
+    assert "rag.retrieved" not in [event for event, _ in parse_sse(response.text)]
+    messages = client.get(f"/api/conversations/{conversation['id']}/messages").json()
+    assert messages[-1]["citations"] == []
 
 
 def test_duplicate_and_disguised_uploads_are_rejected(client):

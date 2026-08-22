@@ -153,7 +153,7 @@ def test_conversation_summary_is_generated(client, monkeypatch):
 
 
 def test_postprocess_failure_does_not_fail_chat(client):
-    from core.gateway import MockProvider
+    from core.chat.gateway import MockProvider
 
     class BrokenPostprocessProvider(MockProvider):
         async def complete(self, messages, temperature=0.0):
@@ -174,7 +174,12 @@ def test_tools_list(client):
     response = client.get("/api/tools")
     assert response.status_code == 200
     tools = {item["name"]: item for item in response.json()}
-    assert set(tools) == {"get_time", "calculate", "read_file", "write_file"}
+    assert set(tools) == {
+        "get_time", "calculate", "read_file", "write_file", "skill_load",
+        "code_list_files", "code_search", "code_read", "code_create_file",
+        "code_edit", "code_git_diff", "code_run_check",
+    }
+    assert tools["skill_load"]["risk_level"] == "low"
     assert tools["write_file"]["risk_level"] == "high"
 
 
