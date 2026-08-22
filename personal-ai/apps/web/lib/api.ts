@@ -219,8 +219,17 @@ export interface PluginItem {
   enabled: boolean;
   skill_count: number;
   mcp_server_count: number;
-  status: "enabled" | "disabled" | "invalid";
+  status: "enabled" | "disabled" | "needs_configuration" | "invalid";
   error: string | null;
+  config_ready: boolean;
+  settings: {
+    key: string;
+    label: string;
+    description: string;
+    secret: boolean;
+    required: boolean;
+    configured: boolean;
+  }[];
   deletable: boolean;
 }
 
@@ -507,6 +516,16 @@ export const updatePlugin = (id: string, enabled: boolean) =>
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
+  });
+
+export const updatePluginSettings = (
+  id: string,
+  body: { values: Record<string, string>; clear_keys: string[] },
+) =>
+  req<PluginItem>(`${API_URL}/plugins/${encodeURIComponent(id)}/settings`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
 export const deletePlugin = (id: string) =>

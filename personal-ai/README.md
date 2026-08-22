@@ -30,6 +30,8 @@ Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识�
 - 工具状态、写入审批卡片、`tool_runs` 执行记录和结构化日志
 - 官方 MCP SDK stdio / Streamable HTTP 客户端，支持连接测试、状态、配置持久化和热启停
 - 声明式插件普通文件夹可组合多个 Skill 与 MCP Server，默认关闭并拒绝可执行代码
+- 插件可声明本地私密设置；凭据不写入插件目录且不回显，缺少必填配置时禁止启用
+- 默认关闭的 `Web Search` 插件通过 Tavily 提供搜索/网页读取，并要求回答附带网页链接且不自动写入个人 RAG
 - `mcp_demo_echo` 和需要审批的 `mcp_demo_random_number` 全链路示例
 - 默认关闭的 `Document Skills` 插件，按需提供 DOCX、PDF、PPTX 和 XLSX 生成能力
 - 文档 MCP 使用一次性 Worker 隔离生成库，关闭插件后立即撤销 4 个 Skill 和 5 个工具
@@ -154,6 +156,7 @@ personal-ai/
 | POST | `/api/plugins/import-folder` | 导入包含 plugin.yaml 的普通文件夹 |
 | POST | `/api/plugins/refresh` | 热刷新插件目录 |
 | PATCH/DELETE | `/api/plugins/{id}` | 启停 / 可恢复删除插件 |
+| PATCH | `/api/plugins/{id}/settings` | 保存或清除插件私密设置（响应不回显原值） |
 | GET | `/api/artifacts` | 最近生成文件列表 |
 | GET | `/api/artifacts/{id}` | 下载生成文件 |
 | GET | `/api/settings` | 读取脱敏后的 Agent、模型与工作区配置 |
@@ -184,7 +187,7 @@ npm run lint
 npm run build
 ```
 
-当前验收结果：`118 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。RAG 与 Planner 固定评测保持通过；前端 Lint、TypeScript 和生产构建均通过。
+当前验收结果：`130 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。RAG 与 Planner 固定评测保持通过；前端 Lint、TypeScript 和生产构建均通过。
 
 ## 当前边界
 

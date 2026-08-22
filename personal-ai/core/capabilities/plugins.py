@@ -21,6 +21,7 @@ from infrastructure.config import settings
 
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+PLUGIN_SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 MAX_FOLDER_FILES = 200
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_FOLDER_BYTES = 10 * 1024 * 1024
@@ -39,6 +40,26 @@ class PluginConflictError(PluginError):
 
 
 @dataclass(frozen=True)
+class PluginSetting:
+    key: str
+    label: str
+    description: str
+    secret: bool
+    required: bool
+    configured: bool
+
+    def public(self) -> dict:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "description": self.description,
+            "secret": self.secret,
+            "required": self.required,
+            "configured": self.configured,
+        }
+
+
+@dataclass(frozen=True)
 class PluginRecord:
     id: str
     name: str
@@ -49,6 +70,8 @@ class PluginRecord:
     mcp_server_count: int
     status: str
     error: str | None = None
+    settings: tuple[PluginSetting, ...] = ()
+    config_ready: bool = True
 
     def public(self) -> dict:
         return {
@@ -61,6 +84,8 @@ class PluginRecord:
             "mcp_server_count": self.mcp_server_count,
             "status": self.status,
             "error": self.error,
+            "settings": [item.public() for item in self.settings],
+            "config_ready": self.config_ready,
             "deletable": True,
         }
 
@@ -124,7 +149,46 @@ def _manifest_document(path: Path) -> dict:
     return document
 
 
-def _parse_manifest(plugin_id: str, root: Path) -> _ParsedPlugin:
+def _parse_settings(document: dict, values: dict[str, str]) -> tuple[PluginSetting, ...]:
+    raw_settings = document.get("settings", []) or []
+    if not isinstance(raw_settings, list):
+        raise PluginError("settings 必须是列表")
+    parsed: list[PluginSetting] = []
+    seen: set[str] = set()
+    for raw in raw_settings:
+        if not isinstance(raw, dict):
+            raise PluginError("settings 中的每一项都必须是对象")
+        key = str(raw.get("key", "")).strip()
+        if not PLUGIN_SETTING_KEY_RE.fullmatch(key) or key in seen:
+            raise PluginError("插件设置 key 必须唯一，且只能包含小写字母、数字和下划线")
+        setting_type = str(raw.get("type", "secret")).strip()
+        if setting_type not in {"secret", "text"}:
+            raise PluginError(f"插件设置 {key} 的 type 必须是 secret 或 text")
+        label = str(raw.get("label", key)).strip()
+        description = str(raw.get("description", "")).strip()
+        required = raw.get("required", False)
+        if not label or not isinstance(required, bool):
+            raise PluginError(f"插件设置 {key} 的 label 或 required 无效")
+        value = values.get(key, "")
+        parsed.append(
+            PluginSetting(
+                key=key,
+                label=label,
+                description=description,
+                secret=setting_type == "secret",
+                required=required,
+                configured=bool(value.strip()),
+            )
+        )
+        seen.add(key)
+    return tuple(parsed)
+
+
+def _parse_manifest(
+    plugin_id: str,
+    root: Path,
+    setting_values: dict[str, str] | None = None,
+) -> _ParsedPlugin:
     if not PLUGIN_ID_RE.fullmatch(plugin_id):
         raise PluginError("插件 ID 只能包含小写字母、数字和连字符")
     document = _manifest_document(root / "plugin.yaml")
@@ -140,6 +204,11 @@ def _parse_manifest(plugin_id: str, root: Path) -> _ParsedPlugin:
     if not isinstance(enabled, bool):
         raise PluginError("enabled 必须是布尔值")
 
+    values = setting_values if isinstance(setting_values, dict) else {}
+    plugin_settings = _parse_settings(document, values)
+    missing_required = [item.label for item in plugin_settings if item.required and not item.configured]
+    effective_enabled = enabled and not missing_required
+
     skills_root = root / "skills"
     skill_count = len(list(skills_root.glob("*/SKILL.md"))) if skills_root.is_dir() else 0
     raw_servers = document.get("mcp_servers", {}) or {}
@@ -147,23 +216,44 @@ def _parse_manifest(plugin_id: str, root: Path) -> _ParsedPlugin:
         raise PluginError("mcp_servers 必须是对象")
     configs: list[McpServerConfig] = []
     for local_name, raw in raw_servers.items():
+        if not isinstance(raw, dict):
+            raise PluginError(f"MCP Server {local_name} 无效：配置必须是对象")
+        resolved_raw = dict(raw)
+        raw_env_mapping = resolved_raw.pop("env_from_settings", {}) or {}
+        if not isinstance(raw_env_mapping, dict) or any(
+            not isinstance(env_name, str) or not isinstance(setting_key, str)
+            for env_name, setting_key in raw_env_mapping.items()
+        ):
+            raise PluginError(f"MCP Server {local_name} 的 env_from_settings 必须是字符串键值对象")
+        declared_keys = {item.key for item in plugin_settings}
+        unknown_keys = sorted(set(raw_env_mapping.values()) - declared_keys)
+        if unknown_keys:
+            raise PluginError(
+                f"MCP Server {local_name} 引用了未声明的插件设置：{', '.join(unknown_keys)}"
+            )
+        resolved_env = dict(resolved_raw.get("env", {}) or {})
+        for env_name, setting_key in raw_env_mapping.items():
+            resolved_env[env_name] = values.get(setting_key, "")
+        resolved_raw["env"] = resolved_env
         namespace = f"{plugin_id}-{local_name}"
         try:
-            config = _parse_server_config(namespace, raw)
+            config = _parse_server_config(namespace, resolved_raw)
         except (TypeError, ValueError) as exc:
             raise PluginError(f"MCP Server {local_name} 无效：{exc}") from exc
-        configs.append(replace(config, enabled=enabled and config.enabled))
-    status = "enabled" if enabled else "disabled"
+        configs.append(replace(config, enabled=effective_enabled and config.enabled))
+    status = "enabled" if effective_enabled else "needs_configuration" if missing_required else "disabled"
     return _ParsedPlugin(
         PluginRecord(
             id=plugin_id,
             name=name,
             description=description,
             version=version,
-            enabled=enabled,
+            enabled=effective_enabled,
             skill_count=skill_count,
             mcp_server_count=len(configs),
             status=status,
+            settings=plugin_settings,
+            config_ready=not missing_required,
         ),
         tuple(configs),
     )
@@ -176,11 +266,13 @@ class PluginManager:
         mcp_manager: McpManager,
         root: str | Path | None = None,
         trash_root: str | Path | None = None,
+        settings_provider: Callable[[str], dict[str, str]] | None = None,
     ):
         self.registry = registry
         self.mcp_manager = mcp_manager
         self.root = Path(root or settings.plugins_dir)
         self.trash_root = Path(trash_root or settings.plugin_trash_dir)
+        self.settings_provider = settings_provider or (lambda _plugin_id: {})
         self._records: dict[str, PluginRecord] = {}
         self._disposers: dict[str, Callable[[], None]] = {}
 
@@ -201,7 +293,11 @@ class PluginManager:
             if not folder.is_dir() or folder.is_symlink() or folder.name.startswith("."):
                 continue
             try:
-                parsed = _parse_manifest(folder.name, folder)
+                parsed = _parse_manifest(
+                    folder.name,
+                    folder,
+                    self.settings_provider(folder.name),
+                )
                 record = parsed.record
                 if record.enabled:
                     await self.mcp_manager.replace_external(
@@ -239,10 +335,25 @@ class PluginManager:
             raise PluginError(record.error)
         manifest = self.root / plugin_id / "plugin.yaml"
         document = _manifest_document(manifest)
+        if enabled:
+            parsed = _parse_manifest(
+                plugin_id,
+                self.root / plugin_id,
+                self.settings_provider(plugin_id),
+            )
+            missing = [item.label for item in parsed.record.settings if item.required and not item.configured]
+            if missing:
+                raise PluginError(f"请先配置：{', '.join(missing)}")
         document["enabled"] = enabled
         await _atomic_yaml_write(manifest, document)
         await self.refresh()
         return self._records[plugin_id].public()
+
+    def get(self, plugin_id: str) -> dict:
+        record = self._records.get(plugin_id)
+        if record is None:
+            raise KeyError(plugin_id)
+        return record.public()
 
     async def install_folder(self, entries: list[tuple[str, bytes]]) -> dict:
         folder_name, normalized = _normalize_entries(entries)
@@ -275,7 +386,7 @@ class PluginManager:
                 yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
                 encoding="utf-8",
             )
-            _parse_manifest(plugin_id, staging)
+            _parse_manifest(plugin_id, staging, {})
             staging.replace(target)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)

@@ -100,6 +100,7 @@ class RuntimeSettingsStore:
         self._defaults = {
             **capture_runtime_config(config),
             "agent": default_agent_profile(character),
+            "plugin_settings": {},
         }
         if not getattr(config, "model_environment_fallback_enabled", False):
             self._defaults["model"] = {
@@ -135,7 +136,7 @@ class RuntimeSettingsStore:
 
     def snapshot(self) -> dict:
         result = copy.deepcopy(self._defaults)
-        for section in ("workspace", "agent"):
+        for section in ("workspace", "agent", "plugin_settings"):
             override = self._overrides.get(section)
             if isinstance(override, dict):
                 result[section].update(copy.deepcopy(override))
@@ -159,7 +160,7 @@ class RuntimeSettingsStore:
         return result
 
     def update(self, section: str, values: dict) -> dict:
-        if section not in {"model", "models", "workspace", "agent"}:
+        if section not in {"model", "models", "workspace", "agent", "plugin_settings"}:
             raise KeyError(section)
         with self._lock:
             if section == "model":

@@ -47,7 +47,7 @@ def test_refresh_lists_missing_dependencies_without_breaking_runtime(
 
     response = client.post("/api/skills/refresh")
     assert response.status_code == 200
-    item = response.json()[0]
+    item = next(row for row in response.json() if row["id"] == "online-demo")
     assert item["id"] == "online-demo"
     assert item["status"] == "missing_dependencies"
     assert item["enabled"] is False
@@ -184,4 +184,6 @@ def test_builtin_skill_delete_moves_entire_folder(client, tmp_path, monkeypatch)
     moved = next(path for path in trash_root.iterdir() if path.name.startswith("builtin-notes-"))
     assert (moved / "SKILL.md").exists()
     assert (moved / "references" / "guide.md").read_text(encoding="utf-8") == "keep with package"
-    assert client.get("/api/skills").json() == []
+    assert all(
+        row["id"] != "builtin-notes" for row in client.get("/api/skills").json()
+    )

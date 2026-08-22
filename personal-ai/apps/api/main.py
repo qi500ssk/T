@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
         app.state.mcp_manager,
         root=settings.plugins_dir,
         trash_root=settings.plugin_trash_dir,
+        settings_provider=lambda plugin_id: app.state.runtime_settings_store.snapshot()
+        ["plugin_settings"].get(plugin_id, {}),
     )
     await app.state.plugin_manager.refresh()
     app.state.mcp_clients = app.state.mcp_manager.clients

@@ -126,6 +126,24 @@ def test_runtime_store_does_not_enable_env_model_without_explicit_test_fallback(
     assert snapshot["model"]["llm_api_key"] == ""
 
 
+def test_runtime_store_keeps_plugin_secrets_in_local_settings(tmp_path):
+    config = SimpleNamespace(
+        llm_provider="mock",
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        llm_timeout_seconds=60,
+        coding_workspace_dir=str(tmp_path),
+        model_environment_fallback_enabled=True,
+    )
+    path = tmp_path / "runtime.json"
+    store = RuntimeSettingsStore(str(path), config, {})
+    store.update("plugin_settings", {"web-search": {"tavily_api_key": "secret"}})
+    assert store.snapshot()["plugin_settings"]["web-search"]["tavily_api_key"] == "secret"
+    reloaded = RuntimeSettingsStore(str(path), config, {})
+    assert reloaded.snapshot()["plugin_settings"]["web-search"]["tavily_api_key"] == "secret"
+
+
 def test_multiple_model_profiles_can_be_selected_and_deleted(client):
     original = client.get("/api/settings").json()["models"]
     assert len(original["items"]) == 1

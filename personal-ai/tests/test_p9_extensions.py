@@ -5,6 +5,7 @@ import pytest
 from core.capabilities.mcp_manager import McpManager
 from core.capabilities.plugins import PluginError, PluginManager
 from core.capabilities.skill_registry import SkillRegistry
+from core.capabilities.skills import parse_skill_document
 from core.execution.tools import TOOLS
 
 
@@ -97,6 +98,88 @@ async def test_plugin_import_rejects_executable_code(tmp_path):
     entries = _plugin_entries() + [("hello-plugin/run.py", b"print('unsafe')")]
     with pytest.raises(PluginError, match="不允许"):
         await plugins.install_folder(entries)
+
+
+@pytest.mark.asyncio
+async def test_plugin_required_secret_is_masked_and_blocks_enable(tmp_path):
+    plugin_root = tmp_path / "plugins" / "search-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.yaml").write_text(
+        """id: search-plugin
+name: Search
+description: Search the web
+version: 1.0.0
+enabled: false
+settings:
+  - key: api_key
+    label: API Key
+    type: secret
+    required: true
+""",
+        encoding="utf-8",
+    )
+    configured: dict[str, str] = {}
+    mcp = McpManager(tmp_path / "mcp.yaml", runtime_enabled=False)
+    await mcp.startup()
+    plugins = PluginManager(
+        SkillRegistry(),
+        mcp,
+        tmp_path / "plugins",
+        tmp_path / "trash",
+        settings_provider=lambda plugin_id: configured if plugin_id == "search-plugin" else {},
+    )
+    await plugins.refresh()
+    public = plugins.get("search-plugin")
+    assert public["config_ready"] is False
+    assert public["settings"][0]["configured"] is False
+    with pytest.raises(PluginError, match="请先配置"):
+        await plugins.set_enabled("search-plugin", True)
+
+    configured["api_key"] = "super-secret"
+    await plugins.refresh()
+    public = plugins.get("search-plugin")
+    assert public["config_ready"] is True
+    assert public["settings"][0]["configured"] is True
+    assert "super-secret" not in str(public)
+
+
+def test_web_search_plugin_settings_api_masks_key(client):
+    before = client.get("/api/plugins").json()
+    web_search = next(item for item in before if item["id"] == "web-search")
+    assert web_search["enabled"] is False
+    assert web_search["config_ready"] is False
+    assert web_search["settings"][0]["configured"] is False
+
+    blocked = client.patch("/api/plugins/web-search", json={"enabled": True})
+    assert blocked.status_code == 409
+    assert "Tavily API Key" in blocked.json()["detail"]
+
+    saved = client.patch(
+        "/api/plugins/web-search/settings",
+        json={"values": {"tavily_api_key": "test-tavily-secret"}},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["config_ready"] is True
+    assert saved.json()["settings"][0]["configured"] is True
+    assert "test-tavily-secret" not in saved.text
+
+    cleared = client.patch(
+        "/api/plugins/web-search/settings",
+        json={"clear_keys": ["tavily_api_key"]},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["config_ready"] is False
+
+
+def test_web_research_skill_declares_tavily_tools_and_source_rules():
+    path = Path("plugins/web-search/skills/web-research/SKILL.md")
+    skill = parse_skill_document("web-research", path.read_text(encoding="utf-8"))
+    assert set(skill.required_tools) == {
+        "mcp_web-search-tavily_tavily_search",
+        "mcp_web-search-tavily_tavily_extract",
+    }
+    assert "Markdown 链接" in skill.instructions
+    assert "不写入个人记忆或知识库" in skill.instructions
 
 
 def test_p9_management_routes_are_available(client):

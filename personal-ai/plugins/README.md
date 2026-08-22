@@ -20,5 +20,25 @@ plugins/
 
 - `document-skills/`：通过隔离 MCP 提供文档生成；
 - `developer-tools/`：通过项目内置的受限工具提供简单编码能力，默认工作区为 `data/coding-workspace`。
+- `web-search/`：通过 Tavily MCP 提供联网搜索和网页读取；先在插件页配置 Tavily API Key，再启用插件。
 
 `Developer Tools` 只声明 Skill，不在插件目录放 Python 实现；受审查的实现位于 `core/execution/coding_tools.py`，插件关闭后工具不会进入请求白名单。
+
+需要凭据的声明式插件可以在 `plugin.yaml` 声明私密设置，并映射到 MCP 子进程环境变量：
+
+```yaml
+settings:
+  - key: api_key
+    label: API Key
+    type: secret
+    required: true
+mcp_servers:
+  service:
+    transport: stdio
+    command: npx
+    args: [-y, example-mcp@latest]
+    env_from_settings:
+      SERVICE_API_KEY: api_key
+```
+
+设置值保存在 Git 忽略的本地运行时文件中。插件列表只返回 `configured: true/false`，不会返回原值；必填设置未配置时插件不能启用。
