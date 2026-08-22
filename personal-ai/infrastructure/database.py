@@ -82,6 +82,25 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ChatImage(Base):
+    """聊天图片附件；原始字节只保存在受控目录，消息中仅保存关联。"""
+
+    __tablename__ = "chat_images"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="default")
+    message_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255))
+    stored_filename: Mapped[str] = mapped_column(String(100), unique=True)
+    mime_type: Mapped[str] = mapped_column(String(50))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (

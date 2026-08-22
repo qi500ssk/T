@@ -52,6 +52,14 @@ class AgentSettingsBody(BaseModel):
     custom_instructions: str = Field(default="", max_length=12_000)
 
 
+class AgentProfileBody(AgentSettingsBody):
+    profile_name: str = Field(min_length=1, max_length=80)
+
+
+class ActiveAgentBody(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=100)
+
+
 class WorkspaceSettingsBody(BaseModel):
     coding_workspace_dir: str = Field(min_length=1, max_length=1200)
 
@@ -88,6 +96,14 @@ def _serialize(request: Request) -> dict:
         }
         for item in models["items"]
     ]
+    agents = snapshot["agents"]
+    public_agents = [
+        {
+            **item,
+            "is_active": item["id"] == agents["active_agent_id"],
+        }
+        for item in agents["items"]
+    ]
     return {
         "model": {
             "provider": model["llm_provider"],
@@ -111,6 +127,10 @@ def _serialize(request: Request) -> dict:
             )
         },
         "agent": snapshot["agent"],
+        "agents": {
+            "active_agent_id": agents["active_agent_id"],
+            "items": public_agents,
+        },
     }
 
 
@@ -156,6 +176,33 @@ def _find_profile(request: Request, model_id: str) -> tuple[dict, dict]:
 
 def _profile_payload(profile_id: str, name: str, values: dict) -> dict:
     return {"id": profile_id, "name": name.strip(), **values}
+
+
+def _agent_values(body: AgentSettingsBody) -> dict:
+    return {
+        key: value.strip() if isinstance(value, str) else value
+        for key, value in body.model_dump(exclude={"profile_name"}).items()
+    }
+
+
+def _find_agent_profile(request: Request, agent_id: str) -> tuple[dict, dict]:
+    agents = _store(request).snapshot()["agents"]
+    profile = next((item for item in agents["items"] if item["id"] == agent_id), None)
+    if profile is None:
+        raise HTTPException(404, "角色预设不存在")
+    return agents, profile
+
+
+def _activate_agent(request: Request, agents: dict) -> dict:
+    saved = _store(request).update("agents", agents)
+    active = next(
+        item for item in saved["items"] if item["id"] == saved["active_agent_id"]
+    )
+    request.app.state.agent_profile.clear()
+    request.app.state.agent_profile.update(
+        {key: value for key, value in active.items() if key not in {"id", "profile_name"}}
+    )
+    return saved
 
 
 async def _activate_model(request: Request, models: dict) -> None:
@@ -214,6 +261,7 @@ async def _replace_provider(request: Request, provider) -> None:
                 app.state.embedding_provider,
                 app.state.skills,
                 app.state.agent_profile,
+                app.state.mcp_manager,
             ),
             name="activity-worker",
         )
@@ -240,14 +288,68 @@ def get_settings(request: Request):
 
 @router.patch("/agent")
 def update_agent(body: AgentSettingsBody, request: Request):
-    values = {
-        key: value.strip() if isinstance(value, str) else value
-        for key, value in body.model_dump().items()
-    }
+    values = _agent_values(body)
     saved = _store(request).update("agent", values)
     request.app.state.agent_profile.clear()
     request.app.state.agent_profile.update(saved)
     return _serialize(request)["agent"]
+
+
+@router.post("/agents")
+def create_agent_profile(body: AgentProfileBody, request: Request):
+    agents = _store(request).snapshot()["agents"]
+    profile_id = uuid.uuid4().hex
+    agents["items"].append(
+        {
+            "id": profile_id,
+            "profile_name": body.profile_name.strip(),
+            **_agent_values(body),
+        }
+    )
+    _store(request).update("agents", agents)
+    return next(
+        item for item in _serialize(request)["agents"]["items"] if item["id"] == profile_id
+    )
+
+
+@router.patch("/agents/selection")
+def set_active_agent(body: ActiveAgentBody, request: Request):
+    agents, _ = _find_agent_profile(request, body.agent_id)
+    agents["active_agent_id"] = body.agent_id
+    _activate_agent(request, agents)
+    return _serialize(request)["agents"]
+
+
+@router.patch("/agents/{agent_id}")
+def update_agent_profile(agent_id: str, body: AgentProfileBody, request: Request):
+    agents, _ = _find_agent_profile(request, agent_id)
+    replacement = {
+        "id": agent_id,
+        "profile_name": body.profile_name.strip(),
+        **_agent_values(body),
+    }
+    agents["items"] = [
+        replacement if item["id"] == agent_id else item for item in agents["items"]
+    ]
+    if agents["active_agent_id"] == agent_id:
+        _activate_agent(request, agents)
+    else:
+        _store(request).update("agents", agents)
+    return next(
+        item for item in _serialize(request)["agents"]["items"] if item["id"] == agent_id
+    )
+
+
+@router.delete("/agents/{agent_id}")
+def delete_agent_profile(agent_id: str, request: Request):
+    agents, _ = _find_agent_profile(request, agent_id)
+    if len(agents["items"]) <= 1:
+        raise HTTPException(409, "至少保留一个角色预设")
+    if agents["active_agent_id"] == agent_id:
+        raise HTTPException(409, "请先使用另一个角色，再删除此预设")
+    agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
+    _store(request).update("agents", agents)
+    return {"ok": True}
 
 
 @router.patch("/workspace")

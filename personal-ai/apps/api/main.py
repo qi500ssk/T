@@ -20,6 +20,8 @@ from apps.api.plugins import router as plugins_router
 from apps.api.artifacts import router as artifacts_router
 from apps.api.settings import router as settings_router
 from apps.api.projects import router as projects_router
+from apps.api.images import image_dict, router as images_router
+from core.chat.images import resolve_image
 from core.automation.activity import activity_worker, recover_interrupted_activities
 from core.rag.embedding import build_embedding_provider
 from core.chat.character import load_character
@@ -42,6 +44,7 @@ from infrastructure.database import (
     Conversation,
     Memory,
     Message,
+    ChatImage,
     Plan,
     PlanStep,
     Project,
@@ -81,6 +84,7 @@ async def lifespan(app: FastAPI):
     Path(settings.sandbox_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.artifacts_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.coding_workspace_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.chat_image_storage_dir).mkdir(parents=True, exist_ok=True)
     app.state.provider = build_provider(settings)
     app.state.embedding_provider = build_embedding_provider(settings)
     app.state.mcp_manager = McpManager(
@@ -114,6 +118,7 @@ async def lifespan(app: FastAPI):
                 app.state.embedding_provider,
                 app.state.skills,
                 app.state.agent_profile,
+                app.state.mcp_manager,
             ),
             name="activity-worker",
         )
@@ -151,6 +156,7 @@ app.include_router(plugins_router)
 app.include_router(artifacts_router)
 app.include_router(settings_router)
 app.include_router(projects_router)
+app.include_router(images_router)
 
 
 class ApprovalRequest(BaseModel):
@@ -181,13 +187,14 @@ def _conv_dict(c: Conversation) -> dict:
     }
 
 
-def _message_dict(m: Message) -> dict:
+def _message_dict(m: Message, images: list[ChatImage] | None = None) -> dict:
     return {
         "id": m.id,
         "role": m.role,
         "content": m.content,
         "citations": m.citations or [],
         "created_at": m.created_at.isoformat(),
+        "images": [image_dict(image) for image in (images or [])],
     }
 
 
@@ -272,9 +279,24 @@ def delete_conversation(conv_id: str):
             session.query(AgentRun).filter(AgentRun.id.in_(run_ids)).delete(
                 synchronize_session=False
             )
+        message_ids = [row.id for row in session.query(Message.id).filter(Message.conversation_id == conv_id)]
+        image_rows = (
+            session.query(ChatImage).filter(ChatImage.message_id.in_(message_ids)).all()
+            if message_ids else []
+        )
+        stored_images = [row.stored_filename for row in image_rows]
+        if message_ids:
+            session.query(ChatImage).filter(ChatImage.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
         session.query(Message).filter(Message.conversation_id == conv_id).delete()
         session.delete(conv)
         session.commit()
+        for stored_filename in stored_images:
+            try:
+                resolve_image(stored_filename).unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
         return {"ok": True}
 
 
@@ -289,7 +311,19 @@ def list_messages(conv_id: str):
             .order_by(Message.created_at.asc())
             .all()
         )
-        return [_message_dict(m) for m in rows]
+        message_ids = [row.id for row in rows]
+        images = (
+            session.query(ChatImage)
+            .filter(ChatImage.message_id.in_(message_ids))
+            .order_by(ChatImage.created_at.asc())
+            .all()
+            if message_ids else []
+        )
+        images_by_message: dict[str, list[ChatImage]] = {}
+        for image in images:
+            if image.message_id:
+                images_by_message.setdefault(image.message_id, []).append(image)
+        return [_message_dict(m, images_by_message.get(m.id, [])) for m in rows]
 
 
 # ---------- Memories（P0：手动管理，自动提取在 P1） ----------

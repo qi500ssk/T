@@ -31,12 +31,15 @@ from core.automation.planner import (
     set_step_running,
 )
 from core.execution.permissions import cancel_run_approvals
-from core.capabilities.registry import build_run_capability_snapshot
+from core.capabilities.registry import (
+    build_run_capability_snapshot,
+    connected_mcp_tool_names,
+)
 from core.capabilities.skills import Skill, allowed_tool_names, render_skill_instructions
 from core.chat.summary import update_conversation_summary
 from core.execution.tools import bind_active_skills, list_tools, reset_active_skills, tool_schemas
 from infrastructure.config import settings
-from infrastructure.database import AgentRun, Conversation, Message, SessionLocal, ToolRun
+from infrastructure.database import AgentRun, ChatImage, Conversation, Message, SessionLocal, ToolRun
 
 
 logger = logging.getLogger(__name__)
@@ -65,11 +68,16 @@ async def run_chat(
     execution_mode: Literal["direct", "planned"] = "direct",
     agent_profile: dict | None = None,
     document_ids: list[str] | None = None,
+    image_ids: list[str] | None = None,
+    mcp_clients: list | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """执行一次 Agent Run，产出 SSE Agent Event Protocol 事件。"""
     run_id = uuid.uuid4().hex
     active_skills = list(skills or []) if settings.tools_enabled else []
     allowed_tools = allowed_tool_names(active_skills, settings.tools_enabled)
+    if settings.tools_enabled:
+        # MCP Server 的启用状态就是工具授权入口；Skill 只再提供可选用法说明。
+        allowed_tools.update(connected_mcp_tool_names(mcp_clients))
     capability_version, capability_snapshot = build_run_capability_snapshot(
         active_skills, allowed_tools
     )
@@ -90,8 +98,22 @@ async def run_chat(
                 raise RuntimeError("conversation already has a running agent run")
             if conv.title == "新对话":
                 conv.title = message[:20]
+            requested_image_ids = list(dict.fromkeys(image_ids or []))
+            images = (
+                session.query(ChatImage)
+                .filter(ChatImage.id.in_(requested_image_ids), ChatImage.user_id == user_id)
+                .all()
+                if requested_image_ids else []
+            )
+            if len(images) != len(requested_image_ids):
+                raise ValueError("图片不存在或已失效，请重新上传")
+            if any(image.message_id is not None for image in images):
+                raise ValueError("图片已发送，请重新选择")
             user_message = Message(conversation_id=conversation_id, role="user", content=message)
             session.add(user_message)
+            session.flush()
+            for image in images:
+                image.message_id = user_message.id
             session.add(
                 AgentRun(
                     id=run_id,
@@ -156,8 +178,8 @@ async def run_chat(
                         embedding_provider,
                         settings,
                         system_addendum=skill_prompt,
-                        document_ids=document_ids,
-                    )
+                    document_ids=document_ids,
+                )
 
             yield AgentEvent("context.started", {"run_id": run_id})
             context = await anyio.to_thread.run_sync(_build)

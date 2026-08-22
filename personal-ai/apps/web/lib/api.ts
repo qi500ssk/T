@@ -25,6 +25,17 @@ export interface ChatMessage {
   content: string;
   citations: CitationSource[];
   created_at: string;
+  images: ChatImage[];
+}
+
+export interface ChatImage {
+  id: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  width: number;
+  height: number;
+  created_at: string;
 }
 
 export interface CitationSource {
@@ -245,6 +256,16 @@ export interface AgentSettings {
   custom_instructions: string;
 }
 
+export interface AgentProfile extends AgentSettings {
+  id: string;
+  profile_name: string;
+  is_active: boolean;
+}
+
+export interface AgentProfileInput extends AgentSettings {
+  profile_name: string;
+}
+
 export interface ModelSettings {
   provider: "unconfigured" | "mock" | "openai-compatible";
   base_url: string;
@@ -272,6 +293,10 @@ export interface AppSettings {
   };
   workspace: { coding_workspace_dir: string };
   agent: AgentSettings;
+  agents: {
+    active_agent_id: string;
+    items: AgentProfile[];
+  };
 }
 
 export interface ModelSettingsInput {
@@ -362,6 +387,20 @@ export const uploadFile = (file: File) => {
   body.append("file", file);
   return req<KnowledgeDocument>(`${API_URL}/files`, { method: "POST", body });
 };
+
+export const chatImageContentUrl = (id: string) =>
+  `${API_URL}/chat/images/${encodeURIComponent(id)}/content`;
+
+export const uploadChatImage = (file: File) => {
+  const body = new FormData();
+  body.append("file", file);
+  return req<ChatImage>(`${API_URL}/chat/images`, { method: "POST", body });
+};
+
+export const deleteStagedChatImage = (id: string) =>
+  req<{ ok: boolean }>(`${API_URL}/chat/images/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 
 export const deleteDocument = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/documents/${id}`, { method: "DELETE" });
@@ -552,6 +591,32 @@ export const updateAgentSettings = (body: AgentSettings) =>
     body: JSON.stringify(body),
   });
 
+export const createAgentProfile = (body: AgentProfileInput) =>
+  req<AgentProfile>(`${API_URL}/settings/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const updateAgentProfile = (id: string, body: AgentProfileInput) =>
+  req<AgentProfile>(`${API_URL}/settings/agents/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const setActiveAgentProfile = (agentId: string) =>
+  req<AppSettings["agents"]>(`${API_URL}/settings/agents/selection`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+
+export const deleteAgentProfile = (id: string) =>
+  req<{ ok: boolean }>(`${API_URL}/settings/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
 export const updateModelSettings = (body: ModelSettingsInput) =>
   req<ModelSettings>(`${API_URL}/settings/model`, {
     method: "PATCH",
@@ -624,6 +689,7 @@ export async function streamChat(
   executionMode: "direct" | "planned" = "direct",
   documentIds: string[] = [],
   modelId?: string | null,
+  imageIds: string[] = [],
 ): Promise<void> {
   const resp = await fetch(`${API_URL}/chat`, {
     method: "POST",
@@ -634,6 +700,7 @@ export async function streamChat(
       execution_mode: executionMode,
       document_ids: documentIds,
       model_id: modelId || null,
+      image_ids: imageIds,
     }),
     signal,
   });

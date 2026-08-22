@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     pdf_needs_ocr_min_chars: int = 100
     pdf_needs_ocr_min_text_page_ratio: float = 0.2
 
+    # ---- Chat Images ----
+    chat_image_storage_dir: str = "./data/chat-images"
+    chat_image_max_bytes: int = 10_485_760
+    chat_image_max_count: int = Field(default=4, ge=1, le=10)
+    chat_image_max_pixels: int = Field(default=16_777_216, ge=65_536, le=100_000_000)
+    chat_image_recent_turns: int = Field(default=2, ge=0, le=10)
+
     # ---- Embedding ----
     embedding_provider: str = "local"  # local | openai-compatible | mock
     embedding_model_path: str = (

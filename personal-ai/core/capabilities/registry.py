@@ -7,6 +7,14 @@ from core.capabilities.skills import Skill, allowed_tool_names
 from core.execution.tools import TOOLS
 
 
+def connected_mcp_tool_names(mcp_clients: list | None) -> set[str]:
+    """返回当前已连接 MCP Client 实际注册到运行时的工具名。"""
+    names: set[str] = set()
+    for client in mcp_clients or []:
+        names.update(name for name in client.registered_names if name in TOOLS)
+    return names
+
+
 def build_run_capability_snapshot(skills: list[Skill], allowed_tools: set[str]) -> tuple[str, dict]:
     """生成可持久化的 Run 能力快照；正文只保存摘要哈希。"""
     snapshot = {
@@ -29,7 +37,7 @@ def build_run_capability_snapshot(skills: list[Skill], allowed_tools: set[str]) 
 
 def build_capability_registry(skills: list[Skill], mcp_clients: list) -> list[dict]:
     source_by_tool: dict[str, str] = {}
-    active_tools = allowed_tool_names(skills)
+    active_tools = allowed_tool_names(skills) | connected_mcp_tool_names(mcp_clients)
     items: list[dict] = []
     for client in mcp_clients:
         source = f"mcp:{client.config.name}"

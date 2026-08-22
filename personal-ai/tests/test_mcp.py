@@ -128,7 +128,7 @@ async def test_connect_failure_does_not_stop_other_servers():
         await close_mcp_servers(clients)
 
 
-def test_mcp_tools_allowed_only_by_enabled_skill(tmp_path):
+def test_skill_can_still_declare_mcp_tools(tmp_path):
     async def echo_runner(args: dict) -> str:
         return args["text"]
 
@@ -211,11 +211,10 @@ class McpToolProvider:
 
 
 @pytest.mark.asyncio
-async def test_high_mcp_tool_uses_existing_approval_and_tool_run(monkeypatch):
+async def test_connected_mcp_tool_is_directly_available_and_uses_approval(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     clients = await connect_mcp_servers(load_mcp_configs("config/mcp_servers.yaml"))
     try:
-        skills = load_skills(enabled_ids={"mcp-demo"})
         with SessionLocal() as session:
             conversation = Conversation(title="MCP integration")
             session.add(conversation)
@@ -230,7 +229,8 @@ async def test_high_mcp_tool_uses_existing_approval_and_tool_run(monkeypatch):
             provider,
             conversation_id,
             "生成 7 到 7 的随机整数",
-            skills=skills,
+            skills=[],
+            mcp_clients=clients,
         ):
             events.append(event)
             if event.type == "approval.required":

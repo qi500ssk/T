@@ -2,26 +2,26 @@ id: web-search
 name: 联网搜索
 description: 通过 Tavily 搜索和读取公开网页，为需要实时信息或来源核验的问题提供依据。
 version: 1.0.0
-enabled: false
+enabled: true
 settings:
-  - key: tavily_api_key
-    label: Tavily API Key
-    description: 在 tavily.com 获取；只保存在本机运行时设置中，不会写入插件目录或返回浏览器。
-    type: secret
-    required: true
+- key: tavily_api_key
+  label: Tavily API Key
+  description: 在 tavily.com 获取；只保存在本机运行时设置中，不会写入插件目录或返回浏览器。
+  type: secret
+  required: true
 mcp_servers:
   tavily:
     transport: stdio
     command: npx
     args:
-      - -y
-      - tavily-mcp@latest
+    - -y
+    - tavily-mcp@latest
     enabled: true
     env_from_settings:
       TAVILY_API_KEY: tavily_api_key
     allowed_tools:
-      - tavily_search
-      - tavily_extract
+    - tavily_search
+    - tavily_extract
     default_risk_level: low
     tool_risk_levels:
       tavily_search: low

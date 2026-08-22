@@ -29,6 +29,11 @@ def apply_agent_profile(character: dict, profile: dict | None) -> dict:
 
 
 def render_system_prompt(character: dict, template_path: str) -> str:
+    custom_instructions = str(character.get("custom_instructions") or "").strip()
+    if custom_instructions:
+        # 自定义提示词是完整的角色定义，不与默认身份、人格或行为准则混用。
+        # 工具白名单、审批和超时等运行时安全边界在 Prompt 之外执行。
+        return custom_instructions
     with open(template_path, "r", encoding="utf-8") as f:
         template = Template(f.read())
     profile = character.get("user_profile", {}).get("preferences", [])
@@ -42,5 +47,5 @@ def render_system_prompt(character: dict, template_path: str) -> str:
         formality=character["personality"]["formality"],
         proactivity=character["personality"]["proactivity"],
         user_profile_summary="\n".join(f"- {p}" for p in profile) or "（暂无）",
-        custom_instructions=character.get("custom_instructions") or "（暂无额外指令）",
+        custom_instructions="（暂无额外指令）",
     )

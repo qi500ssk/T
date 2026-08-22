@@ -11,7 +11,11 @@ from sqlalchemy.orm import Session
 from core.chat.memory import retrieve_memories
 from core.rag.retrieval import retrieve, should_retrieve_knowledge
 from infrastructure.config import settings
-from infrastructure.database import Conversation, Message
+from infrastructure.database import ChatImage, Conversation, Message
+from core.chat.images import image_data_url
+
+
+IMAGE_TOKEN_ESTIMATE = 1024
 
 
 def estimate_tokens(text: str) -> int:
@@ -34,6 +38,32 @@ def _truncate_to_budget(text: str, token_budget: int) -> str:
         else:
             high = middle - 1
     return text[:best].rstrip()
+
+
+def _content_token_estimate(content: str | list[dict]) -> int:
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    text_cost = sum(
+        estimate_tokens(str(item.get("text") or ""))
+        for item in content
+        if item.get("type") == "text"
+    )
+    image_cost = sum(IMAGE_TOKEN_ESTIMATE for item in content if item.get("type") == "image_url")
+    return text_cost + image_cost
+
+
+def _multimodal_content(text: str, images: list[ChatImage]) -> str | list[dict]:
+    if not images:
+        return text
+    content: list[dict] = [
+        {
+            "type": "image_url",
+            "image_url": {"url": image_data_url(image.stored_filename, image.mime_type)},
+        }
+        for image in images
+    ]
+    content.append({"type": "text", "text": text})
+    return content
 
 
 @dataclass
@@ -62,8 +92,16 @@ def build_context(
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
-    context_message = _truncate_to_budget(message, max_tokens)
-    query_cost = estimate_tokens(context_message)
+    current_images = (
+        session.query(ChatImage)
+        .filter(ChatImage.message_id == exclude_message_id)
+        .order_by(ChatImage.created_at.asc())
+        .all()
+        if exclude_message_id else []
+    )
+    image_query_cost = len(current_images) * IMAGE_TOKEN_ESTIMATE
+    context_message = _truncate_to_budget(message, max(0, max_tokens - image_query_cost))
+    query_cost = estimate_tokens(context_message) + image_query_cost
     system_budget = max(0, max_tokens - query_cost)
     combined_system = system_prompt
     if system_addendum:
@@ -79,7 +117,7 @@ def build_context(
     def total_cost(parts: list[str] | None = None, messages: list[dict] | None = None) -> int:
         text = effective_system(parts)
         text_cost = estimate_tokens(text) if text else 0
-        return text_cost + sum(estimate_tokens(item["content"]) for item in (messages or [])) + query_cost
+        return text_cost + sum(_content_token_estimate(item["content"]) for item in (messages or [])) + query_cost
 
     memories = retrieve_memories(session, user_id, message, memory_limit) if memory_limit else []
     memory_lines: list[str] = []
@@ -164,18 +202,40 @@ def build_context(
         .limit(min(recent_count, unsummarized_count))
         .all()
     )
+    recent_ids = [row.id for row in recent]
+    recent_image_rows = (
+        session.query(ChatImage)
+        .filter(ChatImage.message_id.in_(recent_ids))
+        .order_by(ChatImage.created_at.asc())
+        .all()
+        if recent_ids and config.chat_image_recent_turns else []
+    )
+    images_by_message: dict[str, list[ChatImage]] = {}
+    for image in recent_image_rows:
+        if image.message_id:
+            images_by_message.setdefault(image.message_id, []).append(image)
+    image_turn_ids = [
+        row.id
+        for row in recent
+        if row.id in images_by_message and row.role == "user"
+    ]
+    allowed_image_turn_ids = set(image_turn_ids[: config.chat_image_recent_turns])
     picked_desc: list[dict] = []
     for row in recent:
-        candidate = [*picked_desc, {"role": row.role, "content": row.content}]
+        row_images = images_by_message.get(row.id, []) if row.id in allowed_image_turn_ids else []
+        candidate = [
+            *picked_desc,
+            {"role": row.role, "content": _multimodal_content(row.content, row_images)},
+        ]
         if total_cost(messages=candidate) > max_tokens:
             break
         picked_desc = candidate
 
     messages = list(reversed(picked_desc))
-    messages.append({"role": "user", "content": context_message})
+    messages.append({"role": "user", "content": _multimodal_content(context_message, current_images)})
     system = effective_system()
     final_cost = (estimate_tokens(system) if system else 0) + sum(
-        estimate_tokens(item["content"]) for item in messages
+        _content_token_estimate(item["content"]) for item in messages
     )
     return Context(
         system=system,

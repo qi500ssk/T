@@ -9,6 +9,7 @@ os.environ["LLM_PROVIDER"] = "mock"
 os.environ["MODEL_ENVIRONMENT_FALLBACK_ENABLED"] = "true"
 os.environ["EMBEDDING_PROVIDER"] = "mock"
 os.environ["FILE_STORAGE_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_uploads"
+os.environ["CHAT_IMAGE_STORAGE_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_chat_images"
 os.environ["SANDBOX_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_sandbox"
 os.environ["MCP_ENABLED"] = "false"
 os.environ["ACTIVITY_ENABLED"] = "false"
@@ -29,12 +30,17 @@ def clean_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     upload_dir = Path(settings.file_storage_dir)
+    image_dir = Path(settings.chat_image_storage_dir)
     sandbox_dir = Path(settings.sandbox_dir)
     runtime_settings_file = Path(settings.runtime_settings_file)
     runtime_settings_file.unlink(missing_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    image_dir.mkdir(parents=True, exist_ok=True)
     sandbox_dir.mkdir(parents=True, exist_ok=True)
     for path in upload_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+    for path in image_dir.iterdir():
         if path.is_file():
             path.unlink()
     for path in sandbox_dir.iterdir():
@@ -43,6 +49,9 @@ def clean_db():
     yield
     runtime_settings_file.unlink(missing_ok=True)
     for path in upload_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+    for path in image_dir.iterdir():
         if path.is_file():
             path.unlink()
     for path in sandbox_dir.iterdir():

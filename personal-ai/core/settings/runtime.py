@@ -17,7 +17,20 @@ MODEL_FIELDS = (
     "llm_timeout_seconds",
 )
 
+AGENT_FIELDS = (
+    "name",
+    "role",
+    "language",
+    "tone",
+    "verbosity",
+    "humor",
+    "formality",
+    "proactivity",
+    "custom_instructions",
+)
+
 DEFAULT_MODEL_PROFILE_ID = "default"
+DEFAULT_AGENT_PROFILE_ID = "default"
 
 
 def _model_profile(model: dict, *, profile_id: str = DEFAULT_MODEL_PROFILE_ID, name: str = "") -> dict:
@@ -56,6 +69,49 @@ def _normalize_models(raw: dict | None, fallback_model: dict) -> dict:
     if default_id not in {item["id"] for item in items}:
         default_id = items[0]["id"] if items else ""
     return {"default_model_id": default_id, "items": items}
+
+
+def _agent_profile(
+    agent: dict,
+    *,
+    profile_id: str = DEFAULT_AGENT_PROFILE_ID,
+    profile_name: str = "",
+) -> dict:
+    return {
+        "id": profile_id,
+        "profile_name": profile_name.strip() or "默认角色",
+        **{field: str(agent.get(field) or "") for field in AGENT_FIELDS},
+    }
+
+
+def _normalize_agents(raw: dict | None, fallback_agent: dict) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    items: list[dict] = []
+    seen: set[str] = set()
+    for candidate in raw.get("items") or []:
+        if not isinstance(candidate, dict):
+            continue
+        profile_id = str(candidate.get("id") or "").strip()
+        if not profile_id or profile_id in seen:
+            continue
+        merged = copy.deepcopy(fallback_agent)
+        for field in AGENT_FIELDS:
+            if field in candidate:
+                merged[field] = str(candidate[field] or "")
+        items.append(
+            _agent_profile(
+                merged,
+                profile_id=profile_id,
+                profile_name=str(candidate.get("profile_name") or ""),
+            )
+        )
+        seen.add(profile_id)
+    if not items:
+        items = [_agent_profile(fallback_agent)]
+    active_id = str(raw.get("active_agent_id") or "").strip()
+    if active_id not in {item["id"] for item in items}:
+        active_id = items[0]["id"]
+    return {"active_agent_id": active_id, "items": items}
 
 
 def default_agent_profile(character: dict) -> dict:
@@ -111,6 +167,7 @@ class RuntimeSettingsStore:
                 "llm_timeout_seconds": 60.0,
             }
         self._defaults["models"] = _normalize_models(None, self._defaults["model"])
+        self._defaults["agents"] = _normalize_agents(None, self._defaults["agent"])
         self._overrides: dict = {}
         self.error: str | None = None
         self._load()
@@ -130,13 +187,20 @@ class RuntimeSettingsStore:
                     legacy_model.update(copy.deepcopy(raw["model"]))
                 raw["models"] = _normalize_models(None, legacy_model)
             raw.pop("model", None)
+            # 兼容早期只有一个 agent 对象的运行时配置。
+            if not isinstance(raw.get("agents"), dict):
+                legacy_agent = copy.deepcopy(self._defaults["agent"])
+                if isinstance(raw.get("agent"), dict):
+                    legacy_agent.update(copy.deepcopy(raw["agent"]))
+                raw["agents"] = _normalize_agents(None, legacy_agent)
+            raw.pop("agent", None)
             self._overrides = raw
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.error = f"运行时设置加载失败，已使用环境默认值：{exc}"
 
     def snapshot(self) -> dict:
         result = copy.deepcopy(self._defaults)
-        for section in ("workspace", "agent", "plugin_settings"):
+        for section in ("workspace", "plugin_settings"):
             override = self._overrides.get(section)
             if isinstance(override, dict):
                 result[section].update(copy.deepcopy(override))
@@ -157,10 +221,25 @@ class RuntimeSettingsStore:
             if selected
             else copy.deepcopy(self._defaults["model"])
         )
+        result["agents"] = _normalize_agents(
+            self._overrides.get("agents"),
+            self._defaults["agent"],
+        )
+        active_agent = next(
+            (
+                item
+                for item in result["agents"]["items"]
+                if item["id"] == result["agents"]["active_agent_id"]
+            ),
+            result["agents"]["items"][0],
+        )
+        result["agent"] = {
+            field: copy.deepcopy(active_agent[field]) for field in AGENT_FIELDS
+        }
         return result
 
     def update(self, section: str, values: dict) -> dict:
-        if section not in {"model", "models", "workspace", "agent", "plugin_settings"}:
+        if section not in {"model", "models", "workspace", "agent", "agents", "plugin_settings"}:
             raise KeyError(section)
         with self._lock:
             if section == "model":
@@ -174,6 +253,27 @@ class RuntimeSettingsStore:
             elif section == "models":
                 self._overrides["models"] = _normalize_models(values, self._defaults["model"])
                 self._overrides.pop("model", None)
+            elif section == "agent":
+                agents = self.snapshot()["agents"]
+                for item in agents["items"]:
+                    if item["id"] == agents["active_agent_id"]:
+                        item.update(
+                            {
+                                field: copy.deepcopy(values[field])
+                                for field in AGENT_FIELDS
+                                if field in values
+                            }
+                        )
+                        break
+                self._overrides["agents"] = _normalize_agents(
+                    agents, self._defaults["agent"]
+                )
+                self._overrides.pop("agent", None)
+            elif section == "agents":
+                self._overrides["agents"] = _normalize_agents(
+                    values, self._defaults["agent"]
+                )
+                self._overrides.pop("agent", None)
             else:
                 self._overrides[section] = copy.deepcopy(values)
             self._write()

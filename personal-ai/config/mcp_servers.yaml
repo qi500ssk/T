@@ -13,3 +13,28 @@ mcp_servers:
     tool_risk_levels:
       echo: low
       random_number: high
+  playwright:
+    transport: stdio
+    enabled: true
+    default_risk_level: medium
+    command: D:\node.js\npx.cmd
+    args:
+    - -y
+    - '@playwright/mcp@latest'
+    - --browser
+    - chrome
+    - --isolated
+    - --output-dir
+    - ./data/playwright
+    allowed_tools:
+    - browser_navigate
+    - browser_snapshot
+    - browser_find
+    - browser_click
+    - browser_type
+    - browser_fill_form
+    - browser_select_option
+    - browser_press_key
+    - browser_wait_for
+    - browser_tabs
+    - browser_close

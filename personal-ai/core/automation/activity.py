@@ -277,6 +277,7 @@ async def _run_activity(
     embedding_provider,
     skills: list[Skill],
     agent_profile: dict | None = None,
+    mcp_clients: list | None = None,
 ) -> None:
     run_id: str | None = None
     succeeded = False
@@ -293,6 +294,7 @@ async def _run_activity(
             approval_mode="deny",
             execution_mode=activity.execution_mode,
             agent_profile=agent_profile,
+            mcp_clients=mcp_clients,
         ):
             if event.type == "run.started":
                 run_id = str(event.data["run_id"])
@@ -333,6 +335,7 @@ async def activity_worker(
     embedding_provider,
     skills: list[Skill],
     agent_profile: dict | None = None,
+    mcp_manager=None,
 ) -> None:
     """串行领取并执行 Activity；单个任务或数据库失败不会终止 Worker。"""
     while not stop_event.is_set():
@@ -350,7 +353,12 @@ async def activity_worker(
             continue
         try:
             await _run_activity(
-                activity, provider, embedding_provider, skills, agent_profile
+                activity,
+                provider,
+                embedding_provider,
+                skills,
+                agent_profile,
+                mcp_manager.clients if mcp_manager is not None else None,
             )
         except asyncio.CancelledError:
             raise

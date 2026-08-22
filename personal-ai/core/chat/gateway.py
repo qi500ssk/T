@@ -109,7 +109,7 @@ class MockProvider:
         tools: list[dict] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         last_message = messages[-1] if messages else {}
-        last = str(last_message.get("content") or "")
+        last = _message_content_text(last_message.get("content"))
         system_text = "\n".join(
             str(item.get("content") or "") for item in messages if item.get("role") == "system"
         )
@@ -172,7 +172,7 @@ class MockProvider:
             "这是 P0 联调用的 Mock 模型回复。在 .env 中配置 LLM_PROVIDER=openai-compatible "
             "与 LLM_API_KEY 后即可切换到真实模型。"
         )
-        if any('citation_id="c1"' in item.get("content", "") for item in messages):
+        if any('citation_id="c1"' in _message_content_text(item.get("content")) for item in messages):
             reply += " [c1]"
         async for chunk in self._stream_reply(reply):
             yield chunk
@@ -344,3 +344,15 @@ def build_provider(settings) -> OpenAICompatibleProvider | MockProvider | Unconf
     if settings.llm_provider == "unconfigured":
         return UnconfiguredProvider()
     return MockProvider()
+
+
+def _message_content_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+    return str(content or "")

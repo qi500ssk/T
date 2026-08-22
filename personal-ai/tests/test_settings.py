@@ -36,8 +36,9 @@ def test_agent_settings_persist_and_render_prompt(client):
 
     character = apply_agent_profile(load_character(settings.character_file), body)
     prompt = render_system_prompt(character, settings.system_prompt_file)
-    assert "你是 小派" in prompt
-    assert "称呼用户为小王，先给结论。" in prompt
+    assert prompt == "称呼用户为小王，先给结论。"
+    assert "你是 小派" not in prompt
+    assert "温柔、直接" not in prompt
 
     conversation = client.post("/api/conversations", json={}).json()
     chat = client.post(
@@ -50,7 +51,71 @@ def test_agent_settings_persist_and_render_prompt(client):
         if block.startswith("event: message.delta"):
             data = next(line[5:].strip() for line in block.splitlines() if line.startswith("data:"))
             reply += json.loads(data)["content"]
-    assert "小派 · Mock" in reply
+    assert "Mock · Mock" in reply
+
+
+def test_empty_custom_prompt_uses_basic_agent_settings():
+    body = {
+        "name": "严谨助手",
+        "role": "研究顾问",
+        "language": "zh-CN",
+        "tone": "严谨、克制",
+        "verbosity": "详细",
+        "humor": "关闭",
+        "formality": "正式",
+        "proactivity": "低",
+        "custom_instructions": "   ",
+    }
+    character = apply_agent_profile(load_character(settings.character_file), body)
+    prompt = render_system_prompt(character, settings.system_prompt_file)
+    assert "你是 严谨助手，研究顾问" in prompt
+    assert "语气：严谨、克制" in prompt
+    assert "回答长度：详细" in prompt
+
+
+def test_agent_profiles_can_be_named_selected_updated_and_deleted(client):
+    initial = client.get("/api/settings").json()
+    assert len(initial["agents"]["items"]) == 1
+    original_id = initial["agents"]["active_agent_id"]
+
+    body = {
+        "profile_name": "小说角色",
+        "name": "林老师",
+        "role": "写作陪练",
+        "language": "zh-CN",
+        "tone": "自然",
+        "verbosity": "适中",
+        "humor": "少量",
+        "formality": "轻松",
+        "proactivity": "低",
+        "custom_instructions": "你是一名小说写作陪练，只按照本段设定回答。",
+    }
+    created = client.post("/api/settings/agents", json=body)
+    assert created.status_code == 200
+    created_id = created.json()["id"]
+    assert created.json()["profile_name"] == "小说角色"
+    assert created.json()["is_active"] is False
+
+    selected = client.patch(
+        "/api/settings/agents/selection", json={"agent_id": created_id}
+    )
+    assert selected.status_code == 200
+    assert selected.json()["active_agent_id"] == created_id
+    current = client.get("/api/settings").json()
+    assert current["agent"]["name"] == "林老师"
+    assert current["agent"]["custom_instructions"] == body["custom_instructions"]
+
+    body["profile_name"] = "小说教练"
+    updated = client.patch(f"/api/settings/agents/{created_id}", json=body)
+    assert updated.status_code == 200
+    assert updated.json()["profile_name"] == "小说教练"
+
+    assert client.delete(f"/api/settings/agents/{created_id}").status_code == 409
+    assert client.patch(
+        "/api/settings/agents/selection", json={"agent_id": original_id}
+    ).status_code == 200
+    assert client.delete(f"/api/settings/agents/{created_id}").status_code == 200
+    assert len(client.get("/api/settings").json()["agents"]["items"]) == 1
 
 
 def test_workspace_picker_and_runtime_update(client, tmp_path):

@@ -5,6 +5,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
+  chatImageContentUrl,
+  deleteStagedChatImage,
   documentContentUrl,
   fetchAppSettings,
   fetchConversationPlans,
@@ -12,8 +14,10 @@ import {
   submitApproval,
   streamChat,
   uploadFile,
+  uploadChatImage,
   type AppSettings,
   type ChatMessage,
+  type ChatImage,
   type CitationSource,
   type Plan,
   type PlanStep,
@@ -80,6 +84,17 @@ const TOOL_LABELS: Record<string, string> = {
   "mcp_document-skills-generator_create_pdf": "生成 PDF",
   "mcp_document-skills-generator_create_pptx": "生成演示文稿",
   "mcp_document-skills-generator_create_xlsx": "生成工作簿",
+  "mcp_playwright_browser_navigate": "打开网页",
+  "mcp_playwright_browser_snapshot": "读取页面结构",
+  "mcp_playwright_browser_find": "查找页面内容",
+  "mcp_playwright_browser_click": "点击页面元素",
+  "mcp_playwright_browser_type": "输入文字",
+  "mcp_playwright_browser_fill_form": "填写表单",
+  "mcp_playwright_browser_select_option": "选择页面选项",
+  "mcp_playwright_browser_press_key": "发送键盘按键",
+  "mcp_playwright_browser_wait_for": "等待页面状态",
+  "mcp_playwright_browser_tabs": "管理浏览器标签页",
+  "mcp_playwright_browser_close": "关闭浏览器",
 };
 
 const STATUS_LABELS: Record<ToolStatus, string> = {
@@ -89,6 +104,14 @@ const STATUS_LABELS: Record<ToolStatus, string> = {
   failed: "失败",
   timeout: "已超时",
 };
+
+const CHAT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+function modelSupportsImages(model: string) {
+  const name = model.trim().toLowerCase().replaceAll("_", "-");
+  return ["qwen3.8-max", "qwen3-vl", "qwen2.5-vl", "qwen2-vl", "qwen-vl-max", "qwen-vl-plus"]
+    .some((marker) => name.includes(marker));
+}
 
 function ChatComposer({
   input,
@@ -110,6 +133,9 @@ function ChatComposer({
   onCreateProject,
   attachments,
   onRemoveAttachment,
+  images,
+  onImageFiles,
+  onRemoveImage,
 }: {
   input: string;
   setInput: (value: string) => void;
@@ -130,14 +156,41 @@ function ChatComposer({
   onCreateProject: () => void;
   attachments: KnowledgeDocument[];
   onRemoveAttachment: (id: string) => void;
+  images: ChatImage[];
+  onImageFiles: (files: File[]) => void;
+  onRemoveImage: (id: string) => void;
 }) {
   const [projectOpen, setProjectOpen] = useState(false);
   const activeProject = projects.find((project) => project.id === activeProjectId);
   const modelProfiles = settings?.models.items ?? [];
   const environmentLocked = Boolean(settings?.model_control.locked);
   const modelReady = environmentLocked || Boolean(selectedModelId);
+  const selectedModel = environmentLocked
+    ? settings?.model.model || ""
+    : modelProfiles.find((profile) => profile.id === selectedModelId)?.model || "";
+  const imageEnabled = modelSupportsImages(selectedModel);
+  const canSubmitImages = images.length === 0 || imageEnabled;
+  const imageTitle = imageEnabled
+    ? "添加图片（JPG、PNG、WebP，最多 4 张，也可拖拽或粘贴）"
+    : "当前模型不支持图片，请先选择 qwen3.8-max";
   return (
-    <form onSubmit={submit} className={`w-full overflow-visible rounded-[1.5rem] border border-zinc-200 bg-white shadow-[0_18px_55px_-28px_rgba(0,0,0,0.35)] ${hero ? "max-w-4xl" : "mx-auto max-w-4xl"}`}>
+    <form
+      onSubmit={submit}
+      onDragOver={(event) => {
+        if (Array.from(event.dataTransfer.items).some((item) => item.kind === "file")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(event) => {
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length) {
+          event.preventDefault();
+          onImageFiles(files);
+        }
+      }}
+      className={`w-full overflow-visible rounded-[1.5rem] border border-zinc-200 bg-white shadow-[0_18px_55px_-28px_rgba(0,0,0,0.35)] ${hero ? "max-w-4xl" : "mx-auto max-w-4xl"}`}
+    >
       <div className="relative flex min-h-12 items-center gap-2 border-b border-zinc-100 px-3 sm:px-4">
         <button type="button" onClick={() => setProjectOpen((value) => !value)} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-xl px-2.5 text-left text-sm font-medium text-zinc-700 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-expanded={projectOpen}>
           <span className="text-zinc-400" aria-hidden="true">▱</span>
@@ -150,7 +203,14 @@ function ChatComposer({
         </div>}
         <span className="ml-auto hidden text-xs text-zinc-400 sm:block">当前对话上下文</span>
       </div>
-      {attachments.length > 0 && <div className="flex flex-wrap gap-2 border-b border-zinc-100 px-4 py-2.5">{attachments.map((document) => <span key={document.id} className="inline-flex max-w-full items-center gap-2 rounded-xl bg-blue-50 px-3 py-1.5 text-xs text-blue-800"><span aria-hidden="true">▣</span><span className="max-w-56 truncate">{document.original_filename}</span><button type="button" onClick={() => onRemoveAttachment(document.id)} className="grid size-5 place-items-center rounded hover:bg-blue-100" aria-label={`移除附件 ${document.original_filename}`}>×</button></span>)}</div>}
+      {(attachments.length > 0 || images.length > 0) && <div className="flex flex-wrap gap-2 border-b border-zinc-100 px-4 py-2.5">
+        {images.map((image) => <figure key={image.id} className="group relative h-20 w-20 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-100">
+          <img src={chatImageContentUrl(image.id)} alt={image.original_filename} className="h-full w-full object-cover" />
+          <figcaption className="sr-only">{image.original_filename}</figcaption>
+          <button type="button" onClick={() => onRemoveImage(image.id)} className="absolute right-1 top-1 grid size-6 place-items-center rounded-full bg-black/65 text-sm text-white opacity-90 hover:bg-black focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white" aria-label={`移除图片 ${image.original_filename}`}>×</button>
+        </figure>)}
+        {attachments.map((document) => <span key={document.id} className="inline-flex max-w-full items-center gap-2 rounded-xl bg-blue-50 px-3 py-1.5 text-xs text-blue-800"><span aria-hidden="true">▣</span><span className="max-w-56 truncate">{document.original_filename}</span><button type="button" onClick={() => onRemoveAttachment(document.id)} className="grid size-5 place-items-center rounded hover:bg-blue-100" aria-label={`移除附件 ${document.original_filename}`}>×</button></span>)}
+      </div>}
       <textarea
         value={input}
         onChange={(event) => setInput(event.target.value)}
@@ -165,6 +225,13 @@ function ChatComposer({
             submit(event);
           }
         }}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files).filter((file) => CHAT_IMAGE_TYPES.has(file.type));
+          if (files.length) {
+            event.preventDefault();
+            onImageFiles(files);
+          }
+        }}
         rows={hero ? 3 : 1}
         placeholder={`向 ${settings?.agent.name || "Personal AI"} 提问，输入 @ 添加上下文`}
         className={`block min-h-16 w-full resize-none bg-transparent px-4 py-4 text-[15px] leading-6 text-zinc-900 outline-none placeholder:text-zinc-400 sm:px-5 ${hero ? "sm:min-h-24" : "max-h-36"}`}
@@ -174,6 +241,11 @@ function ChatComposer({
           <span aria-hidden="true">＋</span><span className="sr-only">选择文档并用于本次提问</span>
           <input type="file" accept=".pdf,.docx,.txt,.md" disabled={uploadBusy} className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file); event.target.value = ""; }} />
         </label>
+        <label className={`grid size-10 shrink-0 place-items-center rounded-xl text-zinc-500 ${imageEnabled && !uploadBusy ? "cursor-pointer hover:bg-zinc-100" : "cursor-not-allowed opacity-40"}`} title={imageTitle}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 fill-none stroke-current" strokeWidth="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m5 18 4.5-4.5 3.2 3.2 2.1-2.1L19 18"/></svg>
+          <span className="sr-only">{imageTitle}</span>
+          <input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploadBusy || !imageEnabled || isStreaming} className="sr-only" onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) onImageFiles(files); event.target.value = ""; }} />
+        </label>
         <label className="relative shrink-0">
           <span className="sr-only">执行模式</span>
           <select value={executionMode} disabled={isStreaming} onChange={(event) => setExecutionMode(event.target.value as "direct" | "planned")} className="h-10 appearance-none rounded-xl bg-transparent py-0 pl-3 pr-8 text-sm font-medium text-zinc-700 outline-none hover:bg-zinc-100 focus:ring-2 focus:ring-zinc-300">
@@ -182,7 +254,7 @@ function ChatComposer({
           <span className="pointer-events-none absolute right-2.5 top-2.5 text-xs text-zinc-400">⌄</span>
         </label>
         {environmentLocked ? <button type="button" onClick={() => onOpenSettings?.("model")} className="ml-auto min-h-10 max-w-44 truncate rounded-xl bg-zinc-100 px-3 text-xs font-medium text-zinc-700 sm:max-w-64 sm:text-sm" title=".env 环境模型具有最高优先级">{settings?.model.model} · 环境锁定</button> : modelProfiles.length > 0 ? <label className="relative ml-auto min-w-0"><span className="sr-only">本次对话使用的模型</span><select value={selectedModelId} disabled={isStreaming} onChange={(event) => setSelectedModelId(event.target.value)} className="h-10 max-w-28 appearance-none truncate rounded-xl bg-transparent py-0 pl-2 pr-6 text-xs text-zinc-600 outline-none hover:bg-zinc-100 focus:ring-2 focus:ring-zinc-300 sm:max-w-64 sm:pl-3 sm:pr-8 sm:text-sm">{modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.model || "Mock"}{profile.is_default ? "（默认）" : ""}</option>)}</select><span className="pointer-events-none absolute right-2 top-2.5 text-xs text-zinc-400 sm:right-2.5">⌄</span></label> : <button type="button" onClick={() => onOpenSettings?.("model")} className="ml-auto min-h-10 rounded-xl bg-amber-50 px-2 text-xs font-medium text-amber-800 hover:bg-amber-100 sm:px-3 sm:text-sm">配置模型</button>}
-        <button type="submit" disabled={!input.trim() || isStreaming || !modelReady} className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-900 text-lg font-medium text-white transition hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:bg-zinc-300" aria-label={modelReady ? "发送消息" : "请先配置模型"} title={modelReady ? "发送消息" : "请先配置并选择模型"}>↑</button>
+        <button type="submit" disabled={(!input.trim() && images.length === 0) || isStreaming || uploadBusy || !modelReady || !canSubmitImages} className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-900 text-lg font-medium text-white transition hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:bg-zinc-300" aria-label={modelReady ? "发送消息" : "请先配置模型"} title={!canSubmitImages ? "请切换到支持图片的模型" : modelReady ? "发送消息" : "请先配置并选择模型"}>↑</button>
       </div>
     </form>
   );
@@ -294,14 +366,15 @@ function ApprovalCard({
   onSubmit: (approvalId: string, approved: boolean) => void;
 }) {
   const waiting = item.state === "pending";
+  const toolLabel = TOOL_LABELS[item.tool] ?? item.tool;
   return (
     <div className="flex justify-start">
       <section
         className="w-full max-w-[80%] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-gray-800"
-        aria-label="写入操作确认"
+        aria-label={`${toolLabel}操作确认`}
       >
         <div className="flex items-center justify-between gap-3">
-          <h3 className="font-semibold">确认写入文件</h3>
+          <h3 className="font-semibold">确认执行：{toolLabel}</h3>
           <span className="shrink-0 text-xs font-medium text-amber-800">高风险</span>
         </div>
         <p className="mt-1 break-words text-xs leading-5 text-gray-600">{item.argsSummary}</p>
@@ -317,7 +390,7 @@ function ApprovalCard({
               onClick={() => onSubmit(item.approvalId, true)}
               className="min-h-11 flex-1 rounded-md bg-blue-600 px-3 font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
             >
-              确认写入
+              确认执行
             </button>
             <button
               type="button"
@@ -331,7 +404,7 @@ function ApprovalCard({
           <p className="mt-2 text-xs font-medium text-gray-700" aria-live="polite">
             {item.state === "submitting" && "正在提交决定…"}
             {item.state === "approved" && "已批准，正在执行"}
-            {item.state === "rejected" && "已拒绝，未执行写入"}
+            {item.state === "rejected" && "已拒绝，未执行操作"}
             {item.state === "expired" && "审批已失效"}
           </p>
         )}
@@ -345,11 +418,13 @@ function MessageBubble({
   content,
   streaming,
   citations = [],
+  images = [],
 }: {
   role: string;
   content: string;
   streaming?: boolean;
   citations?: CitationSource[];
+  images?: ChatImage[];
 }) {
   const isUser = role === "user";
   const usedCitations = citations.filter((source) =>
@@ -362,6 +437,11 @@ function MessageBubble({
           isUser ? "bg-blue-600 text-white" : "border bg-white"
         }`}
       >
+        {images.length > 0 && <div className={`mb-2 grid gap-2 ${images.length > 1 ? "grid-cols-2" : "grid-cols-1"}`} aria-label="消息图片">
+          {images.map((image) => <a key={image.id} href={chatImageContentUrl(image.id)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl bg-black/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white">
+            <img src={chatImageContentUrl(image.id)} alt={image.original_filename} className="max-h-80 w-full object-cover" />
+          </a>)}
+        </div>}
         {isUser ? (
           <div className="whitespace-pre-wrap text-sm">{content}</div>
         ) : (
@@ -427,6 +507,7 @@ export default function ChatView({
   const [uploadBusy, setUploadBusy] = useState(false);
   const [composerNotice, setComposerNotice] = useState("");
   const [attachments, setAttachments] = useState<KnowledgeDocument[]>([]);
+  const [images, setImages] = useState<ChatImage[]>([]);
   const [runTrace, setRunTrace] = useState<RunTraceItem[]>([]);
   const [traceOpen, setTraceOpen] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -558,7 +639,7 @@ export default function ChatView({
   }, []);
 
   const send = useCallback(
-    async (text: string, documentIds: string[] = []) => {
+    async (text: string, documentIds: string[] = [], chatImages: ChatImage[] = []) => {
       let convId = conversationId;
       if (!convId) {
         try {
@@ -582,7 +663,7 @@ export default function ChatView({
       setElapsedSeconds(0);
       setMessages((ms) => [
         ...ms,
-        { id: `local-${Date.now()}`, role: "user", content: text, citations: [], created_at: "" },
+        { id: `local-${Date.now()}`, role: "user", content: text, citations: [], images: chatImages, created_at: "" },
       ]);
       const controller = new AbortController();
       abortRef.current = controller;
@@ -703,6 +784,7 @@ export default function ChatView({
           executionMode,
           documentIds,
           selectedModelId,
+          chatImages.map((image) => image.id),
         );
         const msgs = await fetchMessages(convId);
         setMessages(msgs);
@@ -734,12 +816,14 @@ export default function ChatView({
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    const text = input.trim();
-    if (!text || isStreaming) return;
+    const text = input.trim() || (images.length > 0 ? "请描述并分析这些图片。" : "");
+    if (!text || isStreaming || uploadBusy) return;
     setInput("");
     const documentIds = attachments.map((document) => document.id);
+    const selectedImages = images;
     setAttachments([]);
-    send(text, documentIds);
+    setImages([]);
+    send(text, documentIds, selectedImages);
   };
 
   const handleUpload = async (file: File) => {
@@ -757,8 +841,55 @@ export default function ChatView({
     }
   };
 
+  const handleImageFiles = async (files: File[]) => {
+    const selectedModel = appSettings?.model_control.locked
+      ? appSettings.model.model
+      : appSettings?.models.items.find((profile) => profile.id === selectedModelId)?.model || "";
+    if (!modelSupportsImages(selectedModel)) {
+      setError("当前模型不支持图片，请先选择 qwen3.8-max");
+      return;
+    }
+    const remaining = 4 - images.length;
+    if (remaining <= 0) {
+      setError("一次最多添加 4 张图片");
+      return;
+    }
+    const selected = files.filter((file) => CHAT_IMAGE_TYPES.has(file.type)).slice(0, remaining);
+    if (selected.length === 0) {
+      setError("仅支持 JPG、PNG、WebP 图片");
+      return;
+    }
+    if (executionMode === "planned") {
+      setExecutionMode("direct");
+      setComposerNotice("图片识别已自动切换为直接回答模式");
+    } else {
+      setComposerNotice("");
+    }
+    setUploadBusy(true);
+    setError("");
+    try {
+      const results = await Promise.allSettled(selected.map((file) => uploadChatImage(file)));
+      const uploaded = results
+        .filter((result): result is PromiseFulfilledResult<ChatImage> => result.status === "fulfilled")
+        .map((result) => result.value);
+      if (uploaded.length) {
+        setImages((items) => [...items, ...uploaded].slice(0, 4));
+        setComposerNotice(`${uploaded.length} 张图片已就绪，可直接发送给视觉模型`);
+      }
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failed) setError(failed.reason instanceof Error ? failed.reason.message : "部分图片上传失败");
+    } finally {
+      setUploadBusy(false);
+    }
+  };
+
+  const removeImage = (id: string) => {
+    setImages((items) => items.filter((image) => image.id !== id));
+    void deleteStagedChatImage(id).catch(() => undefined);
+  };
+
   const empty = messages.length === 0 && !streaming && toolActivities.length === 0 && approvals.length === 0 && !plan;
-  const composerProps = { projects, activeProjectId, onSelectProject, onCreateProject, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)) };
+  const composerProps = { projects, activeProjectId, onSelectProject, onCreateProject, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage };
   const completedRunMessage = runTrace.length > 0 && !isStreaming && messages.at(-1)?.role === "assistant" ? messages.at(-1)! : null;
   const visibleMessages = completedRunMessage ? messages.slice(0, -1) : messages;
 
@@ -774,12 +905,12 @@ export default function ChatView({
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto w-full max-w-4xl space-y-5">
-            {visibleMessages.map((message) => <MessageBubble key={message.id} role={message.role} content={message.content} citations={message.citations} />)}
+            {visibleMessages.map((message) => <MessageBubble key={message.id} role={message.role} content={message.content} citations={message.citations} images={message.images} />)}
             <RunTracePanel items={runTrace} open={traceOpen} active={isStreaming} elapsedSeconds={elapsedSeconds} onToggle={() => setTraceOpen((value) => !value)} />
             <PlanProgress plan={plan} />
             <ToolActivityList items={toolActivities} />
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
-            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} citations={completedRunMessage.citations} />}
+            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} citations={completedRunMessage.citations} images={completedRunMessage.images} />}
             {(streaming !== "" || (loading && conversationId)) && <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== ""} />}
             {error && <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>}
             <div ref={bottomRef} />

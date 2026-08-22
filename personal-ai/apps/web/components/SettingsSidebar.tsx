@@ -34,7 +34,7 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
         <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">基础设置</p>
         <button type="button" onClick={() => onViewChange("general")} className={itemClass(view === "general")} aria-current={view === "general" ? "page" : undefined}>
           <span aria-hidden="true">☷</span>
-          Agent 设定
+          角色设定
         </button>
         <button type="button" onClick={() => onViewChange("model")} className={`${itemClass(view === "model")} mt-1`} aria-current={view === "model" ? "page" : undefined}>
           <span aria-hidden="true">◉</span>
