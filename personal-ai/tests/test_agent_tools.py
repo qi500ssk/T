@@ -72,7 +72,7 @@ async def test_mock_tool_flow_and_tool_run_record(monkeypatch):
         assert "skill_load" in run.capability_snapshot["tools"]
     started = next(event for event in events if event.type == "run.started")
     assert started.data["capability_version"]
-    assert "time-helper" in started.data["enabled_skills"]
+    assert "file-notes" in started.data["enabled_skills"]
 
 
 @pytest.mark.asyncio
@@ -171,9 +171,9 @@ class SkillLoadingProvider:
             assert any(item["function"]["name"] == "skill_load" for item in tools)
             yield StreamChunk(tool_calls_delta=[{
                 "index": 0,
-                "id": "load-writing",
+                "id": "load-notes",
                 "type": "function",
-                "function": {"name": "skill_load", "arguments": '{"name":"writing-helper"}'},
+                "function": {"name": "skill_load", "arguments": '{"name":"file-notes"}'},
             }], finish_reason="tool_calls")
             return
         self.loaded_content = messages[-1]["content"]
@@ -204,11 +204,11 @@ async def test_agent_can_lazy_load_enabled_skill(monkeypatch):
     async for event in run_chat(
         provider,
         _conversation(),
-        "请帮我润色",
+        "请读取笔记",
         skills=load_skills(),
     ):
         events.append(event)
-    assert "保留原意" in provider.loaded_content
+    assert "read_file" in provider.loaded_content
     assert any(
         event.type == "tool.completed" and event.data["tool"] == "skill_load"
         for event in events

@@ -215,7 +215,7 @@ async def test_high_mcp_tool_uses_existing_approval_and_tool_run(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     clients = await connect_mcp_servers(load_mcp_configs("config/mcp_servers.yaml"))
     try:
-        skills = load_skills()
+        skills = load_skills(enabled_ids={"mcp-demo"})
         with SessionLocal() as session:
             conversation = Conversation(title="MCP integration")
             session.add(conversation)

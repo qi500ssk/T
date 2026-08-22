@@ -2,7 +2,7 @@ id: document-skills
 name: Document Skills
 description: 创建 DOCX、PDF、PPTX 和 XLSX 文件，并通过安全下载链接交付。
 version: 1.0.0
-enabled: false
+enabled: true
 mcp_servers:
   generator:
     transport: stdio

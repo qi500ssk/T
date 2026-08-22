@@ -1,17 +1,19 @@
 "use client";
 
 import type { WorkspaceView } from "@/components/Sidebar";
+import type { AgentSettings } from "@/lib/api";
 
-export type SettingsView = "skills" | "mcp" | "plugins";
+export type SettingsView = "general" | "model" | "workspace" | "skills" | "mcp" | "plugins";
 
 interface SettingsSidebarProps {
   onBack: () => void;
   onOpenWorkspace: (view: WorkspaceView) => void;
   view: SettingsView;
   onViewChange: (view: SettingsView) => void;
+  agent?: AgentSettings;
 }
 
-export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewChange }: SettingsSidebarProps) {
+export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewChange, agent }: SettingsSidebarProps) {
   const itemClass = (active: boolean) => `flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 ${active ? "bg-zinc-200 text-zinc-950" : "text-zinc-600 hover:bg-white hover:text-zinc-950"}`;
   return (
     <aside className="flex max-h-72 w-full shrink-0 flex-col overflow-y-auto border-b border-zinc-200 bg-zinc-100 md:max-h-none md:w-80 md:border-b-0 md:border-r">
@@ -29,6 +31,20 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
       </button>
 
       <nav className="px-3 pb-5" aria-label="设置导航">
+        <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">基础设置</p>
+        <button type="button" onClick={() => onViewChange("general")} className={itemClass(view === "general")} aria-current={view === "general" ? "page" : undefined}>
+          <span aria-hidden="true">☷</span>
+          Agent 设定
+        </button>
+        <button type="button" onClick={() => onViewChange("model")} className={`${itemClass(view === "model")} mt-1`} aria-current={view === "model" ? "page" : undefined}>
+          <span aria-hidden="true">◉</span>
+          模型设置
+        </button>
+        <button type="button" onClick={() => onViewChange("workspace")} className={`${itemClass(view === "workspace")} mt-1`} aria-current={view === "workspace" ? "page" : undefined}>
+          <span aria-hidden="true">▱</span>
+          工作区
+        </button>
+
         <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">Agent 能力</p>
         <button
           type="button"
@@ -69,10 +85,10 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
 
       <div className="mt-auto hidden border-t border-zinc-200 p-4 md:block">
         <div className="flex items-center gap-3 rounded-2xl bg-white p-3">
-          <div className="grid size-9 place-items-center rounded-full bg-blue-600 text-sm font-semibold text-white">AI</div>
+          <div className="grid size-9 place-items-center rounded-full bg-blue-600 text-sm font-semibold text-white">{agent?.name.slice(0, 1).toUpperCase() || "AI"}</div>
           <div>
-            <p className="text-sm font-medium text-zinc-950">默认助手</p>
-            <p className="text-xs text-zinc-500">当前配置</p>
+            <p className="text-sm font-medium text-zinc-950">{agent?.name || "默认助手"}</p>
+            <p className="max-w-48 truncate text-xs text-zinc-500">{agent?.role || "当前配置"}</p>
           </div>
         </div>
       </div>

@@ -4,12 +4,12 @@
 
 ## 项目概览
 
-Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P11 阶段：可选的简单编码能力**，在插件运行时上增加默认关闭、工作区隔离且写操作需要审批的 Developer Tools。
+Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P12 阶段：个性化基础设置**，支持本地持久化的 Agent 人格、模型配置和编码工作区选择。
 
 - 后端：FastAPI（8787）+ SQLite + SQLAlchemy，SSE 流式聊天
 - 前端：Next.js 16 + React 19 + TypeScript + Tailwind v4（4321）
 - 架构依据：`E:\Pycharm\JQ\personal_ai_agent_architecture_merged.md`（合并版架构文档）
-- 最新阶段报告：`E:\Pycharm\JQ\personal-ai\docs\P11.md`
+- 最新阶段报告：`E:\Pycharm\JQ\personal-ai\docs\P12.md`
 
 ## 开发原则（最高优先级）
 
@@ -66,6 +66,10 @@ personal-ai/
 22. **编码工作区隔离**：所有编码路径必须位于 `CODING_WORKSPACE_DIR`；拒绝越界、符号链接、敏感文件和依赖目录。
 23. **编码写入需审批**：创建、精确修改和运行检查均为 high 风险；不得绕过统一 Executor、请求白名单、超时与 ToolRun 审计。
 24. **不提供任意执行**：Developer Tools 不得加入任意 Shell、依赖安装、删除/移动文件或 Git commit/push/reset；新命令只能作为固定参数的预定义检查评审后加入。
+25. **运行时设置不入库**：用户模型 Key、人格和工作区保存在 `RUNTIME_SETTINGS_FILE`；API 不得回显 Key，仓库只保留无密钥默认模板。
+26. **自定义 Prompt 不授权**：用户人格提示词可以影响语言和行为偏好，但不得绕过 Skill 白名单、工具审批、MCP 风险与执行超时。
+27. **模型切换保护运行任务**：存在 running AgentRun 时拒绝热切换；新 Provider 成功建立后才替换旧 Provider，并同步重启单 Activity Worker。
+28. **目录浏览仅限本机部署**：文件夹选择 API 只列目录、不读文件；服务对公网开放前必须增加认证和目录根限制。
 
 ## 常用命令
 
@@ -97,5 +101,6 @@ npm run build                              # 改动前端后必须构建通过
 | P9 MCP 与插件管理 | ✅ 完成 | stdio/HTTP MCP Manager、热启停、普通文件夹声明式插件、三页设置中心 |
 | P10 Document Skills | ✅ 完成 | 默认关闭的文档插件、四类 Skill、隔离生成 Worker、Artifact 下载 |
 | P11 简单编码能力 | ✅ 完成 | 默认关闭的 Developer Tools、工作区隔离、精确编辑、Git diff、预定义检查 |
+| P12 个性化基础设置 | ✅ 完成 | Agent 人格与自定义 Prompt、模型脱敏配置/热切换、本机工作区选择 |
 
-P11 后续可做工作区选择、变更预览、GitHub Skill/Plugin 手工导入向导、来源与权限预览；进程内任意代码插件、多 Agent 和分布式 Worker 均不提前引入。
+P12 后续可做多 Agent 预设、模型高级参数、人格导入导出、变更预览和 GitHub 能力包导入向导；进程内任意代码插件和分布式 Worker 均不提前引入。

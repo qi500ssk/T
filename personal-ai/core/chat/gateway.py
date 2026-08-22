@@ -29,9 +29,10 @@ class OpenAICompatibleProvider:
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float):
         self.model = model
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=headers,
             timeout=timeout,
         )
 
@@ -164,8 +165,10 @@ class MockProvider:
             )
             return
 
+        identity = re.search(r"你是\s+([^，,。\n]+)", system_text)
+        agent_name = identity.group(1).strip() if identity else "Mock"
         reply = (
-            f"（Mock 回复）收到：{last[:60]}\n\n"
+            f"（{agent_name} · Mock）收到：{last[:60]}\n\n"
             "这是 P0 联调用的 Mock 模型回复。在 .env 中配置 LLM_PROVIDER=openai-compatible "
             "与 LLM_API_KEY 后即可切换到真实模型。"
         )
@@ -316,12 +319,28 @@ class MockProvider:
         pass
 
 
-def build_provider(settings) -> OpenAICompatibleProvider | MockProvider:
+class UnconfiguredProvider:
+    """启动占位 Provider：阻止未配置模型时静默回退到环境变量或 Mock。"""
+
+    async def stream(self, messages: list[dict], temperature: float = 0.7, tools: list[dict] | None = None):
+        raise RuntimeError("尚未配置可用模型，请先在模型设置中保存模型与凭据")
+        yield  # pragma: no cover - 保持异步生成器接口
+
+    async def complete(self, messages: list[dict], temperature: float = 0.0) -> str:
+        raise RuntimeError("尚未配置可用模型，请先在模型设置中保存模型与凭据")
+
+    async def close(self) -> None:
+        pass
+
+
+def build_provider(settings) -> OpenAICompatibleProvider | MockProvider | UnconfiguredProvider:
     """按配置选择 provider。"""
     if settings.llm_provider == "openai-compatible":
-        if not settings.llm_base_url or not settings.llm_api_key:
-            raise ValueError("LLM_PROVIDER=openai-compatible 时需配置 LLM_BASE_URL 与 LLM_API_KEY")
+        if not settings.llm_base_url or not settings.llm_model:
+            raise ValueError("LLM_PROVIDER=openai-compatible 时需配置 LLM_BASE_URL 与 LLM_MODEL")
         return OpenAICompatibleProvider(
             settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_seconds
         )
+    if settings.llm_provider == "unconfigured":
+        return UnconfiguredProvider()
     return MockProvider()

@@ -1,8 +1,8 @@
-# Personal AI Agent（P11：可选的简单编码能力）
+# Personal AI Agent（P12：个性化基础设置）
 
 Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识库、经过权限控制的本地与 MCP 工具执行、持久化 Activity、显式 Planner，以及可动态刷新和开关的 Skill、MCP Server 与声明式插件。
 
-最新交付说明见 [P11 阶段开发报告](docs/P11.md)，文档插件见 [P10 阶段开发报告](docs/P10.md)。
+最新交付说明见 [P12 阶段开发报告](docs/P12.md)，简单编码能力见 [P11 阶段开发报告](docs/P11.md)。
 
 ## 已完成功能
 
@@ -36,6 +36,9 @@ Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识�
 - UUID Artifact 安全存储、大小限制、下载 API 与聊天工具卡片下载入口
 - 默认关闭的 `Developer Tools` 插件，在独立编码工作区中提供读取、搜索、精确编辑、Git diff 和预定义检查
 - 编码写入与检查需要审批；拒绝越界、敏感文件、符号链接、任意 Shell、依赖安装和 Git 修改操作
+- 设置页可编辑 Agent 名称、角色、语言、性格维度和自定义 System Prompt，并立即应用到 Chat 与 Activity
+- 支持 Mock、DeepSeek、Ollama 和其他 OpenAI 兼容模型的脱敏配置、连接测试与安全热切换
+- 内置本机文件夹浏览器选择编码工作区，路径热更新且不自动扩大 Developer Tools 权限
 - 一次性和固定分钟间隔 Activity，支持暂停、恢复、立即运行和删除
 - FastAPI lifespan 内单协程 Worker，计划、状态、结果和重启恢复均持久化
 - Activity 复用现有 Agent / Skill / Tool / MCP 链路，后台高风险工具直接拒绝
@@ -68,7 +71,7 @@ npm run dev
 - 后端：`http://localhost:8787`
 - API 文档：`http://localhost:8787/docs`
 
-默认使用本地 BGE 路径。若只需轻量联调，可在 `.env` 设置 `EMBEDDING_PROVIDER=mock`；聊天默认 `LLM_PROVIDER=mock`，无需 API Key。
+默认使用本地 BGE 路径。若只需轻量联调，可在 `.env` 设置 `EMBEDDING_PROVIDER=mock`。通常请在应用的“模型设置”中保存模型配置与凭据；如果 `.env` 中提供了一套完整的 `LLM_*` 配置，系统会进入环境模型锁定模式，并强制覆盖所有前端模型选择。
 
 ## 目录
 
@@ -153,6 +156,10 @@ personal-ai/
 | PATCH/DELETE | `/api/plugins/{id}` | 启停 / 可恢复删除插件 |
 | GET | `/api/artifacts` | 最近生成文件列表 |
 | GET | `/api/artifacts/{id}` | 下载生成文件 |
+| GET | `/api/settings` | 读取脱敏后的 Agent、模型与工作区配置 |
+| PATCH | `/api/settings/{agent|model|workspace}` | 分项保存并应用运行时设置 |
+| POST | `/api/settings/model/test` | 测试模型连接但不保存 |
+| GET | `/api/settings/directories` | 本机编码工作区文件夹浏览 |
 
 除 `rag.retrieved` 外，工具系统使用以下 SSE 事件：
 
@@ -177,8 +184,8 @@ npm run lint
 npm run build
 ```
 
-当前验收结果：`114 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。RAG 与 Planner 固定评测保持通过；前端 Lint、TypeScript 和生产构建均通过。
+当前验收结果：`118 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。RAG 与 Planner 固定评测保持通过；前端 Lint、TypeScript 和生产构建均通过。
 
 ## 当前边界
 
-P11 仍面向单用户、默认 Assistant、单 API 进程和单 Activity Worker。插件是声明式 Skill/MCP 组合包，不执行第三方进程内代码；尚未包含 Git/URL 自动拉取和在线市场。简单编码能力只支持受限工作区、精确编辑和预定义检查，不提供任意 Shell、依赖安装、删除文件或 Git 写操作；Planner 不会自行安装、启用或扩大能力。
+P12 仍面向本机单用户、单个默认 Agent、单 API 进程和单 Activity Worker。运行时设置保存在本地忽略目录；文件夹浏览 API 不应暴露到公网。模型统一使用 OpenAI Chat Completions 兼容层；尚未提供多 Agent 预设、厂商专属参数、Git/URL 自动拉取和在线市场。

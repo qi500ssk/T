@@ -58,6 +58,7 @@ def build_context(
     embedding_provider=None,
     rag_settings=None,
     system_addendum: str = "",
+    document_ids: list[str] | None = None,
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
@@ -94,9 +95,16 @@ def build_context(
     if memory_lines:
         system_parts.append("[相关用户记忆]\n" + "\n".join(memory_lines))
 
-    should_retrieve = not config.rag_query_gate_enabled or should_retrieve_knowledge(message)
+    should_retrieve = bool(document_ids) or not config.rag_query_gate_enabled or should_retrieve_knowledge(message)
     if embedding_provider is not None and config.rag_enabled and should_retrieve:
-        results = retrieve(session, embedding_provider, message, config, user_id)
+        results = retrieve(
+            session,
+            embedding_provider,
+            message,
+            config,
+            user_id,
+            document_ids=document_ids,
+        )
         rag_prompt = Path(config.rag_context_prompt_file).read_text(encoding="utf-8").strip()
         source_blocks: list[str] = []
         for result in results:

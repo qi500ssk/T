@@ -5,19 +5,20 @@ def test_skill_list_toggle_and_capability_snapshot(client):
     rows = client.get("/api/skills")
     assert rows.status_code == 200
     by_id = {item["id"]: item for item in rows.json()}
-    assert by_id["time-helper"]["source"] == "builtin"
-    assert by_id["time-helper"]["enabled"] is True
+    assert by_id["file-notes"]["source"] == "builtin"
+    assert by_id["file-notes"]["enabled"] is True
+    assert by_id["file-notes"]["deletable"] is True
 
-    disabled = client.patch("/api/skills/time-helper", json={"enabled": False})
+    disabled = client.patch("/api/skills/file-notes", json={"enabled": False})
     assert disabled.status_code == 200
     assert disabled.json()["enabled"] is False
     capabilities = client.get("/api/capabilities").json()
     assert not any(
-        item["kind"] == "skill" and item["name"] == "time-helper"
+        item["kind"] == "skill" and item["name"] == "file-notes"
         for item in capabilities
     )
 
-    enabled = client.patch("/api/skills/time-helper", json={"enabled": True})
+    enabled = client.patch("/api/skills/file-notes", json={"enabled": True})
     assert enabled.status_code == 200
     assert enabled.json()["enabled"] is True
     catalog = client.get("/api/skills/catalog")
@@ -151,6 +152,36 @@ def test_create_and_recoverably_delete_local_skill(client, tmp_path, monkeypatch
     assert any(path.name.startswith("simple-helper-") for path in trash_root.iterdir())
 
 
-def test_builtin_skill_cannot_be_deleted(client):
-    response = client.delete("/api/skills/time-helper")
-    assert response.status_code == 409
+def test_builtin_skill_delete_moves_entire_folder(client, tmp_path, monkeypatch):
+    skill_root = tmp_path / "skills"
+    trash_root = tmp_path / "trash"
+    skill_dir = skill_root / "builtin-notes"
+    reference_dir = skill_dir / "references"
+    reference_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: builtin-notes\n"
+        "description: builtin delete test\n"
+        "required_tools: []\n"
+        "enabled: true\n"
+        "source: builtin\n"
+        "---\n"
+        "Use the bundled instructions.\n",
+        encoding="utf-8",
+    )
+    (reference_dir / "guide.md").write_text("keep with package", encoding="utf-8")
+    monkeypatch.setattr(settings, "skills_dir", str(skill_root))
+    monkeypatch.setattr(settings, "skill_trash_dir", str(trash_root))
+
+    refreshed = client.post("/api/skills/refresh")
+    assert refreshed.status_code == 200
+    assert refreshed.json()[0]["deletable"] is True
+
+    response = client.delete("/api/skills/builtin-notes")
+    assert response.status_code == 200
+    assert response.json()["recoverable"] is True
+    assert not skill_dir.exists()
+    moved = next(path for path in trash_root.iterdir() if path.name.startswith("builtin-notes-"))
+    assert (moved / "SKILL.md").exists()
+    assert (moved / "references" / "guide.md").read_text(encoding="utf-8") == "keep with package"
+    assert client.get("/api/skills").json() == []

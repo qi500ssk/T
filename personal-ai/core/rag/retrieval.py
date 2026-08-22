@@ -97,8 +97,9 @@ def retrieve(
     settings,
     user_id: str = "default",
     final_limit: int | None = None,
+    document_ids: list[str] | None = None,
 ) -> list[RetrievalResult]:
-    rows = (
+    query_builder = (
         session.query(DocumentChunk, Document)
         .join(Document, Document.id == DocumentChunk.document_id)
         .filter(
@@ -107,8 +108,10 @@ def retrieve(
             Document.embedding_model == embedding_provider.model_name,
             Document.embedding_dim == embedding_provider.dimension,
         )
-        .all()
     )
+    if document_ids:
+        query_builder = query_builder.filter(Document.id.in_(document_ids))
+    rows = query_builder.all()
     if not rows:
         return []
 
@@ -134,7 +137,9 @@ def retrieve(
     bm25_rank = {index: rank for rank, index in enumerate(bm25_order, start=1)}
     candidates: list[tuple[float, int]] = []
     for index in set(vector_order) | set(bm25_order):
-        if index in vector_rank and index not in bm25_rank:
+        # 用户明确选择附件时，即使问题只是“总结一下”也应读取该文档；
+        # 相似度阈值只用于全库检索，避免把无关资料带入普通聊天。
+        if not document_ids and index in vector_rank and index not in bm25_rank:
             if float(vector_scores[index]) < settings.rag_min_vector_similarity:
                 continue
         score = 0.0

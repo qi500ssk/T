@@ -6,6 +6,15 @@ export const API_URL =
 export interface Conversation {
   id: string;
   title: string;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  workspace_dir: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -215,6 +224,67 @@ export interface PluginItem {
   deletable: boolean;
 }
 
+export interface AgentSettings {
+  name: string;
+  role: string;
+  language: string;
+  tone: string;
+  verbosity: string;
+  humor: string;
+  formality: string;
+  proactivity: string;
+  custom_instructions: string;
+}
+
+export interface ModelSettings {
+  provider: "unconfigured" | "mock" | "openai-compatible";
+  base_url: string;
+  model: string;
+  timeout_seconds: number;
+  api_key_configured: boolean;
+}
+
+export interface ModelProfile extends ModelSettings {
+  id: string;
+  name: string;
+  is_default: boolean;
+}
+
+export interface AppSettings {
+  model: ModelSettings;
+  model_control: {
+    source: "environment" | "profiles" | "error";
+    locked: boolean;
+    error: string | null;
+  };
+  models: {
+    default_model_id: string;
+    items: ModelProfile[];
+  };
+  workspace: { coding_workspace_dir: string };
+  agent: AgentSettings;
+}
+
+export interface ModelSettingsInput {
+  model_id?: string;
+  provider: Exclude<ModelSettings["provider"], "unconfigured">;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  clear_api_key?: boolean;
+  timeout_seconds: number;
+}
+
+export interface ModelProfileInput extends ModelSettingsInput {
+  name: string;
+}
+
+export interface DirectoryListing {
+  current_path: string | null;
+  parent_path: string | null;
+  directories: { name: string; path: string }[];
+}
+
 export type MemoryKind = "episodic" | "semantic" | "profile";
 
 export interface Memory {
@@ -248,11 +318,20 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 export const fetchConversations = () =>
   req<Conversation[]>(`${API_URL}/conversations`);
 
-export const createConversation = () =>
+export const createConversation = (projectId: string | null = null) =>
   req<Conversation>(`${API_URL}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ project_id: projectId }),
+  });
+
+export const fetchProjects = () => req<Project[]>(`${API_URL}/projects`);
+
+export const createProject = (body: { name: string; workspace_dir?: string | null }) =>
+  req<Project>(`${API_URL}/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 
 export const deleteConversation = (id: string) =>
@@ -445,6 +524,67 @@ export const importPluginFolder = (files: File[]) => {
   return req<PluginItem>(`${API_URL}/plugins/import-folder`, { method: "POST", body });
 };
 
+export const fetchAppSettings = () => req<AppSettings>(`${API_URL}/settings`);
+
+export const updateAgentSettings = (body: AgentSettings) =>
+  req<AgentSettings>(`${API_URL}/settings/agent`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const updateModelSettings = (body: ModelSettingsInput) =>
+  req<ModelSettings>(`${API_URL}/settings/model`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const createModelProfile = (body: ModelProfileInput) =>
+  req<ModelProfile>(`${API_URL}/settings/models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const updateModelProfile = (id: string, body: ModelProfileInput) =>
+  req<ModelProfile>(`${API_URL}/settings/models/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const setDefaultModelProfile = (modelId: string) =>
+  req<AppSettings["models"]>(`${API_URL}/settings/models/default`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_id: modelId }),
+  });
+
+export const deleteModelProfile = (id: string) =>
+  req<{ ok: boolean }>(`${API_URL}/settings/models/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+export const testModelSettings = (body: ModelSettingsInput) =>
+  req<{ ok: boolean; message: string }>(`${API_URL}/settings/model/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+export const updateWorkspaceSettings = (codingWorkspaceDir: string) =>
+  req<{ coding_workspace_dir: string }>(`${API_URL}/settings/workspace`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ coding_workspace_dir: codingWorkspaceDir }),
+  });
+
+export const fetchDirectories = (path?: string | null) =>
+  req<DirectoryListing>(
+    `${API_URL}/settings/directories${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+  );
+
 function parseEventBlock(block: string): AgentEvent | null {
   let event = "";
   let data = "";
@@ -463,14 +603,31 @@ export async function streamChat(
   onEvent: (ev: AgentEvent) => void,
   signal?: AbortSignal,
   executionMode: "direct" | "planned" = "direct",
+  documentIds: string[] = [],
+  modelId?: string | null,
 ): Promise<void> {
   const resp = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ conversation_id: convId, message, execution_mode: executionMode }),
+    body: JSON.stringify({
+      conversation_id: convId,
+      message,
+      execution_mode: executionMode,
+      document_ids: documentIds,
+      model_id: modelId || null,
+    }),
     signal,
   });
-  if (!resp.ok || !resp.body) throw new Error(`聊天失败 ${resp.status}`);
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text();
+    let detail = text;
+    try {
+      detail = (JSON.parse(text) as { detail?: string }).detail ?? text;
+    } catch {
+      // 保留非 JSON 错误原文。
+    }
+    throw new Error(`聊天失败 ${resp.status}: ${detail}`);
+  }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

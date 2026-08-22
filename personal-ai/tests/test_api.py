@@ -27,6 +27,32 @@ def test_create_and_list_conversations(client):
     assert any(c["id"] == conv["id"] for c in rows)
 
 
+def test_projects_group_tasks_and_protect_non_empty_project(client, tmp_path):
+    project = client.post(
+        "/api/projects",
+        json={"name": "个人网站", "workspace_dir": str(tmp_path)},
+    )
+    assert project.status_code == 200
+    project = project.json()
+
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "实现首页", "project_id": project["id"]},
+    )
+    assert conversation.status_code == 200
+    assert conversation.json()["project_id"] == project["id"]
+    assert client.get("/api/projects").json()[0]["name"] == "个人网站"
+    assert client.delete(f"/api/projects/{project['id']}").status_code == 409
+
+    assert client.delete(f"/api/conversations/{conversation.json()['id']}").status_code == 200
+    assert client.delete(f"/api/projects/{project['id']}").status_code == 200
+
+
+def test_conversation_rejects_unknown_project(client):
+    response = client.post("/api/conversations", json={"project_id": "missing"})
+    assert response.status_code == 404
+
+
 def test_chat_stream_events(client):
     conv = client.post("/api/conversations", json={}).json()
     r = client.post("/api/chat", json={"conversation_id": conv["id"], "message": "你好"})
@@ -36,9 +62,14 @@ def test_chat_stream_events(client):
     events = parse_sse(r.text)
     types = [e[0] for e in events]
     assert "run.started" in types
+    assert "context.started" in types
+    assert "context.completed" in types
+    assert "model.started" in types
     assert "message.delta" in types
     assert "message.completed" in types
     assert "run.completed" in types
+    assert types.index("run.started") < types.index("context.started")
+    assert types.index("context.completed") < types.index("model.started")
     # 事件携带 run_id
     started = dict(events)[
         "run.started"

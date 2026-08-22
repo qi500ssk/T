@@ -18,8 +18,11 @@ from apps.api.skills import refresh_skill_runtime, router as skills_router
 from apps.api.mcp_servers import router as mcp_servers_router
 from apps.api.plugins import router as plugins_router
 from apps.api.artifacts import router as artifacts_router
+from apps.api.settings import router as settings_router
+from apps.api.projects import router as projects_router
 from core.automation.activity import activity_worker, recover_interrupted_activities
 from core.rag.embedding import build_embedding_provider
+from core.chat.character import load_character
 from core.chat.gateway import build_provider
 from core.chat.memory import contains_sensitive_information, normalize_memory_key
 from core.capabilities.mcp_manager import McpManager
@@ -27,6 +30,11 @@ from core.capabilities.plugins import PluginManager
 from core.capabilities.skill_registry import build_default_skill_registry
 from core.execution.permissions import reject_all_approvals, resolve_approval
 from core.execution.tools import list_tools as registered_tools
+from core.settings.runtime import (
+    RuntimeSettingsStore,
+    apply_runtime_config,
+    capture_runtime_config,
+)
 from infrastructure.config import settings
 from infrastructure.database import (
     Activity,
@@ -36,6 +44,7 @@ from infrastructure.database import (
     Message,
     Plan,
     PlanStep,
+    Project,
     SessionLocal,
     ToolRun,
     init_db,
@@ -45,6 +54,30 @@ from infrastructure.database import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    original_runtime_config = capture_runtime_config(settings)
+    app.state.runtime_settings_store = RuntimeSettingsStore(
+        settings.runtime_settings_file,
+        settings,
+        load_character(settings.character_file),
+    )
+    runtime_snapshot = app.state.runtime_settings_store.snapshot()
+    app.state.environment_model_locked = settings.environment_model_configured
+    app.state.environment_model_error = settings.environment_model_error
+    if app.state.environment_model_locked:
+        # 环境模型具有最高优先级；仍应用工作区等其他本地运行时设置。
+        runtime_snapshot["model"] = original_runtime_config["model"]
+    elif app.state.environment_model_error:
+        # 显式环境配置不完整时拒绝偷偷回退到前端模型。
+        runtime_snapshot["model"] = {
+            "llm_provider": "unconfigured",
+            "llm_base_url": "",
+            "llm_api_key": "",
+            "llm_model": "",
+            "llm_timeout_seconds": 60.0,
+        }
+    apply_runtime_config(settings, runtime_snapshot)
+    app.state.agent_profile = runtime_snapshot["agent"]
+    app.state.runtime_settings_lock = asyncio.Lock()
     Path(settings.sandbox_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.artifacts_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.coding_workspace_dir).mkdir(parents=True, exist_ok=True)
@@ -78,6 +111,7 @@ async def lifespan(app: FastAPI):
                 app.state.provider,
                 app.state.embedding_provider,
                 app.state.skills,
+                app.state.agent_profile,
             ),
             name="activity-worker",
         )
@@ -95,6 +129,7 @@ async def lifespan(app: FastAPI):
         await app.state.mcp_manager.shutdown()
         await app.state.provider.close()
         app.state.embedding_provider.close()
+        apply_runtime_config(settings, original_runtime_config)
 
 
 app = FastAPI(title="Personal AI API", version="0.1.0", lifespan=lifespan)
@@ -112,6 +147,8 @@ app.include_router(skills_router)
 app.include_router(mcp_servers_router)
 app.include_router(plugins_router)
 app.include_router(artifacts_router)
+app.include_router(settings_router)
+app.include_router(projects_router)
 
 
 class ApprovalRequest(BaseModel):
@@ -135,6 +172,7 @@ def _conv_dict(c: Conversation) -> dict:
     return {
         "id": c.id,
         "title": c.title,
+        "project_id": c.project_id,
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),
         "summary": c.summary,
@@ -169,6 +207,7 @@ def _memory_dict(m: Memory) -> dict:
 
 class ConversationCreate(BaseModel):
     title: str = "新对话"
+    project_id: str | None = None
 
 
 class ConversationRename(BaseModel):
@@ -185,7 +224,9 @@ def list_conversations():
 @app.post("/api/conversations")
 def create_conversation(body: ConversationCreate):
     with SessionLocal() as session:
-        conv = Conversation(title=body.title)
+        if body.project_id is not None and session.get(Project, body.project_id) is None:
+            raise HTTPException(404, "project not found")
+        conv = Conversation(title=body.title, project_id=body.project_id)
         session.add(conv)
         session.commit()
         return _conv_dict(conv)

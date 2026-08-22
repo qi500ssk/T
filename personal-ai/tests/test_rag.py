@@ -179,6 +179,31 @@ def test_calculation_bypasses_rag_even_when_documents_exist(client, monkeypatch)
     assert messages[-1]["citations"] == []
 
 
+def test_selected_attachment_forces_and_scopes_rag(client, monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    selected = client.post(
+        "/api/files",
+        files={"file": ("选中文档.md", "# 结论\n发布代号是蓝鲸。".encode("utf-8"), "text/markdown")},
+    ).json()
+    client.post(
+        "/api/files",
+        files={"file": ("其他文档.md", "# 结论\n发布代号是红狐。".encode("utf-8"), "text/markdown")},
+    )
+    conversation = client.post("/api/conversations", json={}).json()
+    response = client.post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation["id"],
+            "message": "总结一下",
+            "document_ids": [selected["id"]],
+        },
+    )
+    events = parse_sse(response.text)
+    sources = next(data["sources"] for event, data in events if event == "rag.retrieved")
+    assert sources
+    assert {source["document_id"] for source in sources} == {selected["id"]}
+
+
 def test_uncited_retrieval_candidates_are_not_exposed_as_sources(client, monkeypatch):
     class NoCitationProvider(MockProvider):
         async def stream(self, messages, temperature=0.7, tools=None):

@@ -12,7 +12,7 @@ from core.capabilities.skill_packages import (
     SkillPackageError,
     create_skill,
     install_skill_folder,
-    remove_local_skill,
+    remove_skill_package,
 )
 from core.capabilities.skill_registry import build_default_skill_registry
 from core.capabilities.skills import SkillRecord
@@ -71,7 +71,7 @@ def serialize_skill(record: SkillRecord, states: dict[str, bool]) -> dict:
         "status": _status(record, enabled),
         "error": record.error,
         "instructions": record.instructions,
-        "deletable": record.source in {"local", "online"},
+        "deletable": True,
     }
 
 
@@ -201,7 +201,7 @@ def delete_skill(skill_id: str, request: Request):
     if record is None:
         raise HTTPException(404, "skill not found")
     try:
-        destination = remove_local_skill(record)
+        destination = remove_skill_package(record)
     except SkillPackageError as exc:
         raise _package_error(exc) from exc
     with SessionLocal() as session:

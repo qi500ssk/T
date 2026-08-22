@@ -164,9 +164,8 @@ def create_skill(
     return record
 
 
-def remove_local_skill(record: SkillRecord) -> Path:
-    if record.source not in {"local", "online"}:
-        raise SkillConflictError("内置和开发测试 Skill 不能删除")
+def remove_skill_package(record: SkillRecord) -> Path:
+    """将 skills 目录中的整个 Skill 文件夹移入可恢复回收目录。"""
     root = Path(settings.skills_dir).resolve()
     target = (root / record.id).resolve()
     if target.parent != root or not target.is_dir() or target.is_symlink():

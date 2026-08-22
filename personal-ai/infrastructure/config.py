@@ -2,6 +2,7 @@
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from urllib.parse import urlparse
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
     llm_timeout_seconds: float = 60.0
+    # 仅供自动化测试使用；正常运行时模型只来自本地运行时配置库。
+    model_environment_fallback_enabled: bool = False
 
     # ---- Agent Runtime ----
     agent_max_steps: int = 8
@@ -115,6 +118,7 @@ class Settings(BaseSettings):
     character_file: str = "core/chat/character.yaml"
     system_prompt_file: str = "prompts/system/main.md"
     rag_context_prompt_file: str = "prompts/rag/context.md"
+    runtime_settings_file: str = "./data/runtime-settings.json"
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -123,6 +127,36 @@ class Settings(BaseSettings):
     @property
     def file_allowed_extension_set(self) -> set[str]:
         return {item.strip().lower() for item in self.file_allowed_extensions.split(",") if item.strip()}
+
+    @property
+    def environment_model_declared(self) -> bool:
+        """是否显式通过环境变量或 .env 声明了模型，而非使用类默认值。"""
+        if self.model_environment_fallback_enabled:
+            return False
+        return bool(
+            {"llm_provider", "llm_base_url", "llm_api_key", "llm_model"}
+            & self.model_fields_set
+        )
+
+    @property
+    def environment_model_error(self) -> str | None:
+        if not self.environment_model_declared:
+            return None
+        if self.llm_provider != "openai-compatible":
+            return "环境模型的 LLM_PROVIDER 必须是 openai-compatible"
+        parsed = urlparse(self.llm_base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return "环境模型缺少有效的 LLM_BASE_URL"
+        if not self.llm_model.strip():
+            return "环境模型缺少 LLM_MODEL"
+        is_local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if not is_local and not self.llm_api_key.strip():
+            return "云端环境模型缺少 LLM_API_KEY"
+        return None
+
+    @property
+    def environment_model_configured(self) -> bool:
+        return self.environment_model_declared and self.environment_model_error is None
 
 
 settings = Settings()

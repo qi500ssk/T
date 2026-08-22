@@ -271,7 +271,13 @@ def recover_interrupted_activities(now: datetime | None = None) -> int:
         return len(rows)
 
 
-async def _run_activity(activity: Activity, provider, embedding_provider, skills: list[Skill]) -> None:
+async def _run_activity(
+    activity: Activity,
+    provider,
+    embedding_provider,
+    skills: list[Skill],
+    agent_profile: dict | None = None,
+) -> None:
     run_id: str | None = None
     succeeded = False
     error = "Agent Run 未正常完成"
@@ -286,6 +292,7 @@ async def _run_activity(activity: Activity, provider, embedding_provider, skills
             activity_id=activity.id,
             approval_mode="deny",
             execution_mode=activity.execution_mode,
+            agent_profile=agent_profile,
         ):
             if event.type == "run.started":
                 run_id = str(event.data["run_id"])
@@ -325,6 +332,7 @@ async def activity_worker(
     provider,
     embedding_provider,
     skills: list[Skill],
+    agent_profile: dict | None = None,
 ) -> None:
     """串行领取并执行 Activity；单个任务或数据库失败不会终止 Worker。"""
     while not stop_event.is_set():
@@ -341,7 +349,9 @@ async def activity_worker(
             await _wait_for_poll(stop_event)
             continue
         try:
-            await _run_activity(activity, provider, embedding_provider, skills)
+            await _run_activity(
+                activity, provider, embedding_provider, skills, agent_profile
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

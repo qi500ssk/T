@@ -130,10 +130,12 @@ function DeleteSkillDialog({ item, busy, onClose, onConfirm }: { item: SkillItem
     if (!item && dialog.open) dialog.close();
   }, [item]);
   return (
-    <dialog ref={dialogRef} onCancel={(event) => busy ? event.preventDefault() : onClose()} onClose={onClose} className="m-auto w-[min(92vw,28rem)] rounded-3xl bg-white p-0 shadow-2xl backdrop:bg-zinc-950/35" aria-labelledby="delete-skill-title">
+    <dialog ref={dialogRef} onCancel={(event) => busy ? event.preventDefault() : onClose()} onClose={onClose} className="m-auto w-[min(92vw,28rem)] rounded-3xl bg-white p-0 shadow-2xl backdrop:bg-zinc-950/35" aria-labelledby="delete-skill-title" aria-describedby="delete-skill-description">
       <div className="p-6 sm:p-8">
         <h2 id="delete-skill-title" className="text-xl font-bold text-zinc-950">删除 {item?.name}？</h2>
-        <p className="mt-3 text-sm leading-6 text-zinc-600">Skill 文件夹会移入项目回收目录，可以手动恢复，不会立即永久删除。</p>
+        <p id="delete-skill-description" className="mt-3 text-sm leading-6 text-zinc-600">
+          整个 skills/{item?.id} 文件夹会移入项目回收目录，可以手动恢复，不会立即永久删除。
+        </p>
         <div className="mt-7 flex justify-end gap-3">
           <button type="button" autoFocus onClick={onClose} disabled={busy} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">取消</button>
           <button type="button" onClick={onConfirm} disabled={busy} className="min-h-11 rounded-xl bg-red-600 px-5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">{busy ? "处理中…" : "移入回收目录"}</button>
@@ -180,32 +182,53 @@ function SkillRow({
           <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-600">{item.description}</p>
           {item.error && <p className="mt-1 text-xs text-amber-700">{item.error}</p>}
         </div>
-        <button
-          type="button"
-          onClick={onExpand}
-          className="hidden rounded-lg px-3 py-2 text-sm text-zinc-500 hover:bg-white hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 sm:block"
-          aria-expanded={expanded}
-          aria-controls={`skill-details-${item.id}`}
-        >
-          {expanded ? "收起" : "详情"}
-        </button>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={item.enabled}
-          aria-label={`${item.enabled ? "关闭" : "启用"}${item.name}`}
-          disabled={!item.available || busy}
-          onClick={onToggle}
-          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-45 ${
-            item.enabled ? "bg-zinc-950" : "bg-zinc-300"
-          }`}
-        >
-          <span
-            className={`absolute top-1 size-5 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
-              item.enabled ? "translate-x-6" : "translate-x-1"
+        <div className="ml-1 flex shrink-0 items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={onExpand}
+            className="min-w-12 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-white hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+            aria-expanded={expanded}
+            aria-controls={`skill-details-${item.id}`}
+          >
+            {expanded ? "收起" : "详情"}
+          </button>
+          {item.deletable && (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={busy}
+              aria-label={`删除 ${item.name} Skill 及其文件夹`}
+              className="grid size-9 shrink-0 place-items-center rounded-lg text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none"
+              title="删除 Skill 文件夹"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 7h16" />
+                <path d="M9 7V4h6v3" />
+                <path d="m6.5 7 1 13h9l1-13" />
+                <path d="M10 11v5M14 11v5" />
+              </svg>
+            </button>
+          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={item.enabled}
+            aria-busy={busy || undefined}
+            aria-label={`${item.enabled ? "关闭" : "启用"}${item.name}`}
+            disabled={!item.available || busy}
+            onClick={onToggle}
+            className={`inline-flex h-7 w-12 shrink-0 items-center rounded-full p-1 transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-45 ${
+              item.enabled ? "bg-zinc-950" : "bg-zinc-300"
             }`}
-          />
-        </button>
+          >
+            <span
+              aria-hidden="true"
+              className={`size-5 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none ${
+                item.enabled ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
       </div>
       {expanded && (
         <div id={`skill-details-${item.id}`} className="border-t border-zinc-200 bg-white px-6 py-5 sm:pl-[5.75rem]">
@@ -223,11 +246,6 @@ function SkillRow({
             <p className="text-sm font-medium text-zinc-900">执行说明</p>
             <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-zinc-600">{item.instructions || "无法读取"}</p>
           </div>
-          {item.deletable && (
-            <button type="button" onClick={onDelete} className="mt-5 rounded-xl border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">
-              删除本地 Skill
-            </button>
-          )}
         </div>
       )}
     </article>

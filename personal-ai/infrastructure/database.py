@@ -36,11 +36,29 @@ class Base(DeclarativeBase):
     pass
 
 
+class Project(Base):
+    """用户工作项目；会话（任务）可以归属到一个项目。"""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(64), index=True, default="default")
+    name: Mapped[str] = mapped_column(String(120))
+    workspace_dir: Mapped[str | None] = mapped_column(String(1200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(64), index=True, default="default")
+    project_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_message_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -287,6 +305,26 @@ def init_db() -> None:
     _migrate_sqlite_p5()
     _migrate_sqlite_p6()
     _migrate_sqlite_p8()
+    _migrate_sqlite_p13()
+
+
+def _migrate_sqlite_p13() -> None:
+    """为旧会话补充项目归属字段；旧数据保持为未分组。"""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if not inspector.has_table("conversations"):
+        return
+    existing = {column["name"] for column in inspector.get_columns("conversations")}
+    with engine.begin() as connection:
+        if "project_id" not in existing:
+            connection.execute(text("ALTER TABLE conversations ADD COLUMN project_id VARCHAR(32)"))
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_conversations_project_id "
+                "ON conversations (project_id)"
+            )
+        )
 
 
 def _migrate_sqlite_p8() -> None:

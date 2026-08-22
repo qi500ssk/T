@@ -14,7 +14,7 @@ from typing import AsyncIterator, Literal
 import anyio
 from sqlalchemy.exc import IntegrityError
 
-from core.chat.character import load_character, render_system_prompt
+from core.chat.character import apply_agent_profile, load_character, render_system_prompt
 from core.chat.context import build_context
 from core.chat.memory import extract_memories, save_memories
 from core.execution.executor import ToolCallBudget, execute_model_loop, merge_tool_call_deltas
@@ -63,6 +63,8 @@ async def run_chat(
     activity_id: str | None = None,
     approval_mode: Literal["interactive", "deny"] = "interactive",
     execution_mode: Literal["direct", "planned"] = "direct",
+    agent_profile: dict | None = None,
+    document_ids: list[str] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """执行一次 Agent Run，产出 SSE Agent Event Protocol 事件。"""
     run_id = uuid.uuid4().hex
@@ -132,6 +134,7 @@ async def run_chat(
     try:
         async with asyncio.timeout(settings.agent_timeout_seconds):
             character = await anyio.to_thread.run_sync(load_character, settings.character_file)
+            character = apply_agent_profile(character, agent_profile)
             system_prompt = await anyio.to_thread.run_sync(
                 render_system_prompt, character, settings.system_prompt_file
             )
@@ -153,13 +156,26 @@ async def run_chat(
                         embedding_provider,
                         settings,
                         system_addendum=skill_prompt,
+                        document_ids=document_ids,
                     )
 
+            yield AgentEvent("context.started", {"run_id": run_id})
             context = await anyio.to_thread.run_sync(_build)
+            yield AgentEvent(
+                "context.completed",
+                {
+                    "run_id": run_id,
+                    "memory_count": len(context.memory_ids),
+                    "source_count": len(context.sources),
+                    "selected_document_count": len(document_ids or []),
+                    "token_estimate": context.token_estimate,
+                },
+            )
             messages = [{"role": "system", "content": context.system}] + context.messages
             if execution_mode == "planned":
                 if not settings.planner_enabled:
                     raise RuntimeError("Planner 已禁用")
+                yield AgentEvent("planning.started", {"run_id": run_id})
                 plan = await anyio.to_thread.run_sync(
                     create_planning_record,
                     run_id,
@@ -319,6 +335,10 @@ async def run_chat(
                     {"role": "user", "content": synthesis_payload},
                 ]
                 synthesis = None
+                yield AgentEvent(
+                    "model.started",
+                    {"run_id": run_id, "phase": "synthesis"},
+                )
                 async for event in execute_model_loop(
                     provider,
                     synthesis_messages,
@@ -342,6 +362,10 @@ async def run_chat(
                 usage["completion_tokens"] += int(synth_usage.get("completion_tokens", 0))
             else:
                 result = None
+                yield AgentEvent(
+                    "model.started",
+                    {"run_id": run_id, "phase": "response"},
+                )
                 async for event in execute_model_loop(
                     provider,
                     messages,
