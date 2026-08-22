@@ -574,7 +574,7 @@ export const updateModelProfile = (id: string, body: ModelProfileInput) =>
   });
 
 export const setDefaultModelProfile = (modelId: string) =>
-  req<AppSettings["models"]>(`${API_URL}/settings/models/default`, {
+  req<AppSettings["models"]>(`${API_URL}/settings/models/selection`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model_id: modelId }),

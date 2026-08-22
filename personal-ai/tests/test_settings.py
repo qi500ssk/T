@@ -161,7 +161,7 @@ def test_multiple_model_profiles_can_be_selected_and_deleted(client):
     assert created.status_code == 200
     created_id = created.json()["id"]
 
-    selected = client.patch("/api/settings/models/default", json={"model_id": created_id})
+    selected = client.patch("/api/settings/models/selection", json={"model_id": created_id})
     assert selected.status_code == 200
     assert selected.json()["default_model_id"] == created_id
 
@@ -170,6 +170,24 @@ def test_multiple_model_profiles_can_be_selected_and_deleted(client):
     assert deleted.status_code == 200
     current = client.get("/api/settings").json()["models"]
     assert [item["id"] for item in current["items"]] == [created_id]
+
+
+def test_legacy_default_profile_id_can_be_updated(client):
+    current = client.get("/api/settings").json()["models"]
+    legacy = next(item for item in current["items"] if item["id"] == "default")
+    response = client.patch(
+        "/api/settings/models/default",
+        json={
+            "name": "更新后的默认配置",
+            "provider": "mock",
+            "base_url": "",
+            "model": "",
+            "timeout_seconds": 45,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == legacy["id"]
+    assert response.json()["name"] == "更新后的默认配置"
 
 
 def test_cloud_model_requires_api_key(client):

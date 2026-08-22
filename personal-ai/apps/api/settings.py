@@ -275,7 +275,13 @@ async def test_model(body: ModelSettingsBody, request: Request):
             return {"ok": True, "message": f"连接成功：{reply[:80] or '模型已响应'}"}
         return {"ok": True, "message": "Mock 模型可用，无需网络连接"}
     except Exception as exc:
-        raise HTTPException(422, f"模型连接失败：{str(exc)[:300]}") from exc
+        message = str(exc)[:300]
+        if "api.deepseek.com" in body.base_url:
+            if "401" in message or "Authentication Fails" in message:
+                message = "DeepSeek API Key 无效，请在 DeepSeek 开放平台重新创建 Key 后再保存"
+            elif "404" in message or "Model Not Found" in message:
+                message = "DeepSeek 模型不存在，请选择 deepseek-v4-flash 或 deepseek-v4-pro"
+        raise HTTPException(422, f"模型连接失败：{message}") from exc
     finally:
         await provider.close()
 
@@ -320,7 +326,7 @@ async def create_model_profile(body: ModelProfileBody, request: Request):
     return next(item for item in _serialize(request)["models"]["items"] if item["id"] == profile_id)
 
 
-@router.patch("/models/default")
+@router.patch("/models/selection")
 async def set_default_model(body: DefaultModelBody, request: Request):
     async with request.app.state.runtime_settings_lock:
         if _running_agent_exists():

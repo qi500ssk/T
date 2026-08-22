@@ -125,7 +125,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
         setModel({ name: selected.name, provider: selected.provider === "mock" ? "mock" : "openai-compatible", base_url: selected.base_url, model: selected.model, timeout_seconds: selected.timeout_seconds });
         setApiKeyConfigured(selected.api_key_configured);
       } else {
-        setModel({ name: "DeepSeek", provider: "openai-compatible", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat", timeout_seconds: 60 });
+        setModel({ name: "DeepSeek V4 Flash", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60 });
       }
       setWorkspace(value.workspace.coding_workspace_dir);
     }).catch((err) => setError(err instanceof Error ? err.message : "设置加载失败"));
@@ -180,12 +180,12 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   });
   const newProfile = () => {
     setSelectedModelId(null);
-    setModel({ name: "", provider: "openai-compatible", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat", timeout_seconds: 60 });
+    setModel({ name: "", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60 });
     setApiKey(""); setClearApiKey(false); setApiKeyConfigured(false); setNotice(""); setError("");
   };
 
   const choosePreset = (value: string) => {
-    if (value === "deepseek") setModel({ ...model, provider: "openai-compatible", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" });
+    if (value === "deepseek") setModel({ ...model, provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash" });
     else if (value === "ollama") setModel({ ...model, provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen2.5:7b" });
     else setModel({ ...model, provider: "openai-compatible" });
   };
@@ -242,11 +242,11 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">配置名称<input required maxLength={80} value={model.name} onChange={(e) => setModel({ ...model, name: e.target.value })} className={inputClass} placeholder="例如：DeepSeek 日常对话" /></label>
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">配置模板<select value={preset === "mock" ? "custom" : preset} onChange={(e) => choosePreset(e.target.value)} className={inputClass}><option value="deepseek">DeepSeek API</option><option value="ollama">Ollama 本地模型</option><option value="custom">其他 OpenAI 兼容服务</option></select></label>
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">API 地址<input value={model.base_url} onChange={(e) => setModel({ ...model, base_url: e.target.value })} className={inputClass} placeholder="https://api.example.com/v1" /></label>
-                  <label className="grid gap-2 text-sm font-medium">模型名称<input value={model.model} onChange={(e) => setModel({ ...model, model: e.target.value })} className={inputClass} placeholder="deepseek-chat" /></label>
+                  <label className="grid gap-2 text-sm font-medium">模型名称{preset === "deepseek" ? <select value={model.model} onChange={(e) => setModel({ ...model, model: e.target.value })} className={inputClass}><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select> : <input value={model.model} onChange={(e) => setModel({ ...model, model: e.target.value })} className={inputClass} placeholder="模型 ID" />}{preset === "deepseek" && <span className="text-xs font-normal leading-5 text-zinc-500">来自 DeepSeek 官方当前模型列表；旧的 deepseek-chat / reasoner 已停止使用。</span>}</label>
                   <label className="grid gap-2 text-sm font-medium">请求超时（秒）<input type="number" min={5} max={300} value={model.timeout_seconds} onChange={(e) => setModel({ ...model, timeout_seconds: Number(e.target.value) })} className={inputClass} /></label>
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">API Key<input type="password" autoComplete="off" disabled={clearApiKey} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setClearApiKey(false); }} className={inputClass} placeholder={apiKeyConfigured ? "已安全保存；留空表示不修改" : "云端模型必须填写；本地服务可留空"} /><span className="flex flex-wrap items-center justify-between gap-2 text-xs font-normal text-zinc-500"><span>Key 只保存在本机运行时配置，不返回浏览器，也不写入 Git。</span>{apiKeyConfigured && <label className="inline-flex items-center gap-2"><input type="checkbox" checked={clearApiKey} onChange={(e) => setClearApiKey(e.target.checked)} />清除已保存的 Key</label>}</span></label>
                 </div>
-                <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" disabled={busy !== ""} onClick={() => void run("test", async () => setNotice((await testModelSettings(modelPayload())).message))} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">{busy === "test" ? "测试中…" : "测试连接"}</button><button type="button" disabled={busy !== "" || !model.name.trim()} onClick={saveModel} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "model" ? "保存中…" : selectedModelId ? "保存修改" : "保存配置"}</button></div>
+                <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" disabled={busy !== ""} onClick={() => void run("test", async () => setNotice(`${(await testModelSettings(modelPayload())).message}；本次只测试，不会保存修改`))} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">{busy === "test" ? "测试中…" : "仅测试（不保存）"}</button><button type="button" disabled={busy !== "" || !model.name.trim()} onClick={saveModel} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "model" ? "保存中…" : selectedModelId ? "保存修改" : "保存配置"}</button></div>
               </section>
             </div>
           </div>
