@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
     llm_timeout_seconds: float = 60.0
+    llm_context_window_tokens: int = Field(default=12_096, ge=2_048, le=2_000_000)
+    llm_max_output_tokens: int = Field(default=4_096, ge=1, le=262_144)
     # 仅供自动化测试使用；正常运行时模型只来自本地运行时配置库。
     model_environment_fallback_enabled: bool = False
 
@@ -55,6 +57,7 @@ class Settings(BaseSettings):
     planner_observation_tokens_budget: int = Field(default=1200, ge=200, le=3000)
 
     # ---- Context Engine ----
+    # 兼容没有模型能力配置的内部调用；实际聊天按所选模型窗口动态计算。
     context_max_tokens: int = 8000
     context_recent_messages: int = 40
     memory_tokens_budget: int = 600
@@ -114,7 +117,9 @@ class Settings(BaseSettings):
     embedding_model: str = ""
 
     # ---- Database ----
-    database_url: str = "sqlite:///./data/personal_ai.db"
+    database_url: str = (
+        "postgresql+psycopg://personal_ai:personal_ai_local@localhost:5432/personal_ai"
+    )
 
     # ---- API ----
     api_host: str = "0.0.0.0"

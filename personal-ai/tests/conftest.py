@@ -4,7 +4,12 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.gettempdir()}/personal_ai_test.db"
+os.environ["DATABASE_URL"] = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+psycopg://personal_ai:personal_ai_test_local@localhost:5433/personal_ai_test",
+)
+if not os.environ["DATABASE_URL"].rstrip("/").endswith("/personal_ai_test"):
+    raise RuntimeError("测试只允许连接 personal_ai_test 数据库")
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["MODEL_ENVIRONMENT_FALLBACK_ENABLED"] = "true"
 os.environ["EMBEDDING_PROVIDER"] = "mock"
@@ -21,14 +26,24 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from infrastructure.config import settings
-from infrastructure.database import Base, engine
+from infrastructure.database import Base, engine, init_db
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_database():
+    """测试只使用独立 PostgreSQL 数据库，并通过 Alembic 建立 pgvector schema。"""
+    init_db()
+    yield
 
 
 @pytest.fixture(autouse=True)
-def clean_db():
-    """每个测试前重建数据库，保证隔离。"""
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+def clean_db(test_database):
+    """每个测试前清空独立测试库，保留 pgvector 扩展和索引。"""
+    table_names = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"
+        )
     upload_dir = Path(settings.file_storage_dir)
     image_dir = Path(settings.chat_image_storage_dir)
     sandbox_dir = Path(settings.sandbox_dir)

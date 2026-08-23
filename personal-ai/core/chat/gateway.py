@@ -27,8 +27,18 @@ class StreamChunk:
 class OpenAICompatibleProvider:
     """OpenAI 兼容 chat/completions 流式调用。"""
 
-    def __init__(self, base_url: str, api_key: str, model: str, timeout: float):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float,
+        context_window_tokens: int = 12_096,
+        max_output_tokens: int = 4_096,
+    ):
         self.model = model
+        self.context_window_tokens = context_window_tokens
+        self.max_output_tokens = max_output_tokens
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -47,6 +57,7 @@ class OpenAICompatibleProvider:
             "messages": messages,
             "stream": True,
             "temperature": temperature,
+            "max_tokens": self.max_output_tokens,
             "stream_options": {"include_usage": True},
         }
         if tools:
@@ -82,6 +93,7 @@ class OpenAICompatibleProvider:
             "messages": messages,
             "stream": False,
             "temperature": temperature,
+            "max_tokens": self.max_output_tokens,
         }
         response = await self._client.post("/chat/completions", json=payload)
         if response.status_code != 200:
@@ -339,7 +351,12 @@ def build_provider(settings) -> OpenAICompatibleProvider | MockProvider | Unconf
         if not settings.llm_base_url or not settings.llm_model:
             raise ValueError("LLM_PROVIDER=openai-compatible 时需配置 LLM_BASE_URL 与 LLM_MODEL")
         return OpenAICompatibleProvider(
-            settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_seconds
+            settings.llm_base_url,
+            settings.llm_api_key,
+            settings.llm_model,
+            settings.llm_timeout_seconds,
+            getattr(settings, "llm_context_window_tokens", 12_096),
+            getattr(settings, "llm_max_output_tokens", 4_096),
         )
     if settings.llm_provider == "unconfigured":
         return UnconfiguredProvider()

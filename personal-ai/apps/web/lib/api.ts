@@ -26,6 +26,7 @@ export interface ChatMessage {
   citations: CitationSource[];
   created_at: string;
   images: ChatImage[];
+  token_estimate: number;
 }
 
 export interface ChatImage {
@@ -271,6 +272,8 @@ export interface ModelSettings {
   base_url: string;
   model: string;
   timeout_seconds: number;
+  context_window_tokens: number;
+  max_output_tokens: number;
   api_key_configured: boolean;
 }
 
@@ -291,6 +294,7 @@ export interface AppSettings {
     default_model_id: string;
     items: ModelProfile[];
   };
+  context: { max_tokens: number };
   workspace: { coding_workspace_dir: string };
   agent: AgentSettings;
   agents: {
@@ -307,6 +311,8 @@ export interface ModelSettingsInput {
   api_key?: string;
   clear_api_key?: boolean;
   timeout_seconds: number;
+  context_window_tokens: number;
+  max_output_tokens: number;
 }
 
 export interface ModelProfileInput extends ModelSettingsInput {
@@ -440,6 +446,12 @@ export const submitApproval = (approvalId: string, approved: boolean) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approval_id: approvalId, approved }),
   });
+
+export const cancelChatRun = (runId: string) =>
+  req<{ ok: boolean; status: "cancelling"; run_id: string }>(
+    `${API_URL}/chat/${encodeURIComponent(runId)}/cancel`,
+    { method: "POST" },
+  );
 
 export const fetchActivities = () => req<Activity[]>(`${API_URL}/activities`);
 
@@ -690,17 +702,21 @@ export async function streamChat(
   documentIds: string[] = [],
   modelId?: string | null,
   imageIds: string[] = [],
+  runId?: string,
+  requirePlanApproval = false,
 ): Promise<void> {
   const resp = await fetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      run_id: runId || null,
       conversation_id: convId,
       message,
       execution_mode: executionMode,
       document_ids: documentIds,
       model_id: modelId || null,
       image_ids: imageIds,
+      require_plan_approval: requirePlanApproval,
     }),
     signal,
   });

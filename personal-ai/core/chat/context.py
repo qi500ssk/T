@@ -71,6 +71,9 @@ class Context:
     system: str
     messages: list[dict] = field(default_factory=list)
     token_estimate: int = 0
+    max_tokens: int = 0
+    token_breakdown: dict[str, int] = field(default_factory=dict)
+    conversation_token_estimate: int = 0
     memory_ids: list[str] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
 
@@ -92,6 +95,22 @@ def build_context(
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
+    conversation_rows = (
+        session.query(Message.id, Message.content)
+        .filter(Message.conversation_id == conversation_id)
+        .all()
+    )
+    conversation_message_ids = [row.id for row in conversation_rows]
+    conversation_image_count = (
+        session.query(ChatImage)
+        .filter(ChatImage.message_id.in_(conversation_message_ids))
+        .count()
+        if conversation_message_ids
+        else 0
+    )
+    conversation_token_estimate = sum(
+        estimate_tokens(row.content) for row in conversation_rows
+    ) + conversation_image_count * IMAGE_TOKEN_ESTIMATE
     current_images = (
         session.query(ChatImage)
         .filter(ChatImage.message_id == exclude_message_id)
@@ -108,6 +127,9 @@ def build_context(
         combined_system += "\n\n" + system_addendum
     base_system = _truncate_to_budget(combined_system, system_budget)
     system_parts = [base_system] if base_system else []
+    memory_section = ""
+    knowledge_section = ""
+    summary_section = ""
     memory_ids: list[str] = []
     sources: list[dict] = []
 
@@ -119,7 +141,18 @@ def build_context(
         text_cost = estimate_tokens(text) if text else 0
         return text_cost + sum(_content_token_estimate(item["content"]) for item in (messages or [])) + query_cost
 
-    memories = retrieve_memories(session, user_id, message, memory_limit) if memory_limit else []
+    memories = (
+        retrieve_memories(
+            session,
+            user_id,
+            message,
+            memory_limit,
+            embedding_provider=embedding_provider,
+            min_vector_similarity=config.rag_min_vector_similarity,
+        )
+        if memory_limit
+        else []
+    )
     memory_lines: list[str] = []
     for item in memories:
         candidate_lines = [*memory_lines, f"- {item.content}"]
@@ -131,7 +164,8 @@ def build_context(
         memory_lines = candidate_lines
         memory_ids.append(item.id)
     if memory_lines:
-        system_parts.append("[相关用户记忆]\n" + "\n".join(memory_lines))
+        memory_section = "[相关用户记忆]\n" + "\n".join(memory_lines)
+        system_parts.append(memory_section)
 
     should_retrieve = bool(document_ids) or not config.rag_query_gate_enabled or should_retrieve_knowledge(message)
     if embedding_provider is not None and config.rag_enabled and should_retrieve:
@@ -175,7 +209,8 @@ def build_context(
                 }
             )
         if source_blocks:
-            system_parts.append(rag_prompt + "\n\n" + "\n\n".join(source_blocks))
+            knowledge_section = rag_prompt + "\n\n" + "\n\n".join(source_blocks)
+            system_parts.append(knowledge_section)
 
     conversation = session.get(Conversation, conversation_id)
     if conversation and conversation.summary:
@@ -189,6 +224,7 @@ def build_context(
         if summary:
             section = header + summary
             if total_cost([*system_parts, section]) <= max_tokens:
+                summary_section = section
                 system_parts.append(section)
 
     query = session.query(Message).filter(Message.conversation_id == conversation_id)
@@ -237,10 +273,34 @@ def build_context(
     final_cost = (estimate_tokens(system) if system else 0) + sum(
         _content_token_estimate(item["content"]) for item in messages
     )
+    token_breakdown = {
+        "messages": sum(_content_token_estimate(item["content"]) for item in messages),
+        "system": 0,
+        "memory": 0,
+        "knowledge": 0,
+        "summary": 0,
+        "other": 0,
+    }
+    accounted_parts: list[str] = []
+    for key, section in (
+        ("system", base_system),
+        ("memory", memory_section),
+        ("knowledge", knowledge_section),
+        ("summary", summary_section),
+    ):
+        if not section:
+            continue
+        previous_cost = estimate_tokens("\n\n".join(accounted_parts)) if accounted_parts else 0
+        accounted_parts.append(section)
+        token_breakdown[key] = estimate_tokens("\n\n".join(accounted_parts)) - previous_cost
+    token_breakdown["other"] = max(0, final_cost - sum(token_breakdown.values()))
     return Context(
         system=system,
         messages=messages,
         token_estimate=final_cost,
+        max_tokens=max_tokens,
+        token_breakdown=token_breakdown,
+        conversation_token_estimate=conversation_token_estimate,
         memory_ids=memory_ids,
         sources=sources,
     )

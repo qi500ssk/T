@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -327,7 +329,7 @@ async def code_git_diff(_: dict) -> str:
     return await anyio.to_thread.run_sync(_git_diff_sync)
 
 
-def _run_check_sync(check: str, raw_path: str) -> str:
+def _prepare_check(check: str, raw_path: str) -> tuple[list[str], Path]:
     if check not in CHECKS:
         raise CodingToolError(f"不支持的检查类型：{check}")
     cwd = _workspace_path(raw_path)
@@ -343,11 +345,64 @@ def _run_check_sync(check: str, raw_path: str) -> str:
         if not (cwd / "package.json").is_file():
             raise CodingToolError("目标目录没有 package.json")
         command[0] = npm
-    code, output = _run_process(command, cwd, settings.coding_check_timeout_seconds)
-    return f"check={check}\nexit_code={code}\n{output or '命令未输出文本'}"
+    return command, cwd
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            taskkill = shutil.which("taskkill.exe") or shutil.which("taskkill")
+            if taskkill:
+                killer = await asyncio.create_subprocess_exec(
+                    taskkill,
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                await killer.wait()
+            else:
+                process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except (LookupError, OSError, TimeoutError):
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
 
 
 async def code_run_check(args: dict) -> str:
-    return await anyio.to_thread.run_sync(
-        _run_check_sync, args["check"], args.get("path", ".")
+    command, cwd = _prepare_check(args["check"], args.get("path", "."))
+    process_kwargs: dict = {
+        "cwd": cwd,
+        "env": _safe_process_env(),
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+    }
+    if os.name == "nt":
+        process_kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        process_kwargs["start_new_session"] = True
+    process = await asyncio.create_subprocess_exec(*command, **process_kwargs)
+    try:
+        stdout, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        await asyncio.shield(_terminate_process_tree(process))
+        raise
+    output = "\n".join(
+        part.decode("utf-8", errors="replace").strip()
+        for part in (stdout, stderr)
+        if part.strip()
     )
+    if len(output) > MAX_PROCESS_OUTPUT:
+        output = output[:MAX_PROCESS_OUTPUT].rstrip() + "\n[命令输出已截断]"
+    return f"check={args['check']}\nexit_code={process.returncode}\n{output or '命令未输出文本'}"

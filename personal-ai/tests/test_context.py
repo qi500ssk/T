@@ -26,6 +26,9 @@ def test_build_context_obeys_hard_budget():
     assert ctx.messages[-1] == {"role": "user", "content": "新消息"}
     assert len(ctx.messages) == 1
     assert 0 < ctx.token_estimate <= 200
+    assert ctx.max_tokens == 200
+    assert sum(ctx.token_breakdown.values()) == ctx.token_estimate
+    assert ctx.conversation_token_estimate > ctx.token_estimate
 
 
 def test_build_context_recent_limit():

@@ -30,6 +30,8 @@ class ModelSettingsBody(BaseModel):
     api_key: str | None = Field(default=None, max_length=1000)
     clear_api_key: bool = False
     timeout_seconds: float = Field(default=60.0, ge=5, le=300)
+    context_window_tokens: int = Field(default=12_096, ge=2_048, le=2_000_000)
+    max_output_tokens: int = Field(default=4_096, ge=1, le=262_144)
 
 
 class ModelProfileBody(ModelSettingsBody):
@@ -77,7 +79,8 @@ def _serialize(request: Request) -> dict:
     environment_error = getattr(request.app.state, "environment_model_error", None)
     model = (
         {field: getattr(settings, field) for field in (
-            "llm_provider", "llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds"
+            "llm_provider", "llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds",
+            "llm_context_window_tokens", "llm_max_output_tokens",
         )}
         if locked
         else snapshot["model"]
@@ -91,6 +94,8 @@ def _serialize(request: Request) -> dict:
             "base_url": item["llm_base_url"],
             "model": item["llm_model"],
             "timeout_seconds": item["llm_timeout_seconds"],
+            "context_window_tokens": item["llm_context_window_tokens"],
+            "max_output_tokens": item["llm_max_output_tokens"],
             "api_key_configured": bool(item.get("llm_api_key")),
             "is_default": item["id"] == models["default_model_id"],
         }
@@ -110,6 +115,8 @@ def _serialize(request: Request) -> dict:
             "base_url": model["llm_base_url"],
             "model": model["llm_model"],
             "timeout_seconds": model["llm_timeout_seconds"],
+            "context_window_tokens": model["llm_context_window_tokens"],
+            "max_output_tokens": model["llm_max_output_tokens"],
             "api_key_configured": bool(model.get("llm_api_key")),
         },
         "models": {
@@ -120,6 +127,9 @@ def _serialize(request: Request) -> dict:
             "source": "environment" if locked else ("error" if environment_error else "profiles"),
             "locked": locked,
             "error": environment_error,
+        },
+        "context": {
+            "max_tokens": settings.context_max_tokens,
         },
         "workspace": {
             "coding_workspace_dir": str(
@@ -153,7 +163,11 @@ def _model_values(request: Request, body: ModelSettingsBody, current: dict | Non
         "llm_api_key": api_key,
         "llm_model": body.model.strip(),
         "llm_timeout_seconds": body.timeout_seconds,
+        "llm_context_window_tokens": body.context_window_tokens,
+        "llm_max_output_tokens": body.max_output_tokens,
     }
+    if values["llm_max_output_tokens"] >= values["llm_context_window_tokens"]:
+        raise HTTPException(422, "最大输出 tokens 必须小于上下文窗口")
     if body.provider == "openai-compatible":
         parsed = urlparse(values["llm_base_url"])
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -210,7 +224,8 @@ async def _activate_model(request: Request, models: dict) -> None:
         item for item in models["items"] if item["id"] == models["default_model_id"]
     )
     values = {key: selected[key] for key in (
-        "llm_provider", "llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds"
+        "llm_provider", "llm_base_url", "llm_api_key", "llm_model", "llm_timeout_seconds",
+        "llm_context_window_tokens", "llm_max_output_tokens",
     )}
     if getattr(request.app.state, "environment_model_locked", False) or getattr(
         request.app.state, "environment_model_error", None

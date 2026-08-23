@@ -1,12 +1,11 @@
 import json
 
 import pytest
-from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from core.chat.agent import run_chat
 from core.chat.gateway import MockProvider
-from core.execution.permissions import APPROVAL_WAITERS
+from core.execution.permissions import APPROVAL_WAITERS, resolve_approval
 from core.automation.planner import PlanValidationError, parse_plan
 from core.capabilities.skills import load_skills
 from infrastructure.config import settings
@@ -18,8 +17,6 @@ from infrastructure.database import (
     PlanStep,
     SessionLocal,
     ToolRun,
-    _migrate_sqlite_p6,
-    engine,
 )
 
 
@@ -116,6 +113,30 @@ async def test_planned_run_persists_steps_and_uses_one_agent_run(monkeypatch):
         assert plan.status == "completed"
         assert session.query(PlanStep).filter(PlanStep.status == "completed").count() == 2
         assert session.query(ToolRun).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_interactive_plan_waits_for_confirmation_and_can_be_cancelled(monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    events = []
+    async for event in run_chat(
+        MockProvider(delay=0),
+        _conversation(),
+        "先制定计划，不要直接执行",
+        skills=load_skills(),
+        execution_mode="planned",
+        require_plan_approval=True,
+    ):
+        events.append(event)
+        if event.type == "plan.approval.required":
+            assert resolve_approval(event.data["approval_id"], False)
+    types = [event.type for event in events]
+    assert types.index("plan.created") < types.index("plan.approval.required")
+    assert "plan.step.started" not in types
+    assert types[-1] == "run.cancelled"
+    with SessionLocal() as session:
+        assert session.query(Plan).one().status == "cancelled"
+        assert session.query(AgentRun).one().status == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -248,21 +269,6 @@ def test_planner_disabled_rejects_chat_and_activity(client, monkeypatch):
             "next_run_at": "2026-08-22T09:00:00+08:00",
         },
     ).status_code == 409
-
-
-def test_p6_migration_adds_execution_modes_and_is_idempotent():
-    with engine.begin() as connection:
-        connection.execute(text("DROP INDEX uq_agent_runs_running_conversation"))
-        connection.execute(text("ALTER TABLE agent_runs DROP COLUMN execution_mode"))
-        connection.execute(text("ALTER TABLE activities DROP COLUMN execution_mode"))
-    _migrate_sqlite_p6()
-    _migrate_sqlite_p6()
-    inspector = inspect(engine)
-    assert "execution_mode" in {row["name"] for row in inspector.get_columns("agent_runs")}
-    assert "execution_mode" in {row["name"] for row in inspector.get_columns("activities")}
-    assert "uq_agent_runs_running_conversation" in {
-        row["name"] for row in inspector.get_indexes("agent_runs")
-    }
 
 
 def test_delete_conversation_cleans_plan_run_and_steps(client):

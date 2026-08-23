@@ -2,10 +2,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +23,7 @@ from apps.api.settings import router as settings_router
 from apps.api.projects import router as projects_router
 from apps.api.images import image_dict, router as images_router
 from core.chat.images import resolve_image
+from core.chat.context import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from core.automation.activity import activity_worker, recover_interrupted_activities
 from core.rag.embedding import build_embedding_provider
 from core.chat.character import load_character
@@ -77,6 +79,8 @@ async def lifespan(app: FastAPI):
             "llm_api_key": "",
             "llm_model": "",
             "llm_timeout_seconds": 60.0,
+            "llm_context_window_tokens": settings.llm_context_window_tokens,
+            "llm_max_output_tokens": settings.llm_max_output_tokens,
         }
     apply_runtime_config(settings, runtime_snapshot)
     app.state.agent_profile = runtime_snapshot["agent"]
@@ -188,13 +192,15 @@ def _conv_dict(c: Conversation) -> dict:
 
 
 def _message_dict(m: Message, images: list[ChatImage] | None = None) -> dict:
+    message_images = images or []
     return {
         "id": m.id,
         "role": m.role,
         "content": m.content,
         "citations": m.citations or [],
         "created_at": m.created_at.isoformat(),
-        "images": [image_dict(image) for image in (images or [])],
+        "images": [image_dict(image) for image in message_images],
+        "token_estimate": estimate_tokens(m.content) + len(message_images) * IMAGE_TOKEN_ESTIMATE,
     }
 
 
@@ -349,10 +355,12 @@ def list_memories():
 
 
 @app.post("/api/memories")
-def create_memory(body: MemoryCreate):
+def create_memory(body: MemoryCreate, request: Request):
     content = body.content.strip()
     if contains_sensitive_information(content):
         raise HTTPException(422, "记忆内容包含敏感信息，已拒绝保存")
+    provider = request.app.state.embedding_provider
+    embedding = provider.embed_documents([content])[0]
     with SessionLocal() as session:
         mem = Memory(
             kind=body.kind,
@@ -360,6 +368,10 @@ def create_memory(body: MemoryCreate):
             normalized_key=normalize_memory_key("", content),
             importance=body.importance,
             confidence=1.0,
+            embedding=embedding,
+            embedding_model=provider.model_name,
+            embedding_dim=provider.dimension,
+            embedded_at=datetime.now(timezone.utc),
         )
         session.add(mem)
         try:
@@ -371,7 +383,7 @@ def create_memory(body: MemoryCreate):
 
 
 @app.patch("/api/memories/{mem_id}")
-def update_memory(mem_id: str, body: MemoryUpdate):
+def update_memory(mem_id: str, body: MemoryUpdate, request: Request):
     with SessionLocal() as session:
         mem = session.get(Memory, mem_id)
         if mem is None:
@@ -383,6 +395,11 @@ def update_memory(mem_id: str, body: MemoryUpdate):
             setattr(mem, field, value.strip() if field == "content" else value)
         if "content" in changes:
             mem.normalized_key = normalize_memory_key("", changes["content"])
+            provider = request.app.state.embedding_provider
+            mem.embedding = provider.embed_documents([mem.content])[0]
+            mem.embedding_model = provider.model_name
+            mem.embedding_dim = provider.dimension
+            mem.embedded_at = datetime.now(timezone.utc)
         try:
             session.commit()
         except IntegrityError:

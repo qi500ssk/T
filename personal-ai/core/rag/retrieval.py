@@ -1,4 +1,4 @@
-"""SQLite 阶段的向量 + BM25 + RRF 混合检索。"""
+"""pgvector 向量 + BM25 + RRF 混合检索。"""
 
 from __future__ import annotations
 
@@ -111,14 +111,27 @@ def retrieve(
     )
     if document_ids:
         query_builder = query_builder.filter(Document.id.in_(document_ids))
+    query_vector = embedding_provider.embed_query(query)
     rows = query_builder.all()
     if not rows:
         return []
 
-    query_vector = np.asarray(embedding_provider.embed_query(query), dtype=np.float32)
-    matrix = np.asarray([chunk.embedding for chunk, _ in rows], dtype=np.float32)
-    vector_scores = matrix @ query_vector
-    vector_order = np.argsort(-vector_scores)[: settings.rag_vector_top_k].tolist()
+    index_by_chunk_id = {chunk.id: index for index, (chunk, _) in enumerate(rows)}
+    vector_scores = np.full(len(rows), -1.0, dtype=np.float32)
+    distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
+    vector_rows = (
+        query_builder
+        .filter(DocumentChunk.embedding.is_not(None))
+        .add_columns(distance)
+        .order_by(distance.asc())
+        .limit(settings.rag_vector_top_k)
+        .all()
+    )
+    vector_order = []
+    for chunk, _document, cosine_distance in vector_rows:
+        index = index_by_chunk_id[chunk.id]
+        vector_order.append(index)
+        vector_scores[index] = 1.0 - float(cosine_distance)
 
     corpus = [tokenize_for_bm25(chunk.content) for chunk, _ in rows]
     query_tokens = tokenize_for_bm25(query)

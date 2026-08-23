@@ -134,10 +134,10 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
       const selected = value.models.items.find((item) => item.id === value.models.default_model_id);
       if (selected) {
         setSelectedModelId(selected.id);
-        setModel({ name: selected.name, provider: selected.provider === "mock" ? "mock" : "openai-compatible", base_url: selected.base_url, model: selected.model, timeout_seconds: selected.timeout_seconds });
+        setModel({ name: selected.name, provider: selected.provider === "mock" ? "mock" : "openai-compatible", base_url: selected.base_url, model: selected.model, timeout_seconds: selected.timeout_seconds, context_window_tokens: selected.context_window_tokens, max_output_tokens: selected.max_output_tokens });
         setApiKeyConfigured(selected.api_key_configured);
       } else {
-        setModel({ name: "DeepSeek V4 Flash", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60 });
+        setModel({ name: "DeepSeek V4 Flash", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60, context_window_tokens: 12_096, max_output_tokens: 4_096 });
       }
       setWorkspace(value.workspace.coding_workspace_dir);
     }).catch((err) => setError(err instanceof Error ? err.message : "设置加载失败"));
@@ -205,11 +205,11 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
     setNotice(""); setError("");
   };
 
-  const modelPayload = (): ModelSettingsInput => ({ model_id: selectedModelId || undefined, provider: model.provider, base_url: model.base_url, model: model.model, timeout_seconds: model.timeout_seconds, api_key: apiKey || undefined, clear_api_key: clearApiKey });
+  const modelPayload = (): ModelSettingsInput => ({ model_id: selectedModelId || undefined, provider: model.provider, base_url: model.base_url, model: model.model, timeout_seconds: model.timeout_seconds, context_window_tokens: model.context_window_tokens, max_output_tokens: model.max_output_tokens, api_key: apiKey || undefined, clear_api_key: clearApiKey });
   const profilePayload = (): ModelProfileInput => ({ ...modelPayload(), name: model.name.trim() });
   const selectProfile = (profile: ModelProfile) => {
     setSelectedModelId(profile.id);
-    setModel({ name: profile.name, provider: profile.provider === "mock" ? "mock" : "openai-compatible", base_url: profile.base_url, model: profile.model, timeout_seconds: profile.timeout_seconds });
+    setModel({ name: profile.name, provider: profile.provider === "mock" ? "mock" : "openai-compatible", base_url: profile.base_url, model: profile.model, timeout_seconds: profile.timeout_seconds, context_window_tokens: profile.context_window_tokens, max_output_tokens: profile.max_output_tokens });
     setApiKey(""); setClearApiKey(false); setApiKeyConfigured(profile.api_key_configured); setNotice(""); setError("");
   };
   const refreshSettings = async (message: string, preferredId?: string | null) => {
@@ -227,7 +227,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   });
   const newProfile = () => {
     setSelectedModelId(null);
-    setModel({ name: "", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60 });
+    setModel({ name: "", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60, context_window_tokens: 12_096, max_output_tokens: 4_096 });
     setApiKey(""); setClearApiKey(false); setApiKeyConfigured(false); setNotice(""); setError("");
   };
 
@@ -238,6 +238,8 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   };
 
   const customPromptActive = Boolean(agent.custom_instructions.trim());
+  const modelInputBudget = Math.max(0, model.context_window_tokens - model.max_output_tokens);
+  const modelBudgetInvalid = model.max_output_tokens >= model.context_window_tokens;
 
   return (
     <main id="main-content" className="min-w-0 flex-1 overflow-y-auto bg-white">
@@ -310,7 +312,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                 <div className="flex items-center justify-between px-2 py-2"><div><h2 className="font-semibold">已保存模型</h2><p className="mt-0.5 text-xs text-zinc-500">{settings.models.items.length} 个配置</p></div><button type="button" onClick={newProfile} className="min-h-10 rounded-xl bg-zinc-950 px-3 text-sm font-medium text-white hover:bg-zinc-800">＋ 新建</button></div>
                 <div className="mt-2 space-y-2">
                   {settings.models.items.map((profile) => <div key={profile.id} className={`rounded-2xl border p-2 ${profile.id === selectedModelId ? "border-zinc-900 bg-zinc-50" : "border-zinc-200"}`}>
-                    <button type="button" onClick={() => selectProfile(profile)} className="w-full rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-zinc-900"><span className="flex items-center gap-2"><strong className="min-w-0 flex-1 truncate text-sm">{profile.name}</strong>{profile.is_default && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">默认</span>}</span><span className="mt-1 block truncate text-xs text-zinc-500">{profile.model || "未命名模型"}</span></button>
+                    <button type="button" onClick={() => selectProfile(profile)} className="w-full rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-zinc-900"><span className="flex items-center gap-2"><strong className="min-w-0 flex-1 truncate text-sm">{profile.name}</strong>{profile.is_default && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">默认</span>}</span><span className="mt-1 block truncate text-xs text-zinc-500">{profile.model || "未命名模型"} · {profile.context_window_tokens.toLocaleString("zh-CN")} tokens</span></button>
                     <div className="flex gap-1 px-1 pb-1">{!profile.is_default && <button type="button" disabled={busy !== ""} onClick={() => void run("default", async () => { await setDefaultModelProfile(profile.id); await refreshSettings(`${profile.name} 已设为默认模型`, profile.id); })} className="min-h-9 rounded-lg px-2 text-xs font-medium text-zinc-600 hover:bg-white">设为默认</button>}<button type="button" disabled={busy !== "" || profile.is_default} onClick={() => { if (window.confirm(`删除模型配置“${profile.name}”？`)) void run("delete", async () => { await deleteModelProfile(profile.id); await refreshSettings("模型配置已删除", null); }); }} className="ml-auto min-h-9 rounded-lg px-2 text-xs text-red-600 hover:bg-red-50 disabled:text-zinc-300" title={profile.is_default ? "请先把另一个模型设为默认" : "删除配置"}>删除</button></div>
                   </div>)}
                   {settings.models.items.length === 0 && <div className="rounded-2xl border border-dashed border-zinc-300 px-4 py-8 text-center text-sm text-zinc-500">还没有可用模型<br /><button type="button" onClick={newProfile} className="mt-3 font-medium text-zinc-950 underline underline-offset-4">创建第一个配置</button></div>}
@@ -324,9 +326,12 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">API 地址<input value={model.base_url} onChange={(e) => setModel({ ...model, base_url: e.target.value })} className={inputClass} placeholder="https://api.example.com/v1" /></label>
                   <label className="grid gap-2 text-sm font-medium">模型名称{preset === "deepseek" ? <select value={model.model} onChange={(e) => setModel({ ...model, model: e.target.value })} className={inputClass}><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select> : <input value={model.model} onChange={(e) => setModel({ ...model, model: e.target.value })} className={inputClass} placeholder="模型 ID" />}{preset === "deepseek" && <span className="text-xs font-normal leading-5 text-zinc-500">来自 DeepSeek 官方当前模型列表；旧的 deepseek-chat / reasoner 已停止使用。</span>}</label>
                   <label className="grid gap-2 text-sm font-medium">请求超时（秒）<input type="number" min={5} max={300} value={model.timeout_seconds} onChange={(e) => setModel({ ...model, timeout_seconds: Number(e.target.value) })} className={inputClass} /></label>
+                  <label className="grid gap-2 text-sm font-medium">上下文窗口（tokens）<input type="number" min={2048} max={2000000} step={1024} value={model.context_window_tokens} onChange={(e) => setModel({ ...model, context_window_tokens: Number(e.target.value) })} className={inputClass} /><span className="text-xs font-normal leading-5 text-zinc-500">填写模型厂商公布的总窗口，包含输入和本次输出。</span></label>
+                  <label className="grid gap-2 text-sm font-medium">最大输出（tokens）<input type="number" min={1} max={Math.max(1, model.context_window_tokens - 1)} step={1024} value={model.max_output_tokens} onChange={(e) => setModel({ ...model, max_output_tokens: Number(e.target.value) })} className={inputClass} /><span className="text-xs font-normal leading-5 text-zinc-500">为回答预留；当前输入容量约 {modelInputBudget.toLocaleString("zh-CN")} tokens。</span></label>
+                  {modelBudgetInvalid && <p className="sm:col-span-2 rounded-xl bg-red-50 px-3 py-2 text-xs leading-5 text-red-700" role="alert">最大输出必须小于上下文窗口。</p>}
                   <label className="grid gap-2 text-sm font-medium sm:col-span-2">API Key<input type="password" autoComplete="off" disabled={clearApiKey} value={apiKey} onChange={(e) => { setApiKey(e.target.value); setClearApiKey(false); }} className={inputClass} placeholder={apiKeyConfigured ? "已安全保存；留空表示不修改" : "云端模型必须填写；本地服务可留空"} /><span className="flex flex-wrap items-center justify-between gap-2 text-xs font-normal text-zinc-500"><span>Key 只保存在本机运行时配置，不返回浏览器，也不写入 Git。</span>{apiKeyConfigured && <label className="inline-flex items-center gap-2"><input type="checkbox" checked={clearApiKey} onChange={(e) => setClearApiKey(e.target.checked)} />清除已保存的 Key</label>}</span></label>
                 </div>
-                <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" disabled={busy !== ""} onClick={() => void run("test", async () => setNotice(`${(await testModelSettings(modelPayload())).message}；本次只测试，不会保存修改`))} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">{busy === "test" ? "测试中…" : "仅测试（不保存）"}</button><button type="button" disabled={busy !== "" || !model.name.trim()} onClick={saveModel} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "model" ? "保存中…" : selectedModelId ? "保存修改" : "保存配置"}</button></div>
+                <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" disabled={busy !== "" || modelBudgetInvalid} onClick={() => void run("test", async () => setNotice(`${(await testModelSettings(modelPayload())).message}；本次只测试，不会保存修改`))} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">{busy === "test" ? "测试中…" : "仅测试（不保存）"}</button><button type="button" disabled={busy !== "" || !model.name.trim() || modelBudgetInvalid} onClick={saveModel} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "model" ? "保存中…" : selectedModelId ? "保存修改" : "保存配置"}</button></div>
               </section>
             </div>
           </div>

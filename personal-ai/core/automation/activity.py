@@ -41,7 +41,7 @@ class ActivityLimitError(RuntimeError):
 
 
 def utc_datetime(value: datetime) -> datetime:
-    """把 SQLite 返回的 naive 时间明确视为 UTC。"""
+    """兼容数据库驱动返回的 naive 时间，并明确按 UTC 处理。"""
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
@@ -295,6 +295,8 @@ async def _run_activity(
             execution_mode=activity.execution_mode,
             agent_profile=agent_profile,
             mcp_clients=mcp_clients,
+            context_window_tokens=settings.llm_context_window_tokens,
+            max_output_tokens=settings.llm_max_output_tokens,
         ):
             if event.type == "run.started":
                 run_id = str(event.data["run_id"])

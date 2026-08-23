@@ -59,8 +59,10 @@ async def test_mock_tool_flow_and_tool_run_record(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     events = await _run("现在几点")
     types = [event.type for event in events]
+    assert "tool.proposed" in types
     assert "tool.started" in types
     assert "tool.completed" in types
+    assert types.index("tool.proposed") < types.index("tool.started")
     assert types[-2:] == ["message.completed", "run.completed"]
     with SessionLocal() as session:
         row = session.query(ToolRun).one()
@@ -73,6 +75,9 @@ async def test_mock_tool_flow_and_tool_run_record(monkeypatch):
     started = next(event for event in events if event.type == "run.started")
     assert started.data["capability_version"]
     assert "file-notes" in started.data["enabled_skills"]
+    proposed = next(event for event in events if event.type == "tool.proposed")
+    assert proposed.data["risk_level"] == "low"
+    assert proposed.data["effect"]
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: personal-ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: personal_ai
+      POSTGRES_USER: personal_ai
+      POSTGRES_PASSWORD: personal_ai_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - personal_ai_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U personal_ai -d personal_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  postgres-test:
+    image: pgvector/pgvector:pg16
+    container_name: personal-ai-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: personal_ai_test
+      POSTGRES_USER: personal_ai
+      POSTGRES_PASSWORD: personal_ai_test_local
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U personal_ai -d personal_ai_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  personal_ai_postgres:

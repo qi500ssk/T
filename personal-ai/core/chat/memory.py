@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,9 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from infrastructure.database import Memory
+
+
+logger = logging.getLogger(__name__)
 
 
 _PROMPT_FILE = Path(__file__).resolve().parents[2] / "prompts" / "memory" / "extract.md"
@@ -113,15 +117,26 @@ def save_memories(
     conversation_id: str,
     min_importance: int,
     min_confidence: float,
+    embedding_provider=None,
 ) -> int:
     saved = 0
-    for candidate in candidates:
-        if (
-            candidate.importance < min_importance
-            or candidate.confidence < min_confidence
-            or contains_sensitive_information(candidate.content)
-        ):
-            continue
+    accepted = [
+        candidate
+        for candidate in candidates
+        if candidate.importance >= min_importance
+        and candidate.confidence >= min_confidence
+        and not contains_sensitive_information(candidate.content)
+    ]
+    embeddings: list[list[float] | None] = [None] * len(accepted)
+    if accepted and embedding_provider is not None:
+        try:
+            embeddings = embedding_provider.embed_documents(
+                [candidate.content for candidate in accepted]
+            )
+        except Exception:
+            logger.exception("长期记忆向量生成失败，保留文本记忆并使用关键词召回")
+    now = datetime.now(timezone.utc)
+    for candidate, embedding in zip(accepted, embeddings, strict=True):
         existing = (
             session.query(Memory)
             .filter(Memory.user_id == user_id, Memory.normalized_key == candidate.key)
@@ -137,6 +152,10 @@ def save_memories(
                     source_conversation_id=conversation_id,
                     importance=candidate.importance,
                     confidence=candidate.confidence,
+                    embedding=embedding,
+                    embedding_model=(embedding_provider.model_name if embedding is not None else None),
+                    embedding_dim=(embedding_provider.dimension if embedding is not None else None),
+                    embedded_at=(now if embedding is not None else None),
                 )
             )
         else:
@@ -146,7 +165,15 @@ def save_memories(
             existing.importance = candidate.importance
             existing.confidence = candidate.confidence
             existing.is_active = True
-            existing.updated_at = datetime.now(timezone.utc)
+            existing.embedding = embedding
+            existing.embedding_model = (
+                embedding_provider.model_name if embedding is not None else None
+            )
+            existing.embedding_dim = (
+                embedding_provider.dimension if embedding is not None else None
+            )
+            existing.embedded_at = now if embedding is not None else None
+            existing.updated_at = now
         saved += 1
     if saved:
         session.commit()
@@ -161,9 +188,16 @@ def _terms(text: str) -> set[str]:
     return terms
 
 
-def retrieve_memories(session: Session, user_id: str, query: str, limit: int) -> list[Memory]:
+def retrieve_memories(
+    session: Session,
+    user_id: str,
+    query: str,
+    limit: int,
+    embedding_provider=None,
+    min_vector_similarity: float = 0.3,
+) -> list[Memory]:
     query_terms = _terms(query)
-    rows = (
+    keyword_rows = (
         session.query(Memory)
         .filter(Memory.user_id == user_id, Memory.is_active.is_(True))
         .order_by(Memory.updated_at.desc())
@@ -171,12 +205,39 @@ def retrieve_memories(session: Session, user_id: str, query: str, limit: int) ->
         .all()
     )
 
+    vector_scores: dict[str, float] = {}
+    vector_rows: list[Memory] = []
+    if embedding_provider is not None:
+        query_vector = embedding_provider.embed_query(query)
+        distance = Memory.embedding.cosine_distance(query_vector).label("distance")
+        matches = (
+            session.query(Memory, distance)
+            .filter(
+                Memory.user_id == user_id,
+                Memory.is_active.is_(True),
+                Memory.embedding.is_not(None),
+                Memory.embedding_model == embedding_provider.model_name,
+                Memory.embedding_dim == embedding_provider.dimension,
+            )
+            .order_by(distance.asc())
+            .limit(max(limit * 4, 20))
+            .all()
+        )
+        for memory, cosine_distance in matches:
+            similarity = 1.0 - float(cosine_distance)
+            if similarity >= min_vector_similarity:
+                vector_rows.append(memory)
+                vector_scores[memory.id] = similarity
+
+    rows_by_id = {memory.id: memory for memory in [*keyword_rows, *vector_rows]}
+
     def score(memory: Memory) -> float:
         overlap = len(query_terms & _terms(memory.content))
         exact = 3 if query.strip() and query.strip() in memory.content else 0
-        return overlap * 2 + exact + memory.importance * 0.1
+        semantic = vector_scores.get(memory.id, 0.0) * 2
+        return overlap * 2 + exact + semantic + memory.importance * 0.1
 
-    ranked = [(score(memory), memory) for memory in rows]
+    ranked = [(score(memory), memory) for memory in rows_by_id.values()]
     ranked = [item for item in ranked if item[0] >= 1]
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [memory for _, memory in ranked[:limit]]

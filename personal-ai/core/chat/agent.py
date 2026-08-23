@@ -15,7 +15,7 @@ import anyio
 from sqlalchemy.exc import IntegrityError
 
 from core.chat.character import apply_agent_profile, load_character, render_system_prompt
-from core.chat.context import build_context
+from core.chat.context import build_context, estimate_tokens
 from core.chat.memory import extract_memories, save_memories
 from core.execution.executor import ToolCallBudget, execute_model_loop, merge_tool_call_deltas
 from core.automation.planner import (
@@ -30,7 +30,11 @@ from core.automation.planner import (
     populate_plan,
     set_step_running,
 )
-from core.execution.permissions import cancel_run_approvals
+from core.execution.permissions import (
+    cancel_run_approvals,
+    create_approval,
+    wait_for_approval,
+)
 from core.capabilities.registry import (
     build_run_capability_snapshot,
     connected_mcp_tool_names,
@@ -71,6 +75,15 @@ def sse_packet(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _add_token_usage(target: dict, source: dict) -> None:
+    target["prompt_tokens"] += int(source.get("prompt_tokens", 0))
+    target["completion_tokens"] += int(source.get("completion_tokens", 0))
+    if "cached_prompt_tokens" in source:
+        target["cached_prompt_tokens"] = int(target.get("cached_prompt_tokens", 0)) + int(
+            source.get("cached_prompt_tokens", 0)
+        )
+
+
 async def run_chat(
     provider,
     conversation_id: str,
@@ -85,9 +98,13 @@ async def run_chat(
     document_ids: list[str] | None = None,
     image_ids: list[str] | None = None,
     mcp_clients: list | None = None,
+    context_window_tokens: int | None = None,
+    max_output_tokens: int | None = None,
+    run_id: str | None = None,
+    require_plan_approval: bool = False,
 ) -> AsyncIterator[AgentEvent]:
     """执行一次 Agent Run，产出 SSE Agent Event Protocol 事件。"""
-    run_id = uuid.uuid4().hex
+    run_id = run_id or uuid.uuid4().hex
     active_skills = list(skills or []) if settings.tools_enabled else []
     allowed_tools = allowed_tool_names(active_skills, settings.tools_enabled)
     if settings.tools_enabled:
@@ -176,6 +193,19 @@ async def run_chat(
                 render_system_prompt, character, settings.system_prompt_file
             )
             schemas = tool_schemas(allowed_tools) if allowed_tools else None
+            model_context_window = (
+                int(context_window_tokens)
+                if context_window_tokens is not None
+                else settings.context_max_tokens
+            )
+            model_max_output = int(max_output_tokens) if max_output_tokens is not None else 0
+            input_budget = model_context_window - model_max_output
+            schema_tokens = estimate_tokens(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
+            prompt_budget = input_budget - schema_tokens
+            if prompt_budget <= 0:
+                raise RuntimeError(
+                    "模型上下文窗口过小：最大输出和工具定义已占满可用容量，请调大上下文窗口或调小最大输出"
+                )
             skill_prompt = render_skill_instructions(active_skills)
             mcp_prompt = _mcp_tool_guidance(mcp_clients)
             system_addendum = "\n\n".join(
@@ -189,7 +219,7 @@ async def run_chat(
                         system_prompt,
                         conversation_id,
                         message,
-                        settings.context_max_tokens,
+                        prompt_budget,
                         settings.context_recent_messages,
                         user_id,
                         settings.memory_recall_limit if settings.memory_enabled else 0,
@@ -202,6 +232,9 @@ async def run_chat(
 
             yield AgentEvent("context.started", {"run_id": run_id})
             context = await anyio.to_thread.run_sync(_build)
+            context.max_tokens = input_budget
+            context.token_estimate += schema_tokens
+            context.token_breakdown["tools"] = schema_tokens
             yield AgentEvent(
                 "context.completed",
                 {
@@ -210,6 +243,13 @@ async def run_chat(
                     "source_count": len(context.sources),
                     "selected_document_count": len(document_ids or []),
                     "token_estimate": context.token_estimate,
+                    "max_tokens": context.max_tokens,
+                    "context_window_tokens": model_context_window,
+                    "max_output_tokens": model_max_output,
+                    "input_budget_tokens": input_budget,
+                    "remaining_tokens": max(0, input_budget - context.token_estimate),
+                    "conversation_token_estimate": context.conversation_token_estimate,
+                    "token_breakdown": context.token_breakdown,
                 },
             )
             messages = [{"role": "system", "content": context.system}] + context.messages
@@ -242,6 +282,42 @@ async def run_chat(
                         "steps": [_step_event(row) for row in steps],
                     },
                 )
+                if require_plan_approval and approval_mode == "interactive" and activity_id is None:
+                    plan_approval_id = create_approval(run_id)
+                    yield AgentEvent(
+                        "plan.approval.required",
+                        {
+                            "approval_id": plan_approval_id,
+                            "run_id": run_id,
+                            "plan_id": plan.id,
+                            "goal": plan.goal,
+                            "step_count": len(steps),
+                        },
+                    )
+                    plan_approved = await wait_for_approval(
+                        plan_approval_id, settings.approval_timeout_seconds
+                    )
+                    yield AgentEvent(
+                        "plan.approval.completed",
+                        {
+                            "approval_id": plan_approval_id,
+                            "run_id": run_id,
+                            "plan_id": plan.id,
+                            "approved": plan_approved is True,
+                        },
+                    )
+                    if plan_approved is not True:
+                        reason = (
+                            "计划确认超时，未开始执行"
+                            if plan_approved is None
+                            else "用户取消了计划，未开始执行"
+                        )
+                        await anyio.to_thread.run_sync(cancel_plan_for_run, run_id)
+                        await _fail_run(run_id, "cancelled", reason)
+                        yield AgentEvent(
+                            "run.cancelled", {"run_id": run_id, "reason": reason}
+                        )
+                        return
                 tool_budget = ToolCallBudget(settings.planner_max_tool_calls)
                 completed: list[dict] = []
                 while True:
@@ -293,8 +369,7 @@ async def run_chat(
                         if step_result is None:
                             raise RuntimeError("步骤 Executor 未返回结果")
                         step_usage = step_result["usage"]
-                        usage["prompt_tokens"] += int(step_usage.get("prompt_tokens", 0))
-                        usage["completion_tokens"] += int(step_usage.get("completion_tokens", 0))
+                        _add_token_usage(usage, step_usage)
                         output = str(step_result.get("content") or "").strip()
                         if step_result.get("blocked") or not output:
                             error = "当前步骤缺少可用结果或所需工具执行失败"
@@ -399,8 +474,7 @@ async def run_chat(
                     raise RuntimeError("最终汇总未返回结果")
                 reply = str(synthesis["content"])
                 synth_usage = synthesis["usage"]
-                usage["prompt_tokens"] += int(synth_usage.get("prompt_tokens", 0))
-                usage["completion_tokens"] += int(synth_usage.get("completion_tokens", 0))
+                _add_token_usage(usage, synth_usage)
             else:
                 result = None
                 yield AgentEvent(
@@ -491,6 +565,7 @@ async def run_chat(
                         conversation_id,
                         settings.memory_min_importance,
                         settings.memory_min_confidence,
+                        embedding_provider,
                     )
 
             await anyio.to_thread.run_sync(_save_extracted)
@@ -509,7 +584,13 @@ async def run_chat(
     if run_status == "failed":
         yield AgentEvent("run.failed", {"run_id": run_id, "error": run_error})
     else:
-        yield AgentEvent("run.completed", {"run_id": run_id, "token_usage": usage})
+        usage_payload = dict(usage)
+        if "cached_prompt_tokens" in usage_payload and usage_payload["prompt_tokens"] > 0:
+            usage_payload["cache_hit_rate"] = round(
+                usage_payload["cached_prompt_tokens"] / usage_payload["prompt_tokens"] * 100,
+                1,
+            )
+        yield AgentEvent("run.completed", {"run_id": run_id, "token_usage": usage_payload})
 
 
 def _step_event(step) -> dict:

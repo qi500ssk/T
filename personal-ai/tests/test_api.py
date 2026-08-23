@@ -75,10 +75,20 @@ def test_chat_stream_events(client):
         "run.started"
     ]  # 注意 dict 会覆盖重复 key，此处只取 run.started
     assert started["run_id"]
+    context = dict(events)["context.completed"]
+    assert context["context_window_tokens"] > context["max_output_tokens"]
+    assert context["input_budget_tokens"] == (
+        context["context_window_tokens"] - context["max_output_tokens"]
+    )
+    assert context["remaining_tokens"] == (
+        context["input_budget_tokens"] - context["token_estimate"]
+    )
+    assert context["conversation_token_estimate"] > 0
 
     # 消息已持久化，会话标题自动取消息前 20 字
     msgs = client.get(f"/api/conversations/{conv['id']}/messages").json()
     assert msgs[0]["role"] == "user" and msgs[0]["content"] == "你好"
+    assert msgs[0]["token_estimate"] > 0
     assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"]
     rows = client.get("/api/conversations").json()
     assert [c for c in rows if c["id"] == conv["id"]][0]["title"] == "你好"
@@ -220,3 +230,8 @@ def test_unknown_approval_returns_404(client):
         json={"approval_id": "0" * 32, "approved": True},
     )
     assert response.status_code == 404
+
+
+def test_unknown_or_invalid_chat_cancel_is_rejected(client):
+    assert client.post(f"/api/chat/{'0' * 32}/cancel").status_code == 404
+    assert client.post("/api/chat/not-a-run/cancel").status_code == 422

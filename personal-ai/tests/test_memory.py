@@ -1,7 +1,6 @@
 import json
 
 import pytest
-from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from core.chat.memory import (
@@ -11,7 +10,6 @@ from core.chat.memory import (
     save_memories,
 )
 from infrastructure.database import Memory, SessionLocal
-from infrastructure import database
 
 
 @pytest.mark.parametrize(
@@ -42,50 +40,6 @@ def test_database_enforces_unique_user_memory_key():
             session.commit()
 
 
-def test_existing_sqlite_duplicate_keys_are_migrated(tmp_path, monkeypatch):
-    url = f"sqlite:///{tmp_path / 'legacy.db'}"
-    legacy_engine = create_engine(url)
-    with legacy_engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE memories ("
-                "id VARCHAR(32) PRIMARY KEY, user_id VARCHAR(64), content TEXT, "
-                "normalized_key VARCHAR(200), is_active BOOLEAN, "
-                "created_at DATETIME, updated_at DATETIME)"
-            )
-        )
-        connection.execute(
-            text(
-                "INSERT INTO memories VALUES "
-                "('old', 'default', '旧偏好', 'preference.coffee', 1, "
-                "'2026-01-01', '2026-01-01'), "
-                "('new', 'default', '新偏好', 'preference.coffee', 1, "
-                "'2026-02-01', '2026-02-01')"
-            )
-        )
-
-    monkeypatch.setattr(database, "engine", legacy_engine)
-    monkeypatch.setattr(database.settings, "database_url", url)
-    database._migrate_sqlite_p1()
-
-    with legacy_engine.begin() as connection:
-        rows = connection.execute(
-            text("SELECT id, normalized_key, is_active FROM memories ORDER BY id")
-        ).mappings().all()
-        assert rows[1]["id"] == "old"
-        assert rows[1]["normalized_key"] == "duplicate.old"
-        assert rows[1]["is_active"] == 0
-        with pytest.raises(IntegrityError):
-            connection.execute(
-                text(
-                    "INSERT INTO memories "
-                    "(id, user_id, content, normalized_key, is_active, created_at, updated_at) "
-                    "VALUES ('third', 'default', '重复', 'preference.coffee', 1, "
-                    "'2026-03-01', '2026-03-01')"
-                )
-            )
-
-
 def test_sensitive_candidate_is_not_saved():
     candidate = MemoryCandidate(
         key="credential.api",
@@ -97,6 +51,39 @@ def test_sensitive_candidate_is_not_saved():
     with SessionLocal() as session:
         assert save_memories(session, [candidate], "default", "c1", 3, 0.7) == 0
         assert session.query(Memory).count() == 0
+
+
+def test_saved_memory_keeps_embedding_metadata():
+    class EmbeddingProvider:
+        model_name = "test-embedding"
+        dimension = 512
+
+        def embed_documents(self, texts):
+            assert texts == ["用户喜欢深色主题"]
+            return [[1.0, *([0.0] * 511)]]
+
+    candidate = MemoryCandidate(
+        key="preference.theme",
+        kind="profile",
+        content="用户喜欢深色主题",
+        importance=5,
+        confidence=1.0,
+    )
+    with SessionLocal() as session:
+        assert save_memories(
+            session,
+            [candidate],
+            "default",
+            "c1",
+            3,
+            0.7,
+            EmbeddingProvider(),
+        ) == 1
+        memory = session.query(Memory).one()
+        assert list(memory.embedding) == [1.0, *([0.0] * 511)]
+        assert memory.embedding_model == "test-embedding"
+        assert memory.embedding_dim == 512
+        assert memory.embedded_at is not None
 
 
 @pytest.mark.asyncio

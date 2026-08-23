@@ -82,6 +82,17 @@ def _args_summary(tool: str, args: object) -> str:
     return json.dumps(args, ensure_ascii=False, sort_keys=True)[:MAX_ARGS_SUMMARY_CHARS]
 
 
+def _cached_prompt_tokens(raw_usage: dict) -> int | None:
+    """兼容 OpenAI 与 DeepSeek 风格的提示词缓存统计字段。"""
+    details = raw_usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and "cached_tokens" in details:
+        return int(details.get("cached_tokens") or 0)
+    for key in ("prompt_cache_hit_tokens", "cached_prompt_tokens"):
+        if key in raw_usage:
+            return int(raw_usage.get(key) or 0)
+    return None
+
+
 async def execute_model_loop(
     provider,
     messages: list[dict],
@@ -113,6 +124,11 @@ async def execute_model_loop(
             if chunk.usage:
                 usage["prompt_tokens"] += int(chunk.usage.get("prompt_tokens", 0))
                 usage["completion_tokens"] += int(chunk.usage.get("completion_tokens", 0))
+                cached_tokens = _cached_prompt_tokens(chunk.usage)
+                if cached_tokens is not None:
+                    usage["cached_prompt_tokens"] = (
+                        int(usage.get("cached_prompt_tokens", 0)) + cached_tokens
+                    )
 
         tool_calls = finalize_tool_calls(tool_deltas)
         if not tool_calls:
@@ -198,6 +214,19 @@ async def execute_model_loop(
                 )
                 continue
 
+            yield ExecutorEvent(
+                "tool.proposed",
+                {
+                    "run_id": run_id,
+                    "step_index": step_index,
+                    "tool": name,
+                    "args_summary": summary,
+                    "risk_level": validated_tool.risk_level,
+                    "effect": validated_tool.description,
+                    "requires_approval": validated_tool.risk_level == "high",
+                },
+            )
+
             background_rejected = validated_tool.risk_level == "high" and approval_mode == "deny"
             approval_id = None
             initial_status = (
@@ -225,8 +254,10 @@ async def execute_model_loop(
 
             if approval_id:
                 yield ExecutorEvent("approval.required", {
-                    "approval_id": approval_id, "run_id": run_id, "tool": name,
+                    "approval_id": approval_id, "run_id": run_id,
+                    "step_index": step_index, "tool": name,
                     "args_summary": summary, "risk_level": validated_tool.risk_level,
+                    "effect": validated_tool.description,
                 })
                 approved = await wait_for_approval(approval_id, settings.approval_timeout_seconds)
                 yield ExecutorEvent("approval.completed", {
@@ -249,7 +280,9 @@ async def execute_model_loop(
 
             yield ExecutorEvent("agent.status", {"status": "running_tool", "tool": name})
             yield ExecutorEvent("tool.started", {
-                "run_id": run_id, "step_index": step_index, "tool": name, "args_summary": summary,
+                "run_id": run_id, "step_index": step_index, "tool": name,
+                "args_summary": summary, "risk_level": validated_tool.risk_level,
+                "effect": validated_tool.description,
             })
             execution = await execute_tool(name, validated_args, allowed_tools)
             execution = await run_post_tool_hooks(invocation, execution)

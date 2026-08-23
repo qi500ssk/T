@@ -15,6 +15,8 @@ MODEL_FIELDS = (
     "llm_api_key",
     "llm_model",
     "llm_timeout_seconds",
+    "llm_context_window_tokens",
+    "llm_max_output_tokens",
 )
 
 AGENT_FIELDS = (
@@ -131,8 +133,15 @@ def default_agent_profile(character: dict) -> dict:
 
 
 def capture_runtime_config(config) -> dict:
+    model_defaults = {
+        "llm_context_window_tokens": 12_096,
+        "llm_max_output_tokens": 4_096,
+    }
     return {
-        "model": {field: getattr(config, field) for field in MODEL_FIELDS},
+        "model": {
+            field: getattr(config, field, model_defaults.get(field))
+            for field in MODEL_FIELDS
+        },
         "workspace": {"coding_workspace_dir": config.coding_workspace_dir},
     }
 
@@ -165,6 +174,8 @@ class RuntimeSettingsStore:
                 "llm_api_key": "",
                 "llm_model": "",
                 "llm_timeout_seconds": 60.0,
+                "llm_context_window_tokens": getattr(config, "llm_context_window_tokens", 12_096),
+                "llm_max_output_tokens": getattr(config, "llm_max_output_tokens", 4_096),
             }
         self._defaults["models"] = _normalize_models(None, self._defaults["model"])
         self._defaults["agents"] = _normalize_agents(None, self._defaults["agent"])

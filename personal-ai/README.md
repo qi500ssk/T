@@ -1,6 +1,6 @@
 # Personal AI Agent（P12：个性化基础设置）
 
-Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识库、经过权限控制的本地与 MCP 工具执行、持久化 Activity、显式 Planner，以及可动态刷新和开关的 Skill、MCP Server 与声明式插件。
+Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识库、经过权限控制的本地与 MCP 工具执行、持久化 Activity、显式 Planner，以及可动态刷新和开关的 Skill、MCP Server 与声明式插件。主数据库使用 PostgreSQL，长期记忆与 RAG 向量由 pgvector 保存和检索。
 
 最新交付说明见 [P12 阶段开发报告](docs/P12.md)，简单编码能力见 [P11 阶段开发报告](docs/P11.md)。
 
@@ -56,6 +56,7 @@ Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识�
 
 ```powershell
 cd E:\Pycharm\JQ\personal-ai
+docker compose up -d postgres
 uv sync
 Copy-Item .env.example .env   # 首次运行；已有 .env 不要覆盖
 uv run uvicorn apps.api.main:app --port 8787 --reload
@@ -75,6 +76,8 @@ npm run dev
 
 默认使用本地 BGE 路径。若只需轻量联调，可在 `.env` 设置 `EMBEDDING_PROVIDER=mock`。通常请在应用的“模型设置”中保存模型配置与凭据；如果 `.env` 中提供了一套完整的 `LLM_*` 配置，系统会进入环境模型锁定模式，并强制覆盖所有前端模型选择。
 
+应用启动时会自动执行尚未应用的 Alembic migration。生产部署必须更换 `compose.yaml` 中的本地开发密码，并同步更新 `DATABASE_URL`。项目只支持 PostgreSQL；自动化测试使用端口 5433 上完全隔离的 `personal_ai_test` 数据库。
+
 ## 目录
 
 ```text
@@ -93,7 +96,7 @@ personal-ai/
 ├── mcp_servers/           内置可信 MCP 实现（与声明式插件清单分离）
 ├── config/               MCP Server 配置
 ├── scripts/              开发与迁移脚本、本地 MCP Demo
-├── infrastructure/       配置、SQLite 模型与兼容迁移
+├── infrastructure/       配置、PostgreSQL/pgvector 模型与 Alembic 启动迁移
 ├── prompts/              System、Memory、Summary、RAG、Planning 提示词
 ├── evaluation/           离线检索与 Planner 评测入口
 ├── tests/eval/           固定文档与 20 条检索用例
@@ -178,6 +181,7 @@ plan.replanned / plan.completed / plan.failed
 ## 验证
 
 ```powershell
+docker compose up -d postgres-test
 uv run pytest -q
 uv run python -m evaluation.rag
 uv run python -m evaluation.planner
@@ -191,4 +195,4 @@ npm run build
 
 ## 当前边界
 
-P12 仍面向本机单用户、单个默认 Agent、单 API 进程和单 Activity Worker。运行时设置保存在本地忽略目录；文件夹浏览 API 不应暴露到公网。模型统一使用 OpenAI Chat Completions 兼容层；尚未提供多 Agent 预设、厂商专属参数、Git/URL 自动拉取和在线市场。
+P12 仍面向本机单用户、单个默认 Agent、单 API 进程和单 Activity Worker。正式 PostgreSQL 与测试 PostgreSQL 由本地 Docker Compose 隔离管理。运行时设置保存在本地忽略目录；文件夹浏览 API 不应暴露到公网。模型统一使用 OpenAI Chat Completions 兼容层；尚未提供多 Agent 预设、厂商专属参数、Git/URL 自动拉取和在线市场。

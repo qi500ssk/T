@@ -1,4 +1,4 @@
-"""SQLite 数据层：SQLAlchemy 2.0 模型与会话管理（P0 阶段）。"""
+"""SQLAlchemy 数据层：PostgreSQL/pgvector 模型与会话管理。"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,10 +16,10 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
-    inspect,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from pgvector.sqlalchemy import VECTOR
 
 from infrastructure.config import settings
 
@@ -108,7 +108,7 @@ class AgentRun(Base):
             "uq_agent_runs_running_conversation",
             "conversation_id",
             unique=True,
-            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
         ),
     )
 
@@ -234,6 +234,14 @@ class Memory(Base):
     importance: Mapped[int] = mapped_column(Integer, default=3)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        VECTOR(settings.embedding_dim), nullable=True
+    )
+    embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -295,231 +303,35 @@ class DocumentChunk(Base):
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding: Mapped[list] = mapped_column(JSON)
+    embedding: Mapped[list[float]] = mapped_column(
+        VECTOR(settings.embedding_dim), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-def _ensure_sqlite_dir(url: str) -> None:
-    """sqlite:///./data/xxx.db 时确保 data 目录存在。"""
-    if url.startswith("sqlite:///") and not url.startswith("sqlite:///:memory:"):
-        path = Path(url.removeprefix("sqlite:///"))
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_sqlite_dir(settings.database_url)
-
-engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
-)
+engine = create_engine(settings.database_url, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+_schema_ready = False
 
 
 def init_db() -> None:
-    _prepare_sqlite_p6_running_run_index()
-    Base.metadata.create_all(engine)
-    _migrate_sqlite_p1()
-    _migrate_sqlite_p2()
-    _migrate_sqlite_p5()
-    _migrate_sqlite_p6()
-    _migrate_sqlite_p8()
-    _migrate_sqlite_p13()
-
-
-def _migrate_sqlite_p13() -> None:
-    """为旧会话补充项目归属字段；旧数据保持为未分组。"""
-    if not settings.database_url.startswith("sqlite"):
+    global _schema_ready
+    if _schema_ready:
         return
-    inspector = inspect(engine)
-    if not inspector.has_table("conversations"):
-        return
-    existing = {column["name"] for column in inspector.get_columns("conversations")}
-    with engine.begin() as connection:
-        if "project_id" not in existing:
-            connection.execute(text("ALTER TABLE conversations ADD COLUMN project_id VARCHAR(32)"))
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_conversations_project_id "
-                "ON conversations (project_id)"
-            )
-        )
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("Personal AI 仅支持 PostgreSQL DATABASE_URL")
+    _upgrade_postgresql_schema()
+    _schema_ready = True
 
 
-def _migrate_sqlite_p8() -> None:
-    """为已有 Run 增加本次执行的能力快照，可重复执行。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    inspector = inspect(engine)
-    if not inspector.has_table("agent_runs"):
-        return
-    existing = {column["name"] for column in inspector.get_columns("agent_runs")}
-    additions = {
-        "capability_version": "VARCHAR(64)",
-        "capability_snapshot": "JSON",
-    }
-    with engine.begin() as connection:
-        for name, definition in additions.items():
-            if name not in existing:
-                connection.execute(
-                    text(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
-                )
+def _upgrade_postgresql_schema() -> None:
+    """通过 Alembic 将 PostgreSQL 升级到当前 schema。"""
+    from alembic import command
+    from alembic.config import Config
 
-
-def _migrate_sqlite_p6() -> None:
-    """为 P5 SQLite 表补齐执行模式字段，可重复执行。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    inspector = inspect(engine)
-    additions = {
-        "agent_runs": ("execution_mode", "VARCHAR(20) NOT NULL DEFAULT 'direct'"),
-        "activities": ("execution_mode", "VARCHAR(20) NOT NULL DEFAULT 'direct'"),
-    }
-    with engine.begin() as connection:
-        for table, (name, definition) in additions.items():
-            if not inspector.has_table(table):
-                continue
-            existing = {column["name"] for column in inspector.get_columns(table)}
-            if name not in existing:
-                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
-        if inspector.has_table("agent_runs"):
-            connection.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS "
-                    "uq_agent_runs_running_conversation ON agent_runs (conversation_id) "
-                    "WHERE status = 'running'"
-                )
-            )
-
-
-def _prepare_sqlite_p6_running_run_index() -> None:
-    """旧库建唯一索引前，仅保留每个会话最新的一条 running Run。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    inspector = inspect(engine)
-    if not inspector.has_table("agent_runs"):
-        return
-    with engine.begin() as connection:
-        rows = connection.execute(
-            text(
-                "SELECT id, conversation_id FROM agent_runs WHERE status = 'running' "
-                "ORDER BY conversation_id, created_at DESC, id DESC"
-            )
-        ).mappings()
-        seen: set[str] = set()
-        duplicate_ids: list[str] = []
-        for row in rows:
-            if row["conversation_id"] in seen:
-                duplicate_ids.append(row["id"])
-            else:
-                seen.add(row["conversation_id"])
-        for run_id in duplicate_ids:
-            connection.execute(
-                text(
-                    "UPDATE agent_runs SET status = 'cancelled', "
-                    "error = 'P6 migration: duplicate running run', "
-                    "completed_at = CURRENT_TIMESTAMP WHERE id = :id"
-                ),
-                {"id": run_id},
-            )
-
-
-def _migrate_sqlite_p5() -> None:
-    """为已有 SQLite agent_runs 表增加 Activity 关联，可重复执行。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    inspector = inspect(engine)
-    if not inspector.has_table("agent_runs"):
-        return
-    existing = {column["name"] for column in inspector.get_columns("agent_runs")}
-    with engine.begin() as connection:
-        if "activity_id" not in existing:
-            connection.execute(
-                text("ALTER TABLE agent_runs ADD COLUMN activity_id VARCHAR(32)")
-            )
-        connection.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_agent_runs_activity_id "
-                "ON agent_runs (activity_id)"
-            )
-        )
-
-
-def _migrate_sqlite_p2() -> None:
-    """为已有 P1 SQLite messages 表增加持久化引用字段。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-    inspector = inspect(engine)
-    if not inspector.has_table("messages"):
-        return
-    existing = {column["name"] for column in inspector.get_columns("messages")}
-    if "citations" not in existing:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE messages ADD COLUMN citations JSON"))
-
-
-def _migrate_sqlite_p1() -> None:
-    """为已有 P0 SQLite 数据库补齐 P1 列；新数据库由 create_all 直接创建。"""
-    if not settings.database_url.startswith("sqlite"):
-        return
-
-    additions = {
-        "conversations": {
-            "summary": "TEXT",
-            "summary_message_count": "INTEGER NOT NULL DEFAULT 0",
-            "summary_updated_at": "DATETIME",
-        },
-        "memories": {
-            "normalized_key": "VARCHAR(200) NOT NULL DEFAULT ''",
-            "source_conversation_id": "VARCHAR(32)",
-            "importance": "INTEGER NOT NULL DEFAULT 3",
-            "confidence": "FLOAT NOT NULL DEFAULT 1.0",
-            "is_active": "BOOLEAN NOT NULL DEFAULT 1",
-            "updated_at": "DATETIME",
-        },
-    }
-    inspector = inspect(engine)
-    with engine.begin() as connection:
-        for table, columns in additions.items():
-            if not inspector.has_table(table):
-                continue
-            existing = {column["name"] for column in inspector.get_columns(table)}
-            for name, definition in columns.items():
-                if name not in existing:
-                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
-        connection.execute(
-            text("UPDATE memories SET updated_at = created_at WHERE updated_at IS NULL")
-        )
-        rows = connection.execute(
-            text(
-                "SELECT id, user_id, normalized_key FROM memories "
-                "ORDER BY updated_at DESC, created_at DESC"
-            )
-        ).mappings()
-        seen: set[tuple[str, str]] = set()
-        for row in rows:
-            key = (row["normalized_key"] or "").strip()
-            pair = (row["user_id"], key)
-            if not key:
-                key = f"legacy.{row['id']}"
-            elif pair in seen:
-                key = f"duplicate.{row['id']}"
-                connection.execute(
-                    text(
-                        "UPDATE memories SET normalized_key = :key, is_active = 0 "
-                        "WHERE id = :id"
-                    ),
-                    {"key": key, "id": row["id"]},
-                )
-            if key != (row["normalized_key"] or ""):
-                connection.execute(
-                    text("UPDATE memories SET normalized_key = :key WHERE id = :id"),
-                    {"key": key, "id": row["id"]},
-                )
-            seen.add((row["user_id"], key))
-        connection.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_memories_user_key "
-                "ON memories (user_id, normalized_key)"
-            )
-        )
+    project_root = Path(__file__).resolve().parents[1]
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "migrations"))
+    config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+    command.upgrade(config, "head")

@@ -6,7 +6,7 @@
 
 Chat-first Personal AI Agent（长期个人 AI 助手）。当前已完成 **P12 阶段：个性化基础设置**，支持本地持久化的 Agent 人格、模型配置和编码工作区选择。
 
-- 后端：FastAPI（8787）+ SQLite + SQLAlchemy，SSE 流式聊天
+- 后端：FastAPI（8787）+ PostgreSQL/pgvector + SQLAlchemy，SSE 流式聊天
 - 前端：Next.js 16 + React 19 + TypeScript + Tailwind v4（4321）
 - 架构依据：`E:\Pycharm\JQ\personal_ai_agent_architecture_merged.md`（合并版架构文档）
 - 最新阶段报告：`E:\Pycharm\JQ\personal-ai\docs\P12.md`
@@ -37,7 +37,7 @@ personal-ai/
 ├── mcp_servers/       # 内置信任的 MCP 实现；插件目录不放可执行 Python
 ├── prompts/system/    # System Prompt 模板（与业务代码解耦）
 ├── tests/             # pytest（conftest 使用临时库 + mock provider）
-└── data/              # 运行时生成的 SQLite
+└── data/              # 上传、Artifact 和数据库备份等本地运行时文件
 ```
 
 ## 关键约束（改代码前必读）
@@ -75,6 +75,7 @@ personal-ai/
 
 ```powershell
 # 后端（在 personal-ai/ 下）
+docker compose up -d postgres postgres-test     # 正式库 5432，隔离测试库 5433
 uv sync                                    # 安装依赖
 uv run pytest                              # 跑测试（改动后端后必须全绿）
 uv run uvicorn apps.api.main:app --port 8787 --reload

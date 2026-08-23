@@ -14,6 +14,9 @@ def test_settings_defaults_hide_api_key(client):
     payload = response.json()
     assert "api_key" not in payload["model"]
     assert payload["model"]["provider"] == "mock"
+    assert payload["model"]["context_window_tokens"] == settings.llm_context_window_tokens
+    assert payload["model"]["max_output_tokens"] == settings.llm_max_output_tokens
+    assert payload["context"]["max_tokens"] == settings.context_max_tokens
     assert Path(payload["workspace"]["coding_workspace_dir"]).is_absolute()
 
 
@@ -159,11 +162,15 @@ def test_model_settings_validate_mask_and_hot_swap(client):
             "model": "qwen2.5:7b",
             "api_key": "local-test-key",
             "timeout_seconds": 30,
+            "context_window_tokens": 32_768,
+            "max_output_tokens": 2_048,
         },
     )
     assert saved.status_code == 200
     assert saved.json()["api_key_configured"] is True
     assert "api_key" not in saved.json()
+    assert saved.json()["context_window_tokens"] == 32_768
+    assert saved.json()["max_output_tokens"] == 2_048
     assert client.get("/api/settings").json()["model"]["model"] == "qwen2.5:7b"
 
     mock_test = client.post(
@@ -172,6 +179,17 @@ def test_model_settings_validate_mask_and_hot_swap(client):
     )
     assert mock_test.status_code == 200
     assert mock_test.json()["ok"] is True
+
+    invalid_budget = client.post(
+        "/api/settings/model/test",
+        json={
+            "provider": "mock",
+            "timeout_seconds": 30,
+            "context_window_tokens": 4_096,
+            "max_output_tokens": 4_096,
+        },
+    )
+    assert invalid_budget.status_code == 422
 
 
 def test_runtime_store_does_not_enable_env_model_without_explicit_test_fallback(tmp_path):
