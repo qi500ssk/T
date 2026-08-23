@@ -11,4 +11,6 @@ mcp_servers/
 
 当前 `document_skills/` 包含文档 MCP 协议入口、隔离 Worker 和格式生成器。插件清单通过 `python -m mcp_servers.document_skills.server` 启动它。
 
+`desktop_media/` 是 Windows 专用的受限桌面媒体服务，只允许启动和控制 QQ 音乐；它支持读取“喜欢”列表并播放指定收藏歌曲，且不提供任意程序路径、Shell、进程、文件系统或真实鼠标控制能力。
+
 从 GitHub 获得第三方 MCP 时，不要直接合并进 API 代码。先审查来源和启动命令，再在“设置 → MCP 服务器”中配置；只有确定要作为项目内置可信能力时，才整理到本目录。

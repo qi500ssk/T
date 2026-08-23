@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # ---- Tools / Approval ----
     tools_enabled: bool = True
-    tool_timeout_seconds: float = 15.0
+    tool_timeout_seconds: float = 30.0
     approval_timeout_seconds: float = 60.0
     sandbox_dir: str = "./data/sandbox"
     skills_dir: str = "./skills"

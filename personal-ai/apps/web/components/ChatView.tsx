@@ -95,6 +95,12 @@ const TOOL_LABELS: Record<string, string> = {
   "mcp_playwright_browser_wait_for": "等待页面状态",
   "mcp_playwright_browser_tabs": "管理浏览器标签页",
   "mcp_playwright_browser_close": "关闭浏览器",
+  "mcp_desktop-media_qqmusic_launch": "打开 QQ 音乐",
+  "mcp_desktop-media_qqmusic_search_play": "搜索并播放歌曲",
+  "mcp_desktop-media_media_play_pause": "播放或暂停音乐",
+  "mcp_desktop-media_media_next": "播放下一首",
+  "mcp_desktop-media_media_previous": "播放上一首",
+  "mcp_desktop-media_media_get_current": "读取当前歌曲",
 };
 
 const STATUS_LABELS: Record<ToolStatus, string> = {

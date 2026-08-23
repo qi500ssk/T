@@ -24,6 +24,11 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "python-multipart>=0.0.9",
     "mcp>=1.28,<2",
+    "comtypes>=1.4.8; sys_platform == 'win32'",
+    "pywinauto>=0.6.9; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=3.2.1; sys_platform == 'win32'",
+    "winrt-Windows.Media.Control>=3.2.1; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

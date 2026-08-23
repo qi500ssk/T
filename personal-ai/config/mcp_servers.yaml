@@ -13,6 +13,23 @@ mcp_servers:
     tool_risk_levels:
       echo: low
       random_number: high
+  desktop-media:
+    transport: stdio
+    enabled: true
+    default_risk_level: medium
+    command: python
+    args:
+    - -m
+    - mcp_servers.desktop_media.server
+    allowed_tools:
+    - qqmusic_launch
+    - qqmusic_search_play
+    - qqmusic_list_liked
+    - qqmusic_play_liked
+    - media_play_pause
+    - media_next
+    - media_previous
+    - media_get_current
   playwright:
     transport: stdio
     enabled: true

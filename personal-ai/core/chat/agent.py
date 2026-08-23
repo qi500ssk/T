@@ -46,6 +46,21 @@ logger = logging.getLogger(__name__)
 MAX_SUMMARY_CHARS = 500
 
 
+def _mcp_tool_guidance(mcp_clients: list | None) -> str:
+    names = {str(client.config.name) for client in (mcp_clients or [])}
+    lines: list[str] = []
+    if "desktop-media" in names:
+        lines.append(
+            "- mcp_desktop-media_* 只操作 Windows QQ 音乐；工具结果已经包含最终验证，"
+            "失败时不要猜测用户未提供的歌手。"
+        )
+    if "playwright" in names:
+        lines.append(
+            "- mcp_playwright_* 只操作 Playwright 打开的网页，不得用于等待、验证或控制桌面软件。"
+        )
+    return "[MCP 工具边界]\n" + "\n".join(lines) if lines else ""
+
+
 @dataclass
 class AgentEvent:
     type: str
@@ -162,6 +177,10 @@ async def run_chat(
             )
             schemas = tool_schemas(allowed_tools) if allowed_tools else None
             skill_prompt = render_skill_instructions(active_skills)
+            mcp_prompt = _mcp_tool_guidance(mcp_clients)
+            system_addendum = "\n\n".join(
+                item for item in (skill_prompt, mcp_prompt) if item
+            )
 
             def _build():
                 with SessionLocal() as session:
@@ -177,7 +196,7 @@ async def run_chat(
                         user_message_id,
                         embedding_provider,
                         settings,
-                        system_addendum=skill_prompt,
+                        system_addendum=system_addendum,
                     document_ids=document_ids,
                 )
 
