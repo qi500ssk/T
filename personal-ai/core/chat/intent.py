@@ -30,6 +30,15 @@ _CALCULATION = re.compile(
 )
 _TIME = re.compile(r"(?:现在|当前|今天|明天).{0,12}(?:几点|时间|日期|星期)")
 _MEMORY = re.compile(r"(?:记忆|记住|忘记|别记|不要记|删除.*记忆|修改.*记忆|我.*偏好)")
+_MEMORY_FORGET = re.compile(
+    r"(?:忘记|忘掉|删除.{0,12}记忆|别(?:再)?记住|不要(?:再)?记住|不要记录|不再记得)"
+)
+_MEMORY_UPDATE = re.compile(
+    r"(?:(?:修改|更正|纠正|更新).{0,16}(?:记忆|记住的内容)|"
+    r"把.{0,60}(?:记忆|你记住的).{0,20}(?:改成|更正为))"
+)
+_MEMORY_SAVE = re.compile(r"(?:记住|记下|加入.{0,6}记忆|保存到.{0,6}记忆|以后(?:都)?记得)")
+_MEMORY_LIST = re.compile(r"(?:查看|列出|展示|告诉我).{0,12}(?:记忆|记住了什么)|有哪些.{0,8}记忆")
 _SETTINGS = re.compile(r"(?:设置|配置).{0,16}(?:模型|Agent|助手|人格|工作区|上下文|技能|MCP)", re.I)
 _KNOWLEDGE = re.compile(
     r"(?:知识库|我上传的|上传的(?:资料|文档|文件|附件)|(?:文档|资料|报告)(?:中|里|内)|"
@@ -127,8 +136,40 @@ def rule_intent(message: str) -> IntentResult | None:
             memory=True,
             confidence=1.0,
         )
+    if _MEMORY_FORGET.search(text):
+        return _result(
+            "memory_management",
+            "forget_memory",
+            memory=True,
+            tools=("memory_list", "memory_forget"),
+            risk="medium",
+        )
+    if _MEMORY_UPDATE.search(text):
+        return _result(
+            "memory_management",
+            "update_memory",
+            memory=True,
+            tools=("memory_list", "memory_update"),
+            risk="medium",
+        )
+    if _MEMORY_LIST.search(text):
+        return _result(
+            "memory_management",
+            "list_memories",
+            memory=True,
+            tools=("memory_list",),
+        )
+    if _MEMORY_SAVE.search(text):
+        return _result(
+            "memory_management",
+            "create_memory",
+            memory=True,
+            tools=("memory_create",),
+            risk="medium",
+        )
     if _MEMORY.search(text):
-        return _result("memory_management", "manage_memory", memory=True)
+        # “语义记忆是什么”等说明问题不能被误当成写入操作。
+        return _result("conversation", "explain_memory", memory=True)
     if _SETTINGS.search(text):
         return _result("settings_change", "change_settings", memory=False, risk="medium")
     development = bool(_DEVELOPMENT.search(text))
@@ -227,6 +268,12 @@ def narrow_allowed_tools(intent: IntentResult, allowed_tools: set[str]) -> set[s
     """意图只推荐工具，不再撤销用户已经启用的能力。
 
     真正的权限边界仍由 Skill/MCP 开关、Executor 白名单、风险审批和参数校验负责；
-    candidate_tools 只用于提示模型优先选择，不具有授权或撤权能力。
+    candidate_tools 通常只用于提示模型优先选择。唯一例外是显式记忆治理：为防止
+    “记住”被错误实现成文件笔记，该意图只能进入统一 memory_* 服务。
     """
+    if intent.intent == "memory_management":
+        # 显式记忆操作只接统一 memories 表，禁止 file-notes/MCP 抢走“记住”语义。
+        memory_tools = {"memory_list", "memory_create", "memory_update", "memory_forget"}
+        requested = set(intent.candidate_tools) or memory_tools
+        return set(allowed_tools) & memory_tools & requested
     return set(allowed_tools)

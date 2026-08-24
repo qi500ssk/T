@@ -24,6 +24,12 @@ from core.execution.coding_tools import (
     code_run_check,
     code_search,
 )
+from core.execution.memory_tools import (
+    memory_create,
+    memory_forget,
+    memory_list,
+    memory_update,
+)
 from infrastructure.config import settings
 
 
@@ -292,6 +298,78 @@ TOOLS: dict[str, Tool] = {
         timeout=settings.tool_timeout_seconds,
         runner=_calculate,
     ),
+    "memory_list": Tool(
+        name="memory_list",
+        description="列出或检索当前会话可见的统一长期记忆，返回可供修改或忘记使用的 memory_id。",
+        input_schema=_object_schema(
+            {
+                "query": {"type": "string", "description": "可选的记忆检索问题或关键词"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            [],
+        ),
+        risk_level="low",
+        timeout=settings.tool_timeout_seconds,
+        runner=memory_list,
+        max_result_chars=12_000,
+    ),
+    "memory_create": Tool(
+        name="memory_create",
+        description="把用户明确要求记住的一条独立事实写入统一长期记忆库；不得用于写文件笔记。",
+        input_schema=_object_schema(
+            {
+                "content": {"type": "string", "description": "独立、简洁、可长期复用的事实"},
+                "key": {"type": "string", "description": "同类事实复用的稳定英文点分键"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["profile", "semantic", "episodic"],
+                },
+                "scope_type": {
+                    "type": "string",
+                    "enum": ["global", "project", "conversation"],
+                },
+                "importance": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            ["content", "kind", "scope_type", "importance"],
+        ),
+        risk_level="medium",
+        timeout=settings.tool_timeout_seconds,
+        runner=memory_create,
+    ),
+    "memory_update": Tool(
+        name="memory_update",
+        description="纠正统一长期记忆并保留替换历史；不知道 memory_id 时先调用 memory_list。",
+        input_schema=_object_schema(
+            {
+                "memory_id": {"type": "string", "description": "memory_list 返回的记忆 ID"},
+                "content": {"type": "string", "description": "可选的新事实内容"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["profile", "semantic", "episodic"],
+                },
+                "scope_type": {
+                    "type": "string",
+                    "enum": ["global", "project", "conversation"],
+                },
+                "importance": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            ["memory_id"],
+        ),
+        risk_level="medium",
+        timeout=settings.tool_timeout_seconds,
+        runner=memory_update,
+    ),
+    "memory_forget": Tool(
+        name="memory_forget",
+        description="停用一条统一长期记忆；不知道 memory_id 时先调用 memory_list。操作可在记忆页面恢复。",
+        input_schema=_object_schema(
+            {"memory_id": {"type": "string", "description": "memory_list 返回的记忆 ID"}},
+            ["memory_id"],
+        ),
+        risk_level="medium",
+        timeout=settings.tool_timeout_seconds,
+        runner=memory_forget,
+    ),
     "read_file": Tool(
         name="read_file",
         description="读取沙箱内的 UTF-8 文本文件。",
@@ -431,7 +509,14 @@ TOOLS: dict[str, Tool] = {
 }
 
 
-DEFAULT_TOOL_NAMES = {"get_time", "calculate"}
+DEFAULT_TOOL_NAMES = {
+    "get_time",
+    "calculate",
+    "memory_list",
+    "memory_create",
+    "memory_update",
+    "memory_forget",
+}
 
 
 def tool_schemas(names: set[str]) -> list[dict]:

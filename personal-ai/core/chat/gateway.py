@@ -163,7 +163,70 @@ class MockProvider:
                 last = str(json.loads(last).get("current_step", {}).get("instruction", last))
             except (json.JSONDecodeError, AttributeError):
                 pass
+        available = {
+            str(item.get("function", {}).get("name")) for item in (tools or [])
+        }
         if last_message.get("role") == "tool":
+            tool_call_id = str(last_message.get("tool_call_id") or "")
+            if tool_call_id == "mock-memory_list-call":
+                try:
+                    payload = json.loads(str(last_message.get("content") or "{}"))
+                    memory_rows = payload.get("memories") or []
+                except (json.JSONDecodeError, AttributeError):
+                    memory_rows = []
+                original = next(
+                    (
+                        _message_content_text(item.get("content"))
+                        for item in reversed(messages)
+                        if item.get("role") == "user"
+                    ),
+                    "",
+                )
+                if memory_rows and "memory_forget" in available and any(
+                    token in original for token in ("忘记", "忘掉", "删除", "不要记住")
+                ):
+                    yield StreamChunk(
+                        tool_calls_delta=[
+                            {
+                                "index": 0,
+                                "id": "mock-memory_forget-call",
+                                "type": "function",
+                                "function": {
+                                    "name": "memory_forget",
+                                    "arguments": json.dumps(
+                                        {"memory_id": memory_rows[0]["id"]},
+                                        ensure_ascii=False,
+                                    ),
+                                },
+                            }
+                        ]
+                    )
+                    yield StreamChunk(finish_reason="tool_calls")
+                    return
+                if memory_rows and "memory_update" in available:
+                    match = re.search(r"(?:改成|更正为)[：:\s]*(.+)", original, re.DOTALL)
+                    if match:
+                        yield StreamChunk(
+                            tool_calls_delta=[
+                                {
+                                    "index": 0,
+                                    "id": "mock-memory_update-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_update",
+                                        "arguments": json.dumps(
+                                            {
+                                                "memory_id": memory_rows[0]["id"],
+                                                "content": match.group(1).strip(" 。"),
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        )
+                        yield StreamChunk(finish_reason="tool_calls")
+                        return
             tool_results: list[str] = []
             for item in reversed(messages):
                 if item.get("role") != "tool":
@@ -173,10 +236,6 @@ class MockProvider:
             async for chunk in self._stream_reply(reply):
                 yield chunk
             return
-
-        available = {
-            str(item.get("function", {}).get("name")) for item in (tools or [])
-        }
         selected = self._select_tool(last, available)
         if selected is not None:
             name, arguments = selected
@@ -222,6 +281,32 @@ class MockProvider:
 
     @staticmethod
     def _select_tool(text: str, available: set[str]) -> tuple[str, dict] | None:
+        if "memory_list" in available and any(
+            token in text
+            for token in ("忘记", "忘掉", "删除", "不要记住", "修改", "更正", "纠正", "改成")
+        ):
+            return "memory_list", {"query": "", "limit": 10}
+        if "memory_create" in available and any(
+            token in text for token in ("记住", "记下", "加入记忆", "保存到记忆")
+        ):
+            match = re.search(
+                r"(?:记住|记下|加入.{0,6}记忆|保存到.{0,6}记忆)[：:\s]*(.*)",
+                text,
+                flags=re.DOTALL,
+            )
+            content = (match.group(1) if match else text).strip(" ：:，,。？?好吗") or text
+            is_profile = any(token in content for token in ("喜欢", "偏好", "称呼", "名字"))
+            scope = "project" if "项目" in content else "global" if is_profile else "conversation"
+            return "memory_create", {
+                "content": content,
+                "kind": "profile" if is_profile else "semantic",
+                "scope_type": scope,
+                "importance": 4,
+            }
+        if "memory_list" in available and any(
+            token in text for token in ("查看记忆", "列出记忆", "有哪些记忆", "记住了什么")
+        ):
+            return "memory_list", {"query": "", "limit": 10}
         if "code_create_file" in available and "创建代码文件" in text:
             match = re.search(
                 r"创建代码文件[：:\s]*([^，,\s]+)\s+内容[：:]\s*(.*)",

@@ -25,7 +25,16 @@ def test_enabled_skills_control_prompt_and_whitelist(tmp_path):
     )
     skills = load_skills(tmp_path)
     assert [skill.name for skill in skills] == ["notes"]
-    assert allowed_tool_names(skills) == {"get_time", "calculate", "skill_load", "read_file"}
+    assert allowed_tool_names(skills) == {
+        "get_time",
+        "calculate",
+        "skill_load",
+        "read_file",
+        "memory_list",
+        "memory_create",
+        "memory_update",
+        "memory_forget",
+    }
     prompt = render_skill_instructions(skills)
     assert "notes" in prompt
     assert "writer" not in prompt

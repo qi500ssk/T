@@ -406,6 +406,7 @@ export interface Memory {
   supersedes_id: string | null;
   usage_count: number;
   last_used_at: string | null;
+  expires_at: string | null;
   source_conversation_id: string | null;
   created_at: string;
   updated_at: string;
@@ -486,12 +487,27 @@ export const deleteDocument = (id: string) =>
 export const searchPreview = (query: string, limit = 5) =>
   req<SearchResult[]>(`${API_URL}/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 
-export const fetchMemories = () => req<Memory[]>(`${API_URL}/memories`);
+export const fetchMemories = (filters?: {
+  scope_type?: Memory["scope_type"];
+  scope_key?: string;
+  kind?: MemoryKind;
+  status?: Memory["status"] | "all";
+}) => {
+  const query = new URLSearchParams();
+  if (filters?.scope_type) query.set("scope_type", filters.scope_type);
+  if (filters?.scope_key) query.set("scope_key", filters.scope_key);
+  if (filters?.kind) query.set("kind", filters.kind);
+  if (filters?.status) query.set("status", filters.status);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return req<Memory[]>(`${API_URL}/memories${suffix}`);
+};
 
 export const createMemory = (body: {
   content: string;
   kind: MemoryKind;
   importance: number;
+  scope_type: "global" | "project" | "conversation";
+  scope_key?: string;
 }) =>
   req<Memory>(`${API_URL}/memories`, {
     method: "POST",
@@ -501,7 +517,7 @@ export const createMemory = (body: {
 
 export const updateMemory = (
   id: string,
-  body: Partial<Pick<Memory, "content" | "kind" | "importance" | "is_active">>,
+  body: Partial<Pick<Memory, "content" | "kind" | "importance" | "is_active" | "scope_type" | "scope_key">>,
 ) =>
   req<Memory>(`${API_URL}/memories/${id}`, {
     method: "PATCH",
@@ -511,6 +527,12 @@ export const updateMemory = (
 
 export const deleteMemory = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/memories/${id}`, { method: "DELETE" });
+
+export const fetchMemoryHistory = (id: string) =>
+  req<Memory[]>(`${API_URL}/memories/${id}/history`);
+
+export const expireMemory = (id: string) =>
+  req<Memory>(`${API_URL}/memories/${id}/expire`, { method: "POST" });
 
 export const submitApproval = (approvalId: string, approved: boolean) =>
   req<ApprovalResponse>(`${API_URL}/approval`, {

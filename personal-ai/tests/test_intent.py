@@ -102,3 +102,34 @@ def test_dynamic_current_information_keeps_existing_whitelist_without_expanding_
         "browser_search",
         "get_time",
     }
+
+
+@pytest.mark.parametrize(
+    ("message", "action", "tools"),
+    [
+        ("请记住我喜欢无糖拿铁", "create_memory", {"memory_create"}),
+        ("查看你记住了什么", "list_memories", {"memory_list"}),
+        (
+            "把你记住的数据库改成 PostgreSQL",
+            "update_memory",
+            {"memory_list", "memory_update"},
+        ),
+        ("不要记住我刚才说的内容", "forget_memory", {"memory_list", "memory_forget"}),
+    ],
+)
+def test_explicit_memory_operations_have_deterministic_routes(message, action, tools):
+    result = rule_intent(message)
+    assert result is not None
+    assert result.intent == "memory_management"
+    assert result.action == action
+    assert narrow_allowed_tools(
+        result,
+        {"memory_list", "memory_create", "memory_update", "memory_forget", "write_file"},
+    ) == tools
+
+
+def test_memory_explanation_does_not_mutate_memory():
+    result = rule_intent("语义记忆和长期记忆有什么区别")
+    assert result is not None
+    assert result.intent == "conversation"
+    assert result.action == "explain_memory"

@@ -315,6 +315,97 @@ def test_memory_update_and_disable(client):
     assert disabled.json()["is_active"] is False
 
 
+def test_memory_revision_history_scope_filters_and_expiry(client):
+    project = client.post(
+        "/api/projects", json={"name": "JQ", "workspace_dir": "E:/Pycharm/JQ"}
+    ).json()
+    original = client.post(
+        "/api/memories",
+        json={"content": "项目使用 SQLite", "kind": "semantic"},
+    ).json()
+    revised = client.patch(
+        f"/api/memories/{original['id']}",
+        json={
+            "content": "项目使用 PostgreSQL + pgvector",
+            "scope_type": "project",
+            "scope_key": project["id"],
+        },
+    )
+    assert revised.status_code == 200
+    current = revised.json()
+    assert current["id"] != original["id"]
+    assert current["supersedes_id"] == original["id"]
+    assert current["scope_type"] == "project"
+
+    active = client.get(
+        "/api/memories", params={"scope_type": "project", "scope_key": project["id"]}
+    ).json()
+    assert [row["id"] for row in active] == [current["id"]]
+    history = client.get(f"/api/memories/{current['id']}/history").json()
+    assert [row["id"] for row in history] == [current["id"], original["id"]]
+    assert history[1]["status"] == "superseded"
+
+    expired = client.post(f"/api/memories/{current['id']}/expire")
+    assert expired.status_code == 200
+    assert expired.json()["status"] == "expired"
+    assert expired.json()["expires_at"] is not None
+    assert client.get("/api/memories").json() == []
+    all_rows = client.get("/api/memories", params={"status": "all"}).json()
+    assert {row["status"] for row in all_rows} == {"superseded", "expired"}
+
+
+def test_explicit_remember_chat_writes_database_not_file(client):
+    from infrastructure.database import ToolRun, SessionLocal
+
+    conversation = client.post("/api/conversations", json={}).json()
+    response = client.post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation["id"],
+            "message": "请记住我喜欢无糖拿铁",
+        },
+    )
+    assert response.status_code == 200
+    memories = client.get("/api/memories").json()
+    assert len(memories) == 1
+    assert memories[0]["content"] == "我喜欢无糖拿铁"
+    assert memories[0]["kind"] == "profile"
+    assert memories[0]["scope_type"] == "global"
+
+    with SessionLocal() as session:
+        tools = [row.tool for row in session.query(ToolRun).all()]
+    assert "memory_create" in tools
+    assert "write_file" not in tools
+
+
+def test_explicit_memory_chat_can_correct_and_forget(client):
+    conversation = client.post("/api/conversations", json={}).json()
+    for message in (
+        "请记住我喜欢红茶",
+        "把你记住的我喜欢红茶改成我喜欢绿茶",
+    ):
+        response = client.post(
+            "/api/chat",
+            json={"conversation_id": conversation["id"], "message": message},
+        )
+        assert response.status_code == 200
+
+    active = client.get("/api/memories").json()
+    assert len(active) == 1
+    assert active[0]["content"] == "我喜欢绿茶"
+    history = client.get(f"/api/memories/{active[0]['id']}/history").json()
+    assert [row["content"] for row in history] == ["我喜欢绿茶", "我喜欢红茶"]
+
+    forgotten = client.post(
+        "/api/chat",
+        json={"conversation_id": conversation["id"], "message": "忘记我喜欢绿茶"},
+    )
+    assert forgotten.status_code == 200
+    current = client.get("/api/memories").json()
+    assert len(current) == 1
+    assert current[0]["is_active"] is False
+
+
 def test_conversation_summary_is_generated(client, monkeypatch):
     from infrastructure.config import settings
 
@@ -352,7 +443,8 @@ def test_tools_list(client):
     assert set(tools) == {
         "get_time", "calculate", "read_file", "write_file", "skill_load",
         "code_list_files", "code_search", "code_read", "code_create_file",
-        "code_edit", "code_git_diff", "code_run_check",
+        "code_edit", "code_git_diff", "code_run_check", "memory_list",
+        "memory_create", "memory_update", "memory_forget",
     }
     assert tools["skill_load"]["risk_level"] == "low"
     assert tools["write_file"]["risk_level"] == "high"

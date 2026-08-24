@@ -29,7 +29,12 @@ from core.automation.activity import activity_worker, recover_interrupted_activi
 from core.rag.embedding import build_embedding_provider
 from core.chat.character import load_character
 from core.chat.gateway import build_provider
-from core.chat.memory import contains_sensitive_information, normalize_memory_key
+from core.chat.memory import (
+    contains_sensitive_information,
+    memory_history,
+    normalize_memory_key,
+    revise_memory,
+)
 from core.chat.checkpoints import recover_interrupted_runs
 from core.capabilities.mcp_manager import McpManager
 from core.capabilities.plugins import PluginManager
@@ -228,6 +233,7 @@ def _memory_dict(m: Memory) -> dict:
         "supersedes_id": m.supersedes_id,
         "usage_count": m.usage_count,
         "last_used_at": m.last_used_at.isoformat() if m.last_used_at else None,
+        "expires_at": m.expires_at.isoformat() if m.expires_at else None,
         "source_conversation_id": m.source_conversation_id,
         "created_at": m.created_at.isoformat(),
         "updated_at": (m.updated_at or m.created_at).isoformat(),
@@ -354,7 +360,7 @@ class MemoryCreate(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     kind: Literal["episodic", "semantic", "profile"] = "semantic"
     importance: int = Field(default=3, ge=1, le=5)
-    scope_type: Literal["global", "project"] = "global"
+    scope_type: Literal["global", "project", "conversation"] = "global"
     scope_key: str | None = Field(default=None, min_length=1, max_length=64)
 
 
@@ -363,12 +369,28 @@ class MemoryUpdate(BaseModel):
     kind: Literal["episodic", "semantic", "profile"] | None = None
     importance: int | None = Field(default=None, ge=1, le=5)
     is_active: bool | None = None
+    scope_type: Literal["global", "project", "conversation"] | None = None
+    scope_key: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 @app.get("/api/memories")
-def list_memories():
+def list_memories(
+    scope_type: Literal["global", "project", "conversation"] | None = None,
+    scope_key: str | None = None,
+    kind: Literal["episodic", "semantic", "profile"] | None = None,
+    status: Literal["active", "superseded", "expired", "all"] = "active",
+):
     with SessionLocal() as session:
-        rows = session.query(Memory).order_by(Memory.created_at.desc()).all()
+        query = session.query(Memory)
+        if scope_type:
+            query = query.filter(Memory.scope_type == scope_type)
+        if scope_key:
+            query = query.filter(Memory.scope_key == scope_key)
+        if kind:
+            query = query.filter(Memory.kind == kind)
+        if status != "all":
+            query = query.filter(Memory.status == status)
+        rows = query.order_by(Memory.updated_at.desc(), Memory.created_at.desc()).all()
         return [_memory_dict(m) for m in rows]
 
 
@@ -377,12 +399,14 @@ def create_memory(body: MemoryCreate, request: Request):
     content = body.content.strip()
     if contains_sensitive_information(content):
         raise HTTPException(422, "记忆内容包含敏感信息，已拒绝保存")
-    if body.scope_type == "project" and not body.scope_key:
-        raise HTTPException(422, "project 作用域必须提供 scope_key")
+    if body.scope_type in {"project", "conversation"} and not body.scope_key:
+        raise HTTPException(422, f"{body.scope_type} 作用域必须提供 scope_key")
     provider = request.app.state.embedding_provider
     with SessionLocal() as session:
         if body.scope_type == "project" and session.get(Project, body.scope_key) is None:
             raise HTTPException(404, "project not found")
+        if body.scope_type == "conversation" and session.get(Conversation, body.scope_key) is None:
+            raise HTTPException(404, "conversation not found")
         embedding = provider.embed_documents([content])[0]
         mem = Memory(
             kind=body.kind,
@@ -397,6 +421,7 @@ def create_memory(body: MemoryCreate, request: Request):
             embedding_model=provider.model_name,
             embedding_dim=provider.dimension,
             embedded_at=datetime.now(timezone.utc),
+            embedding_version=provider.model_name,
         )
         session.add(mem)
         try:
@@ -414,23 +439,63 @@ def update_memory(mem_id: str, body: MemoryUpdate, request: Request):
         if mem is None:
             raise HTTPException(404, "memory not found")
         changes = body.model_dump(exclude_unset=True)
-        if "content" in changes and contains_sensitive_information(changes["content"]):
-            raise HTTPException(422, "记忆内容包含敏感信息，已拒绝保存")
-        for field, value in changes.items():
-            setattr(mem, field, value.strip() if field == "content" else value)
-        if "content" in changes:
-            mem.normalized_key = normalize_memory_key("", changes["content"])
-            mem.content_hash = sha256(mem.content.encode("utf-8")).hexdigest()
-            provider = request.app.state.embedding_provider
-            mem.embedding = provider.embed_documents([mem.content])[0]
-            mem.embedding_model = provider.model_name
-            mem.embedding_dim = provider.dimension
-            mem.embedded_at = datetime.now(timezone.utc)
+        next_scope_type = changes.get("scope_type", mem.scope_type)
+        next_scope_key = changes.get("scope_key")
+        if next_scope_type == "global":
+            next_scope_key = "global"
+        elif next_scope_key is None:
+            next_scope_key = mem.scope_key if next_scope_type == mem.scope_type else None
+        if next_scope_type == "project":
+            if not next_scope_key:
+                raise HTTPException(422, "project 作用域必须提供 scope_key")
+            if session.get(Project, next_scope_key) is None:
+                raise HTTPException(404, "project not found")
+        if next_scope_type == "conversation":
+            if not next_scope_key:
+                raise HTTPException(422, "conversation 作用域必须提供 scope_key")
+            if session.get(Conversation, next_scope_key) is None:
+                raise HTTPException(404, "conversation not found")
         try:
-            session.commit()
+            updated = revise_memory(
+                session,
+                mem,
+                content=changes.get("content"),
+                kind=changes.get("kind"),
+                importance=changes.get("importance"),
+                is_active=changes.get("is_active"),
+                scope_type=next_scope_type,
+                scope_key=next_scope_key,
+                embedding_provider=request.app.state.embedding_provider,
+            )
         except IntegrityError:
             session.rollback()
             raise HTTPException(409, "相同记忆已存在") from None
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(422, str(exc)) from None
+        return _memory_dict(updated)
+
+
+@app.get("/api/memories/{mem_id}/history")
+def get_memory_history(mem_id: str):
+    with SessionLocal() as session:
+        mem = session.get(Memory, mem_id)
+        if mem is None:
+            raise HTTPException(404, "memory not found")
+        return [_memory_dict(row) for row in memory_history(session, mem)]
+
+
+@app.post("/api/memories/{mem_id}/expire")
+def expire_memory(mem_id: str):
+    with SessionLocal() as session:
+        mem = session.get(Memory, mem_id)
+        if mem is None:
+            raise HTTPException(404, "memory not found")
+        if mem.status != "active":
+            raise HTTPException(409, "记忆已经失效")
+        mem.status = "expired"
+        mem.expires_at = datetime.now(timezone.utc)
+        session.commit()
         return _memory_dict(mem)
 
 

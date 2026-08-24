@@ -27,6 +27,10 @@ from core.chat.checkpoints import (
 )
 from core.chat.run_control import consume_user_cancellation
 from core.execution.executor import ToolCallBudget, execute_model_loop, merge_tool_call_deltas
+from core.execution.memory_tools import (
+    bind_memory_tool_context,
+    reset_memory_tool_context,
+)
 from core.automation.planner import (
     PROMPT_ROOT,
     apply_replan,
@@ -161,12 +165,16 @@ async def run_chat(
         )
     else:
         intent = await route_intent(message, provider)
+    memory_operation = intent.intent == "memory_management"
+    if memory_operation and not resume:
+        # 记忆 CRUD 是即时、可撤销的治理操作，不生成一份“如何记住”的规划文档。
+        execution_mode = "direct"
     # 聊天中的规划模式只生成 Markdown 实施方案。活动执行和旧 Checkpoint
     # 恢复仍沿用有限步骤 Planner，避免改变已经调度或已中断任务的语义。
     planning_document_mode = bool(
         not resume and activity_id is None and execution_mode == "planned"
     )
-    planning_skipped = False
+    planning_skipped = memory_operation and requested_execution_mode == "planned"
 
     configured_tools = set(allowed_tools)
     if resume:
@@ -316,6 +324,9 @@ async def run_chat(
     run_error = ""
     cache_stats = {"average_cache_hit_rate": None}
     skill_token = bind_active_skills(active_skills)
+    memory_tool_token = bind_memory_tool_context(
+        user_id, conversation_id, embedding_provider
+    )
     try:
         async with asyncio.timeout(settings.agent_timeout_seconds):
             character = await anyio.to_thread.run_sync(load_character, settings.character_file)
@@ -358,8 +369,26 @@ async def run_chat(
                     if preferred_tools
                     else ""
                 )
+                memory_tool_prompt = (
+                    "[统一长期记忆管理]\n"
+                    "这是用户明确发起的记忆治理操作。只能使用 memory_* 工具操作统一 memories 表，"
+                    "禁止使用文件、代码、Skill 或 MCP 工具代替长期记忆。\n"
+                    "新增时把复合内容拆成独立事实，并为每条事实调用 memory_create；"
+                    "稳定偏好/身份用 global，当前项目事实/约定用 project，临时会话事实用 conversation。\n"
+                    "修改或忘记时，如果不知道 memory_id，必须先调用 memory_list，再调用对应工具。\n"
+                    "只有工具返回成功后才能声称已经记住、修改或忘记；最终回答列出实际发生的变更。"
+                    if memory_operation
+                    else ""
+                )
                 system_addendum = "\n\n".join(
-                    item for item in (skill_prompt, mcp_prompt, intent_tool_prompt) if item
+                    item
+                    for item in (
+                        skill_prompt,
+                        mcp_prompt,
+                        intent_tool_prompt,
+                        memory_tool_prompt,
+                    )
+                    if item
                 )
             continuation_context = None
             if is_continuation_request(message):
@@ -838,11 +867,25 @@ async def run_chat(
                     else:
                         if event.type == "message.delta":
                             partial_reply += str(event.data.get("content") or "")
+                            # 记忆治理只在对应工具真正成功后展示最终确认，避免模型先说
+                            # “记住了”，随后工具却失败或根本没有调用。
+                            if memory_operation:
+                                continue
                         yield AgentEvent(event.type, event.data)
                 if result is None:
                     raise RuntimeError("Executor 未返回结果")
                 reply = str(result["content"])
                 usage = dict(result["usage"])
+                if memory_operation:
+                    operation_succeeded = await _memory_operation_succeeded(
+                        run_id, intent.action
+                    )
+                    if not operation_succeeded:
+                        reply = (
+                            "本次没有成功修改长期记忆，系统没有写入任何替代文件。"
+                            "请查看上方工具记录后重试。"
+                        )
+                    yield AgentEvent("message.delta", {"content": reply})
 
         allowed_citations = {item["citation_id"].lower() for item in context.sources}
         cited = {item.lower() for item in re.findall(r"\[(c\d+)\]", reply, flags=re.IGNORECASE)}
@@ -924,12 +967,18 @@ async def run_chat(
         yield AgentEvent("run.failed", {"run_id": run_id, "error": str(exc)})
         return
     finally:
+        reset_memory_tool_context(memory_tool_token)
         reset_active_skills(skill_token)
 
     if used_sources:
         yield AgentEvent("rag.retrieved", {"sources": used_sources})
     yield AgentEvent("message.completed", {})
-    if settings.memory_enabled and activity_id is None and run_status == "completed":
+    if (
+        settings.memory_enabled
+        and activity_id is None
+        and run_status == "completed"
+        and not memory_operation
+    ):
         try:
             candidates = await extract_memories(provider, message, reply)
 
@@ -1174,6 +1223,34 @@ async def _fail_run(run_id: str, status: str, error: str) -> None:
             session.commit()
 
     await anyio.to_thread.run_sync(_fail)
+
+
+async def _memory_operation_succeeded(run_id: str, action: str) -> bool:
+    """用持久化 ToolRun 对账，不能只相信模型生成的成功措辞。"""
+
+    expected_tool = {
+        "create_memory": "memory_create",
+        "update_memory": "memory_update",
+        "forget_memory": "memory_forget",
+        "list_memories": "memory_list",
+    }.get(action)
+    if expected_tool is None:
+        return False
+
+    def _check() -> bool:
+        with SessionLocal() as session:
+            return (
+                session.query(ToolRun)
+                .filter(
+                    ToolRun.run_id == run_id,
+                    ToolRun.tool == expected_tool,
+                    ToolRun.status == "completed",
+                )
+                .first()
+                is not None
+            )
+
+    return await anyio.to_thread.run_sync(_check)
 
 
 async def _save_failure_message(conversation_id: str, content: str) -> None:

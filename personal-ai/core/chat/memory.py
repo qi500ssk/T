@@ -280,6 +280,133 @@ def save_memories(
     return saved
 
 
+def revise_memory(
+    session: Session,
+    memory: Memory,
+    *,
+    content: str | None = None,
+    kind: str | None = None,
+    importance: int | None = None,
+    scope_type: str | None = None,
+    scope_key: str | None = None,
+    is_active: bool | None = None,
+    embedding_provider=None,
+) -> Memory:
+    """纠正记忆并保留替换链；纯开关/重要度调整不制造新版本。"""
+    if memory.status != "active":
+        raise ValueError("只有当前有效的记忆可以修改")
+    next_content = (content if content is not None else memory.content).strip()
+    next_kind = kind or memory.kind
+    next_importance = importance if importance is not None else memory.importance
+    next_scope_type = scope_type or memory.scope_type
+    next_scope_key = scope_key or memory.scope_key
+    next_is_active = is_active if is_active is not None else memory.is_active
+    if not next_content or len(next_content) > 2000:
+        raise ValueError("记忆内容长度必须为 1-2000 个字符")
+    if next_kind not in _KINDS:
+        raise ValueError("记忆类型无效")
+    if next_scope_type not in _SCOPES:
+        raise ValueError("记忆作用域无效")
+    if not 1 <= int(next_importance) <= 5:
+        raise ValueError("记忆重要度必须为 1-5")
+    if contains_sensitive_information(next_content):
+        raise ValueError("记忆内容包含敏感信息，已拒绝保存")
+
+    structural_change = any(
+        (
+            next_content != memory.content,
+            next_kind != memory.kind,
+            next_scope_type != memory.scope_type,
+            next_scope_key != memory.scope_key,
+        )
+    )
+    if not structural_change:
+        memory.importance = int(next_importance)
+        memory.is_active = bool(next_is_active)
+        memory.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(memory)
+        return memory
+
+    duplicate = (
+        session.query(Memory)
+        .filter(
+            Memory.id != memory.id,
+            Memory.user_id == memory.user_id,
+            Memory.scope_type == next_scope_type,
+            Memory.scope_key == next_scope_key,
+            Memory.normalized_key == memory.normalized_key,
+            Memory.status == "active",
+        )
+        .first()
+    )
+    if duplicate is not None:
+        raise ValueError("目标作用域中已有同一条有效记忆")
+
+    now = datetime.now(timezone.utc)
+    embedding = None
+    if embedding_provider is not None:
+        try:
+            embedding = embedding_provider.embed_documents([next_content])[0]
+        except Exception:
+            logger.exception("记忆修订向量生成失败，保留文本记忆")
+    original_key = memory.normalized_key
+    memory.status = "superseded"
+    memory.normalized_key = f"superseded.{memory.id}"
+    memory.updated_at = now
+    replacement = Memory(
+        user_id=memory.user_id,
+        kind=next_kind,
+        content=next_content,
+        normalized_key=original_key,
+        source_conversation_id=memory.source_conversation_id,
+        importance=int(next_importance),
+        confidence=1.0,
+        is_active=bool(next_is_active),
+        scope_type=next_scope_type,
+        scope_key=next_scope_key,
+        status="active",
+        supersedes_id=memory.id,
+        content_hash=_content_hash(next_content),
+        extraction_version=memory.extraction_version,
+        embedding=embedding,
+        embedding_model=(embedding_provider.model_name if embedding is not None else None),
+        embedding_dim=(embedding_provider.dimension if embedding is not None else None),
+        embedding_version=(embedding_provider.model_name if embedding is not None else None),
+        embedded_at=(now if embedding is not None else None),
+    )
+    session.add(replacement)
+    session.commit()
+    session.refresh(replacement)
+    return replacement
+
+
+def memory_history(session: Session, memory: Memory) -> list[Memory]:
+    """返回一条记忆所在的完整替换链，最新版本在前。"""
+    oldest = memory
+    ancestry_seen = {oldest.id}
+    while oldest.supersedes_id:
+        previous = session.get(Memory, oldest.supersedes_id)
+        if previous is None or previous.id in ancestry_seen:
+            break
+        ancestry_seen.add(previous.id)
+        oldest = previous
+    chain = [oldest]
+    forward_seen = {oldest.id}
+    while True:
+        newer = (
+            session.query(Memory)
+            .filter(Memory.supersedes_id == chain[-1].id)
+            .order_by(Memory.created_at.asc())
+            .first()
+        )
+        if newer is None or newer.id in forward_seen:
+            break
+        forward_seen.add(newer.id)
+        chain.append(newer)
+    return list(reversed(chain))
+
+
 def _terms(text: str) -> set[str]:
     lowered = text.lower()
     terms = set(re.findall(r"[a-z0-9_]+", lowered))

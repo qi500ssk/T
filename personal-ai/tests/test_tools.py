@@ -1,9 +1,15 @@
 import asyncio
+import json
 
 import pytest
 
 from core.execution.tools import TOOLS, Tool, execute_tool
+from core.execution.memory_tools import (
+    bind_memory_tool_context,
+    reset_memory_tool_context,
+)
 from infrastructure.config import settings
+from infrastructure.database import Conversation, Memory, Project, SessionLocal
 
 
 @pytest.mark.asyncio
@@ -90,3 +96,62 @@ async def test_tool_whitelist_and_timeout(monkeypatch):
     )
     timed_out = await execute_tool("slow_test", {}, {"slow_test"})
     assert timed_out.status == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_unified_memory_tools_create_revise_list_and_forget():
+    with SessionLocal() as session:
+        project = Project(name="记忆测试项目")
+        session.add(project)
+        session.flush()
+        conversation = Conversation(title="记忆测试", project_id=project.id)
+        session.add(conversation)
+        session.commit()
+        conversation_id = conversation.id
+        project_id = project.id
+
+    token = bind_memory_tool_context("default", conversation_id)
+    try:
+        created = await execute_tool(
+            "memory_create",
+            {
+                "content": "当前项目统一使用 PostgreSQL",
+                "kind": "semantic",
+                "scope_type": "project",
+                "importance": 4,
+            },
+            {"memory_create"},
+        )
+        assert created.status == "completed"
+        memory_id = json.loads(created.content)["memory"]["id"]
+
+        listed = await execute_tool("memory_list", {}, {"memory_list"})
+        listed_payload = json.loads(listed.content)
+        assert listed_payload["count"] == 1
+        assert listed_payload["memories"][0]["scope_type"] == "project"
+        assert listed_payload["memories"][0]["scope_key"] == project_id
+
+        revised = await execute_tool(
+            "memory_update",
+            {"memory_id": memory_id, "content": "当前项目统一使用 PostgreSQL 和 pgvector"},
+            {"memory_update"},
+        )
+        assert revised.status == "completed"
+        replacement_id = json.loads(revised.content)["memory"]["id"]
+        assert replacement_id != memory_id
+
+        forgotten = await execute_tool(
+            "memory_forget",
+            {"memory_id": replacement_id},
+            {"memory_forget"},
+        )
+        assert forgotten.status == "completed"
+        assert json.loads(forgotten.content)["memory"]["is_active"] is False
+    finally:
+        reset_memory_tool_context(token)
+
+    with SessionLocal() as session:
+        old = session.get(Memory, memory_id)
+        replacement = session.get(Memory, replacement_id)
+        assert old is not None and old.status == "superseded"
+        assert replacement is not None and replacement.supersedes_id == memory_id
