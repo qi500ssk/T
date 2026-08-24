@@ -1,0 +1,11 @@
+[
+  {"message": "你好", "intent": "conversation", "source": "rule"},
+  {"message": "计算 122+22", "intent": "calculation", "source": "rule"},
+  {"message": "现在几点", "intent": "current_information", "source": "rule"},
+  {"message": "查看我的记忆", "intent": "memory_management", "source": "rule"},
+  {"message": "根据我上传的文档回答", "intent": "knowledge_query", "source": "rule"},
+  {"message": "分析这个项目的 API 测试", "intent": "software_development", "source": "rule"},
+  {"message": "保存笔记：阶段 A 已完成", "intent": "task_execution", "source": "rule"},
+  {"message": "设置模型上下文", "intent": "settings_change", "source": "rule"},
+  {"message": "今天最新的天气", "intent": "current_information", "source": "rule"}
+]

@@ -24,6 +24,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   citations: CitationSource[];
+  run_id: string | null;
+  status: "completed" | "interrupted";
   created_at: string;
   images: ChatImage[];
   token_estimate: number;
@@ -136,7 +138,7 @@ export interface PlanStep {
   title: string;
   instruction: string;
   tool_hints: string[];
-  status: "pending" | "running" | "completed" | "blocked" | "failed" | "superseded" | "cancelled";
+  status: "pending" | "running" | "interrupted" | "completed" | "blocked" | "failed" | "superseded" | "cancelled";
   output_summary: string | null;
   error: string | null;
 }
@@ -147,11 +149,75 @@ export interface Plan {
   conversation_id: string;
   activity_id: string | null;
   goal: string;
-  status: "planning" | "running" | "completed" | "failed" | "cancelled";
+  status: "planning" | "running" | "interrupted" | "completed" | "failed" | "cancelled";
   current_version: number;
   replan_count: number;
   error: string | null;
   steps: PlanStep[];
+}
+
+export interface Checkpoint {
+  id: string;
+  run_id: string;
+  plan_id: string;
+  step_id: string | null;
+  sequence: number;
+  state: {
+    goal?: string;
+    current_step?: { id?: string; position?: number; title?: string } | number | null;
+    last_observation?: string;
+  };
+  workspace_snapshot: {
+    files?: { path: string; sha256: string }[];
+    git_head?: string | null;
+  };
+  capability_version: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface AgentRunState {
+  id: string;
+  conversation_id: string;
+  execution_mode: "direct" | "planned";
+  status: "running" | "interrupted";
+  input_message: string;
+  error: string | null;
+  has_checkpoint: boolean;
+  created_at: string;
+}
+
+export interface ConversationRunStats {
+  eligible_run_count: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  average_cache_hit_rate: number | null;
+}
+
+export interface RunHistoryTool {
+  id: string;
+  tool: string;
+  args_summary: string;
+  result_summary: string | null;
+  risk_level: string;
+  status: string;
+  duration_ms: number | null;
+}
+
+export interface AgentRunHistory {
+  id: string;
+  conversation_id: string;
+  execution_mode: "direct" | "planned";
+  status: string;
+  input_message: string;
+  intent: Record<string, unknown> | null;
+  context_stats: Record<string, unknown> | null;
+  input_tokens: number;
+  output_tokens: number;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+  tools: RunHistoryTool[];
 }
 
 export interface Capability {
@@ -334,6 +400,12 @@ export interface Memory {
   importance: number;
   confidence: number;
   is_active: boolean;
+  scope_type: "global" | "project" | "conversation";
+  scope_key: string;
+  status: "active" | "superseded" | "expired";
+  supersedes_id: string | null;
+  usage_count: number;
+  last_used_at: string | null;
   source_conversation_id: string | null;
   created_at: string;
   updated_at: string;
@@ -448,7 +520,7 @@ export const submitApproval = (approvalId: string, approved: boolean) =>
   });
 
 export const cancelChatRun = (runId: string) =>
-  req<{ ok: boolean; status: "cancelling"; run_id: string }>(
+  req<{ ok: boolean; status: "cancelling" | "interrupted"; run_id: string }>(
     `${API_URL}/chat/${encodeURIComponent(runId)}/cancel`,
     { method: "POST" },
   );
@@ -483,6 +555,18 @@ export const deleteActivity = (id: string) =>
 
 export const fetchConversationPlans = (conversationId: string) =>
   req<Plan[]>(`${API_URL}/conversations/${conversationId}/plans`);
+
+export const fetchConversationCheckpoints = (conversationId: string) =>
+  req<Checkpoint[]>(`${API_URL}/conversations/${conversationId}/checkpoints`);
+
+export const fetchCurrentConversationRun = (conversationId: string) =>
+  req<AgentRunState | null>(`${API_URL}/conversations/${conversationId}/runs/current`);
+
+export const fetchConversationRunStats = (conversationId: string) =>
+  req<ConversationRunStats>(`${API_URL}/conversations/${conversationId}/runs/stats`);
+
+export const fetchConversationRunHistory = (conversationId: string) =>
+  req<AgentRunHistory[]>(`${API_URL}/conversations/${conversationId}/runs/history`);
 
 export const fetchCapabilities = () => req<Capability[]>(`${API_URL}/capabilities`);
 
@@ -742,6 +826,41 @@ export async function streamChat(
       const ev = parseEventBlock(buffer.slice(0, idx));
       buffer = buffer.slice(idx + 2);
       if (ev) onEvent(ev);
+    }
+  }
+}
+
+export async function streamResumeRun(
+  runId: string,
+  onEvent: (ev: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(`${API_URL}/chat/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text();
+    let detail = text;
+    try {
+      detail = (JSON.parse(text) as { detail?: string }).detail ?? text;
+    } catch {
+      // 保留非 JSON 错误原文。
+    }
+    throw new Error(`恢复失败 ${resp.status}: ${detail}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf("\n\n")) >= 0) {
+      const event = parseEventBlock(buffer.slice(0, index));
+      buffer = buffer.slice(index + 2);
+      if (event) onEvent(event);
     }
   }
 }

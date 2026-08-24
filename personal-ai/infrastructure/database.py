@@ -79,6 +79,8 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20))  # user | assistant
     content: Mapped[str] = mapped_column(Text)
     citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="completed", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -116,12 +118,21 @@ class AgentRun(Base):
     conversation_id: Mapped[str] = mapped_column(String(32), index=True)
     user_id: Mapped[str] = mapped_column(String(64), index=True, default="default")
     activity_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    input_message_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     execution_mode: Mapped[str] = mapped_column(String(20), default="direct")
     capability_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     capability_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="running")  # running|completed|failed|cancelled
+    intent_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    context_stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default="running"
+    )  # running|interrupted|completed|failed|cancelled
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # NULL 表示上游模型没有返回缓存统计；0 表示明确返回但本次未命中。
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     completed_at: Mapped[datetime | None] = mapped_column(
@@ -201,12 +212,25 @@ class PlanStep(Base):
 
 class ToolRun(Base):
     __tablename__ = "tool_runs"
+    __table_args__ = (
+        Index(
+            "uq_tool_runs_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     run_id: Mapped[str] = mapped_column(String(32), index=True)
     conversation_id: Mapped[str] = mapped_column(String(32), index=True)
     tool_call_id: Mapped[str] = mapped_column(String(100), index=True)
     step_index: Mapped[int] = mapped_column(Integer)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_step_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("plan_steps.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool: Mapped[str] = mapped_column(String(100))
     args_summary: Mapped[str] = mapped_column(Text, default="")
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -219,10 +243,38 @@ class ToolRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Checkpoint(Base):
+    __tablename__ = "checkpoints"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_checkpoint_run_sequence"),
+        Index("ix_checkpoints_run_created", "run_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    plan_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("plans.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("plan_steps.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    workspace_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    capability_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Memory(Base):
     __tablename__ = "memories"
     __table_args__ = (
-        UniqueConstraint("user_id", "normalized_key", name="uq_memories_user_key"),
+        UniqueConstraint(
+            "user_id", "scope_type", "scope_key", "normalized_key",
+            name="uq_memories_scope_key",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
@@ -234,6 +286,18 @@ class Memory(Base):
     importance: Mapped[int] = mapped_column(Integer, default=3)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    scope_type: Mapped[str] = mapped_column(String(20), default="global")  # global|project|conversation
+    scope_key: Mapped[str] = mapped_column(String(64), default="global")
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|superseded|expired
+    supersedes_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("memories.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extraction_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
         VECTOR(settings.embedding_dim), nullable=True
     )

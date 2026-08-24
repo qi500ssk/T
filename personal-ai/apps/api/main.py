@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +30,7 @@ from core.rag.embedding import build_embedding_provider
 from core.chat.character import load_character
 from core.chat.gateway import build_provider
 from core.chat.memory import contains_sensitive_information, normalize_memory_key
+from core.chat.checkpoints import recover_interrupted_runs
 from core.capabilities.mcp_manager import McpManager
 from core.capabilities.plugins import PluginManager
 from core.capabilities.skill_registry import build_default_skill_registry
@@ -59,6 +61,8 @@ from infrastructure.database import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    reject_all_approvals()
+    recover_interrupted_runs()
     original_runtime_config = capture_runtime_config(settings)
     app.state.runtime_settings_store = RuntimeSettingsStore(
         settings.runtime_settings_file,
@@ -198,9 +202,15 @@ def _message_dict(m: Message, images: list[ChatImage] | None = None) -> dict:
         "role": m.role,
         "content": m.content,
         "citations": m.citations or [],
+        "run_id": m.run_id,
+        "status": m.status,
         "created_at": m.created_at.isoformat(),
         "images": [image_dict(image) for image in message_images],
-        "token_estimate": estimate_tokens(m.content) + len(message_images) * IMAGE_TOKEN_ESTIMATE,
+        "token_estimate": (
+            estimate_tokens(m.content) + len(message_images) * IMAGE_TOKEN_ESTIMATE
+            if m.status == "completed"
+            else 0
+        ),
     }
 
 
@@ -212,6 +222,12 @@ def _memory_dict(m: Memory) -> dict:
         "importance": m.importance,
         "confidence": m.confidence,
         "is_active": m.is_active,
+        "scope_type": m.scope_type,
+        "scope_key": m.scope_key,
+        "status": m.status,
+        "supersedes_id": m.supersedes_id,
+        "usage_count": m.usage_count,
+        "last_used_at": m.last_used_at.isoformat() if m.last_used_at else None,
         "source_conversation_id": m.source_conversation_id,
         "created_at": m.created_at.isoformat(),
         "updated_at": (m.updated_at or m.created_at).isoformat(),
@@ -338,6 +354,8 @@ class MemoryCreate(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     kind: Literal["episodic", "semantic", "profile"] = "semantic"
     importance: int = Field(default=3, ge=1, le=5)
+    scope_type: Literal["global", "project"] = "global"
+    scope_key: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class MemoryUpdate(BaseModel):
@@ -359,15 +377,22 @@ def create_memory(body: MemoryCreate, request: Request):
     content = body.content.strip()
     if contains_sensitive_information(content):
         raise HTTPException(422, "记忆内容包含敏感信息，已拒绝保存")
+    if body.scope_type == "project" and not body.scope_key:
+        raise HTTPException(422, "project 作用域必须提供 scope_key")
     provider = request.app.state.embedding_provider
-    embedding = provider.embed_documents([content])[0]
     with SessionLocal() as session:
+        if body.scope_type == "project" and session.get(Project, body.scope_key) is None:
+            raise HTTPException(404, "project not found")
+        embedding = provider.embed_documents([content])[0]
         mem = Memory(
             kind=body.kind,
             content=content,
             normalized_key=normalize_memory_key("", content),
             importance=body.importance,
             confidence=1.0,
+            scope_type=body.scope_type,
+            scope_key=body.scope_key or "global",
+            content_hash=sha256(content.encode("utf-8")).hexdigest(),
             embedding=embedding,
             embedding_model=provider.model_name,
             embedding_dim=provider.dimension,
@@ -395,6 +420,7 @@ def update_memory(mem_id: str, body: MemoryUpdate, request: Request):
             setattr(mem, field, value.strip() if field == "content" else value)
         if "content" in changes:
             mem.normalized_key = normalize_memory_key("", changes["content"])
+            mem.content_hash = sha256(mem.content.encode("utf-8")).hexdigest()
             provider = request.app.state.embedding_provider
             mem.embedding = provider.embed_documents([mem.content])[0]
             mem.embedding_model = provider.model_name

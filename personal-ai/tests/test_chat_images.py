@@ -120,8 +120,19 @@ def test_qwen_image_is_bound_to_message_and_sent_as_data_url(client):
     assert client.get(f"/api/chat/images/{image['id']}/content").status_code == 404
 
 
-def test_planned_mode_rejects_images_before_starting_run(client):
+def test_planning_document_mode_accepts_images_with_visual_model(client):
     image = _upload(client)
+    created = client.post(
+        "/api/settings/models",
+        json={
+            "name": "规划视觉测试",
+            "provider": "mock",
+            "base_url": "",
+            "model": "qwen3.8-max",
+            "timeout_seconds": 30,
+        },
+    )
+    assert created.status_code == 200
     conversation = client.post("/api/conversations", json={}).json()
     response = client.post(
         "/api/chat",
@@ -130,6 +141,8 @@ def test_planned_mode_rejects_images_before_starting_run(client):
             "message": "识别图片",
             "image_ids": [image["id"]],
             "execution_mode": "planned",
+            "model_id": created.json()["id"],
         },
     )
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert "event: planning.document.completed" in response.text

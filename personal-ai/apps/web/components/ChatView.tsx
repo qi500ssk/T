@@ -10,22 +10,23 @@ import {
   deleteStagedChatImage,
   documentContentUrl,
   fetchAppSettings,
-  fetchConversationPlans,
+  fetchConversationRunHistory,
+  fetchConversationRunStats,
+  fetchCurrentConversationRun,
   fetchMessages,
   submitApproval,
   streamChat,
   uploadFile,
   uploadChatImage,
   type AppSettings,
+  type AgentRunHistory,
+  type AgentRunState,
   type ChatMessage,
   type ChatImage,
   type CitationSource,
-  type Plan,
-  type PlanStep,
   type Project,
   type KnowledgeDocument,
 } from "@/lib/api";
-import PlanProgress from "@/components/PlanProgress";
 
 interface ChatViewProps {
   conversationId: string | null;
@@ -64,12 +65,6 @@ interface ApprovalItem {
   approvalId: string;
   tool: string;
   argsSummary: string;
-  state: "pending" | "submitting" | "approved" | "rejected" | "expired";
-  error: string;
-}
-
-interface PlanApprovalItem {
-  approvalId: string;
   state: "pending" | "submitting" | "approved" | "rejected" | "expired";
   error: string;
 }
@@ -298,6 +293,8 @@ function ChatComposer({
   contextLoading,
   hero = false,
   uploadBusy,
+  onStop,
+  isStopping,
   onUpload,
   onOpenSettings,
   projects,
@@ -325,6 +322,8 @@ function ChatComposer({
   contextLoading: boolean;
   hero?: boolean;
   uploadBusy: boolean;
+  onStop: () => void;
+  isStopping: boolean;
   onUpload: (file: File) => void;
   onOpenSettings?: (view: "workspace" | "model") => void;
   projects: Project[];
@@ -433,13 +432,22 @@ function ChatComposer({
         <label className="relative shrink-0">
           <span className="sr-only">执行模式</span>
           <select value={executionMode} disabled={isStreaming} onChange={(event) => setExecutionMode(event.target.value as "direct" | "planned")} className="h-10 appearance-none rounded-xl bg-transparent py-0 pl-3 pr-8 text-sm font-medium text-zinc-700 outline-none hover:bg-zinc-100 focus:ring-2 focus:ring-zinc-300">
-            <option value="direct">直接回答</option><option value="planned">规划执行</option>
+            <option value="direct">自主模式</option><option value="planned">规划模式</option>
           </select>
           <span className="pointer-events-none absolute right-2.5 top-2.5 text-xs text-zinc-400">⌄</span>
         </label>
         <ContextMeter usage={contextUsage} contextWindowTokens={contextWindowTokens} maxOutputTokens={maxOutputTokens} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} loading={contextLoading} />
         {environmentLocked ? <button type="button" onClick={() => onOpenSettings?.("model")} className="min-h-10 max-w-44 truncate rounded-xl bg-zinc-100 px-3 text-xs font-medium text-zinc-700 sm:max-w-64 sm:text-sm" title=".env 环境模型具有最高优先级">{settings?.model.model} · 环境锁定</button> : modelProfiles.length > 0 ? <label className="relative min-w-0"><span className="sr-only">本次对话使用的模型</span><select value={selectedModelId} disabled={isStreaming} onChange={(event) => setSelectedModelId(event.target.value)} className="h-10 max-w-28 appearance-none truncate rounded-xl bg-transparent py-0 pl-2 pr-6 text-xs text-zinc-600 outline-none hover:bg-zinc-100 focus:ring-2 focus:ring-zinc-300 sm:max-w-64 sm:pl-3 sm:pr-8 sm:text-sm">{modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.model || "Mock"}{profile.is_default ? "（默认）" : ""}</option>)}</select><span className="pointer-events-none absolute right-2 top-2.5 text-xs text-zinc-400 sm:right-2.5">⌄</span></label> : <button type="button" onClick={() => onOpenSettings?.("model")} className="min-h-10 rounded-xl bg-amber-50 px-2 text-xs font-medium text-amber-800 hover:bg-amber-100 sm:px-3 sm:text-sm">配置模型</button>}
-        <button type="submit" disabled={(!input.trim() && images.length === 0) || isStreaming || uploadBusy || !modelReady || !canSubmitImages} className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-900 text-lg font-medium text-white transition hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:bg-zinc-300" aria-label={modelReady ? "发送消息" : "请先配置模型"} title={!canSubmitImages ? "请切换到支持图片的模型" : modelReady ? "发送消息" : "请先配置并选择模型"}>↑</button>
+        <button
+          type={isStreaming ? "button" : "submit"}
+          onClick={isStreaming ? onStop : undefined}
+          disabled={isStreaming ? isStopping : (!input.trim() && images.length === 0) || uploadBusy || !modelReady || !canSubmitImages}
+          className="grid size-10 shrink-0 place-items-center rounded-xl bg-zinc-900 text-lg font-medium text-white transition hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:bg-zinc-300"
+          aria-label={isStreaming ? isStopping ? "正在停止回答" : "停止回答" : modelReady ? "发送消息" : "请先配置模型"}
+          title={isStreaming ? isStopping ? "正在停止…" : "停止回答" : !canSubmitImages ? "请切换到支持图片的模型" : modelReady ? "发送消息" : "请先配置并选择模型"}
+        >
+          {isStreaming ? <span className="size-3 rounded-[2px] bg-white" aria-hidden="true" /> : "↑"}
+        </button>
       </div>
     </form>
   );
@@ -523,7 +531,8 @@ function RunTracePanel({
 }) {
   if (items.length === 0) return null;
   const failed = items.some((item) => item.status === "failed");
-  const heading = failed ? "处理失败" : active ? "正在处理" : "已处理";
+  const stopped = items.some((item) => item.status === "cancelled");
+  const heading = failed ? "处理失败" : stopped ? "已停止" : active ? "正在处理" : "已处理";
   return <section className="py-1" aria-label="Agent 工作记录">
     <button type="button" onClick={onToggle} className="group flex min-h-11 w-full items-center gap-3 text-left text-sm text-zinc-500 focus-visible:rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-expanded={open}>
       <span className="shrink-0 font-medium">{heading} {formatElapsed(elapsedSeconds)}</span>
@@ -542,6 +551,90 @@ function RunTracePanel({
       </li>)}</ol>
     </div>}
   </section>;
+}
+
+function historicalTraceItems(run: AgentRunHistory): RunTraceItem[] {
+  const intent = run.intent ?? {};
+  const context = run.context_stats ?? {};
+  const memoryCount = Number(context.memory_count ?? 0);
+  const memoryCandidates = Number(context.memory_candidate_count ?? memoryCount);
+  const sourceCount = Number(context.source_count ?? 0);
+  const knowledgeCandidates = Number(context.knowledge_candidate_count ?? sourceCount);
+  const items: RunTraceItem[] = [
+    {
+      key: "analysis",
+      label: "分析请求",
+      status: "completed",
+      detail: `当前理解：${compactText(run.input_message || "历史请求")}\n执行方式：${run.execution_mode === "planned" ? "规划模式" : "自主模式"}`,
+    },
+  ];
+  if (Object.keys(intent).length > 0) {
+    items.push({
+      key: "intent",
+      label: "识别意图",
+      status: "completed",
+      detail: `类型：${String(intent.intent ?? "conversation")} · 路由：${String(intent.source ?? "default")} · 置信度：${Math.round(Number(intent.confidence ?? 0) * 100)}%`,
+    });
+  }
+  items.push({
+    key: "context",
+    label: "装配上下文",
+    status: "completed",
+    detail: Object.keys(context).length > 0
+      ? `记忆候选 ${memoryCandidates}，使用 ${memoryCount}；资料候选 ${knowledgeCandidates}，使用 ${sourceCount}`
+      : "上下文已装配；该历史 Run 未保存详细统计",
+  });
+  for (const [index, tool] of run.tools.entries()) {
+    const status: TraceStatus = tool.status === "completed"
+      ? "completed"
+      : tool.status === "rejected"
+        ? "cancelled"
+        : "failed";
+    items.push({
+      key: `tool-${tool.id || index}`,
+      label: TOOL_LABELS[tool.tool] ?? tool.tool,
+      status,
+      detail: `${tool.args_summary || "未记录参数"}${tool.result_summary ? `\n${tool.result_summary}` : ""}`,
+    });
+  }
+  if (run.status === "completed") {
+    items.push({
+      key: "model",
+      label: run.execution_mode === "planned" ? "生成规划文档" : "生成回答",
+      status: "completed",
+      detail: "内容已生成并保存到当前对话",
+    });
+  }
+  const finalStatus: TraceStatus = run.status === "failed"
+    ? "failed"
+    : ["cancelled", "interrupted"].includes(run.status)
+      ? "cancelled"
+      : "completed";
+  items.push({
+    key: "finished",
+    label: finalStatus === "failed" ? "结束运行" : finalStatus === "cancelled" ? "停止运行" : "完成运行",
+    status: finalStatus,
+    detail: run.error || `输入 ${run.input_tokens || 0} tokens，输出 ${run.output_tokens || 0} tokens`,
+  });
+  return items;
+}
+
+function runElapsedSeconds(run: AgentRunHistory) {
+  if (!run.completed_at) return 0;
+  return Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at)) / 1000));
+}
+
+function HistoricalRunTrace({ run }: { run: AgentRunHistory }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <RunTracePanel
+      items={historicalTraceItems(run)}
+      open={open}
+      active={false}
+      elapsedSeconds={runElapsedSeconds(run)}
+      onToggle={() => setOpen((value) => !value)}
+    />
+  );
 }
 
 function ApprovalCard({
@@ -599,51 +692,18 @@ function ApprovalCard({
   );
 }
 
-function PlanApprovalCard({
-  item,
-  onSubmit,
-}: {
-  item: PlanApprovalItem;
-  onSubmit: (approvalId: string, approved: boolean) => void;
-}) {
-  const waiting = item.state === "pending";
-  return (
-    <section className="mx-auto w-full max-w-3xl rounded-xl border border-zinc-200 bg-white p-4 shadow-sm" aria-label="计划执行确认">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-zinc-900 text-xs text-white" aria-hidden="true">✓</span>
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium text-zinc-900">计划已准备好</h3>
-          <p className="mt-1 text-sm leading-6 text-zinc-500">检查上面的步骤。确认后才会开始调用工具，你也可以取消本次执行。</p>
-          {item.error && <p className="mt-2 text-sm text-red-600" role="alert">{item.error}</p>}
-          {waiting ? (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <button type="button" onClick={() => onSubmit(item.approvalId, true)} className="min-h-11 rounded-lg bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">开始执行</button>
-              <button type="button" onClick={() => onSubmit(item.approvalId, false)} className="min-h-11 rounded-lg border border-zinc-300 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">取消计划</button>
-            </div>
-          ) : (
-            <p className="mt-3 text-sm font-medium text-zinc-600" aria-live="polite">
-              {item.state === "submitting" && "正在提交决定…"}
-              {item.state === "approved" && "已确认，开始执行计划"}
-              {item.state === "rejected" && "已取消，计划没有执行"}
-              {item.state === "expired" && "确认已失效，计划没有执行"}
-            </p>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function MessageBubble({
   role,
   content,
   streaming,
+  status = "completed",
   citations = [],
   images = [],
 }: {
   role: string;
   content: string;
   streaming?: boolean;
+  status?: ChatMessage["status"];
   citations?: CitationSource[];
   images?: ChatImage[];
 }) {
@@ -672,6 +732,12 @@ function MessageBubble({
             </div>
             {streaming && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-gray-400 align-middle" />
+            )}
+            {status === "interrupted" && (
+              <div className="mt-3 flex items-center gap-2 border-t border-zinc-200 pt-2 text-xs text-zinc-500" role="status">
+                <span className="grid size-4 place-items-center rounded-full bg-zinc-200 text-[9px] text-zinc-700" aria-hidden="true">■</span>
+                <span>回答已停止，内容可能不完整</span>
+              </div>
             )}
             {usedCitations.length > 0 && (
               <div className="mt-3 space-y-2 border-t border-gray-200 pt-3" aria-label="回答引用">
@@ -721,10 +787,9 @@ export default function ChatView({
   const [error, setError] = useState("");
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([]);
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
-  const [planApproval, setPlanApproval] = useState<PlanApprovalItem | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [executionMode, setExecutionMode] = useState<"direct" | "planned">("direct");
-  const [plan, setPlan] = useState<Plan | null>(null);
+  const [currentRun, setCurrentRun] = useState<AgentRunState | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -736,6 +801,7 @@ export default function ChatView({
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
   const [runTrace, setRunTrace] = useState<RunTraceItem[]>([]);
+  const [runHistory, setRunHistory] = useState<Record<string, AgentRunHistory>>({});
   const [traceOpen, setTraceOpen] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -770,14 +836,14 @@ export default function ChatView({
       setStreamingSources([]);
       setToolActivities([]);
       setApprovals([]);
-      setPlanApproval(null);
       setIsStopping(false);
-      setPlan(null);
+      setCurrentRun(null);
       setContextUsage(null);
       setConversationTokens(0);
       setCacheHitRate(null);
       setContextLoading(false);
       setRunTrace([]);
+      setRunHistory({});
       setElapsedSeconds(0);
       runStartedAtRef.current = null;
       activeRunIdRef.current = null;
@@ -815,9 +881,23 @@ export default function ChatView({
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    fetchConversationPlans(conversationId)
-      .then((rows) => { if (!cancelled) setPlan(rows[0] ?? null); })
-      .catch(() => { if (!cancelled) setPlan(null); });
+    fetchCurrentConversationRun(conversationId)
+      .then((run) => {
+        if (cancelled) return;
+        setCurrentRun(run);
+        activeRunIdRef.current = run?.status === "running" ? run.id : null;
+      })
+      .catch(() => { if (!cancelled) setCurrentRun(null); });
+    fetchConversationRunStats(conversationId)
+      .then((stats) => {
+        if (!cancelled) setCacheHitRate(stats.average_cache_hit_rate);
+      })
+      .catch(() => { if (!cancelled) setCacheHitRate(null); });
+    fetchConversationRunHistory(conversationId)
+      .then((rows) => {
+        if (!cancelled) setRunHistory(Object.fromEntries(rows.map((run) => [run.id, run])));
+      })
+      .catch(() => { if (!cancelled) setRunHistory({}); });
     return () => {
       cancelled = true;
     };
@@ -835,12 +915,12 @@ export default function ChatView({
 
   useLayoutEffect(() => {
     const activeConversationId = activeConversationRef.current;
-    const hasVisibleContent = messages.length > 0 || streaming !== "" || toolActivities.length > 0 || approvals.length > 0 || planApproval !== null;
+    const hasVisibleContent = messages.length > 0 || streaming !== "" || toolActivities.length > 0 || approvals.length > 0;
     if (!activeConversationId || !hasVisibleContent) return;
     const isInitialPosition = lastPositionedConversationRef.current !== activeConversationId;
     bottomRef.current?.scrollIntoView({ behavior: isInitialPosition ? "auto" : "smooth", block: "end" });
     lastPositionedConversationRef.current = activeConversationId;
-  }, [messages, streaming, toolActivities, approvals, planApproval]);
+  }, [messages, streaming, toolActivities, approvals]);
 
   const updateToolActivity = useCallback(
     (key: string, tool: string, status: ToolStatus, result = "") => {
@@ -892,20 +972,6 @@ export default function ChatView({
     }
   }, []);
 
-  const handlePlanApproval = useCallback(async (approvalId: string, approved: boolean) => {
-    setPlanApproval((item) => item?.approvalId === approvalId ? { ...item, state: "submitting", error: "" } : item);
-    try {
-      await submitApproval(approvalId, approved);
-    } catch (approvalError) {
-      const message = String(approvalError);
-      setPlanApproval((item) => item?.approvalId === approvalId ? {
-        ...item,
-        state: message.includes("404") ? "expired" : "pending",
-        error: message.includes("404") ? "" : message,
-      } : item);
-    }
-  }, []);
-
   const send = useCallback(
     async (text: string, documentIds: string[] = [], chatImages: ChatImage[] = []) => {
       let convId = conversationId;
@@ -924,8 +990,6 @@ export default function ChatView({
       setStreamingSources([]);
       setToolActivities([]);
       setApprovals([]);
-      setPlanApproval(null);
-      setPlan(null);
       setContextUsage(null);
       setContextLoading(true);
       setRunTrace([{ key: "analysis", label: "分析请求", detail: `当前理解：${compactText(text)}`, status: "running" }]);
@@ -934,11 +998,21 @@ export default function ChatView({
       setElapsedSeconds(0);
       setMessages((ms) => [
         ...ms,
-        { id: `local-${Date.now()}`, role: "user", content: text, citations: [], images: chatImages, token_estimate: estimateMessageTokens(text, chatImages.length), created_at: "" },
+        { id: `local-${Date.now()}`, role: "user", content: text, citations: [], images: chatImages, run_id: null, status: "completed", token_estimate: estimateMessageTokens(text, chatImages.length), created_at: "" },
       ]);
       setConversationTokens((total) => total + estimateMessageTokens(text, chatImages.length));
       const controller = new AbortController();
       const runId = crypto.randomUUID().replace(/-/g, "");
+      setCurrentRun({
+        id: runId,
+        conversation_id: convId,
+        execution_mode: executionMode,
+        status: "running",
+        input_message: text,
+        error: null,
+        has_checkpoint: false,
+        created_at: new Date().toISOString(),
+      });
       abortRef.current = controller;
       activeRunIdRef.current = runId;
       stoppingRef.current = false;
@@ -950,7 +1024,18 @@ export default function ChatView({
           text,
           (ev) => {
             if (ev.event === "run.started") {
-              updateTrace("analysis", "分析请求", "completed", `当前理解：${compactText(text)}\n执行方式：${executionMode === "planned" ? "先制定计划，确认后执行" : "直接回答；如需工具会先展示目标与参数"}`);
+              const actualRunId = String(ev.data.run_id ?? runId);
+              const actualExecutionMode = String(ev.data.execution_mode ?? executionMode) as "direct" | "planned";
+              const planningSkipped = Boolean(ev.data.planning_skipped);
+              activeRunIdRef.current = actualRunId;
+              setCurrentRun((current) => current ? {
+                ...current,
+                id: actualRunId,
+                execution_mode: actualExecutionMode,
+              } : current);
+              updateTrace("analysis", "分析请求", "completed", `当前理解：${compactText(text)}\n执行方式：${planningSkipped ? "这是非执行问题，无需制定计划，已由自主模式回答" : actualExecutionMode === "planned" ? "规划模式：生成 Markdown 实施方案，不执行任务或调用工具" : "自主模式：自行回答或选择已启用工具；有风险的操作仍需确认"}`);
+            } else if (ev.event === "intent.completed") {
+              updateTrace("intent", "识别意图", "completed", `类型：${String(ev.data.intent ?? "conversation")} · 路由：${String(ev.data.source ?? "rule")} · 置信度：${Math.round(Number(ev.data.confidence ?? 0) * 100)}%`);
             } else if (ev.event === "context.started") {
               setContextLoading(true);
               updateTrace("context", "装配上下文", "running", "正在读取会话、记忆和相关资料");
@@ -958,6 +1043,10 @@ export default function ChatView({
               const memories = Number(ev.data.memory_count ?? 0);
               const sources = Number(ev.data.source_count ?? 0);
               const selected = Number(ev.data.selected_document_count ?? 0);
+              const memoryCandidates = Number(ev.data.memory_candidate_count ?? memories);
+              const knowledgeCandidates = Number(ev.data.knowledge_candidate_count ?? sources);
+              const memoryExcluded = Object.values((ev.data.memory_exclusion_reasons ?? {}) as Record<string, unknown>).reduce<number>((sum, value) => sum + Number(value ?? 0), 0);
+              const knowledgeExcluded = Object.values((ev.data.knowledge_exclusion_reasons ?? {}) as Record<string, unknown>).reduce<number>((sum, value) => sum + Number(value ?? 0), 0);
               const rawBreakdown = (ev.data.token_breakdown ?? {}) as Record<string, unknown>;
               setContextUsage({
                 usedTokens: Number(ev.data.token_estimate ?? 0),
@@ -968,12 +1057,14 @@ export default function ChatView({
                 breakdown: Object.fromEntries(Object.entries(rawBreakdown).map(([key, value]) => [key, Number(value ?? 0)])),
               });
               setContextLoading(false);
-              updateTrace("context", "装配上下文", "completed", selected > 0 ? `限定 ${selected} 个附件，选取 ${sources} 个资料片段` : `读取 ${memories} 条相关记忆，选取 ${sources} 个资料片段`);
+              updateTrace("context", "装配上下文", "completed", selected > 0 ? `限定 ${selected} 个附件；资料候选 ${knowledgeCandidates}，使用 ${sources}，裁剪 ${knowledgeExcluded}` : `记忆候选 ${memoryCandidates}，使用 ${memories}，裁剪 ${memoryExcluded}；资料使用 ${sources}`);
             } else if (ev.event === "planning.started") {
-              updateTrace("planning", "制定执行计划", "running", "正在拆分目标和安排步骤");
+              const phase = String(ev.data.phase ?? "document");
+              updateTrace("planning", phase === "document" ? "编写规划文档" : "恢复既有任务", "running", phase === "document" ? "正在整理目标、范围、技术方案、步骤和验收标准" : "正在从中断位置核对已完成步骤");
             } else if (ev.event === "model.started") {
               const phase = String(ev.data.phase ?? "response");
-              updateTrace("model", phase === "synthesis" ? "汇总执行结果" : "生成回答", "running", phase === "synthesis" ? "正在整合各步骤的可验证结果" : "模型正在根据当前上下文组织回复");
+              const planningDocument = phase === "planning_document";
+              updateTrace("model", planningDocument ? "生成规划文档" : phase === "synthesis" ? "汇总执行结果" : "生成回答", "running", planningDocument ? "正在生成结构化 Markdown 方案；不会调用工具" : phase === "synthesis" ? "正在整合各步骤的可验证结果" : "模型正在根据当前上下文组织回复");
             } else if (ev.event === "message.delta") {
               setStreaming((s) => s + String(ev.data.content ?? ""));
             } else if (ev.event === "rag.retrieved") {
@@ -1000,6 +1091,11 @@ export default function ChatView({
                 String(ev.data.result_summary ?? ""),
               );
               updateTrace(`tool-${key}`, TOOL_LABELS[tool] ?? tool, status === "completed" ? "completed" : "failed", String(ev.data.result_summary ?? STATUS_LABELS[status]));
+            } else if (ev.event === "tool.reused") {
+              const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
+              const tool = String(ev.data.tool ?? "tool");
+              updateToolActivity(key, tool, "completed", String(ev.data.result_summary ?? "已复用中断前结果"));
+              updateTrace(`tool-${key}`, TOOL_LABELS[tool] ?? tool, "completed", `已根据幂等记录复用完成结果，没有重复执行\n${String(ev.data.result_summary ?? "")}`);
             } else if (ev.event === "approval.required") {
               const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
               const tool = String(ev.data.tool ?? "write_file");
@@ -1014,13 +1110,6 @@ export default function ChatView({
                   error: "",
                 },
               ]);
-            } else if (ev.event === "plan.approval.required") {
-              setPlanApproval({ approvalId: String(ev.data.approval_id), state: "pending", error: "" });
-              updateTrace("planning", "制定执行计划", "running", `计划包含 ${Number(ev.data.step_count ?? 0)} 个步骤，等待你确认后开始`);
-            } else if (ev.event === "plan.approval.completed") {
-              const approved = Boolean(ev.data.approved);
-              setPlanApproval((item) => item ? { ...item, state: approved ? "approved" : "rejected" } : item);
-              updateTrace("planning", "制定执行计划", approved ? "completed" : "cancelled", approved ? "你已确认，开始按计划执行" : "你已取消，计划没有执行");
             } else if (ev.event === "approval.completed") {
               const approvalId = String(ev.data.approval_id);
               const approved = Boolean(ev.data.approved);
@@ -1032,60 +1121,28 @@ export default function ChatView({
                 ),
               );
             } else if (ev.event === "run.failed") {
+              setCurrentRun(null);
+              setTraceOpen(false);
               setError(String(ev.data.error ?? "运行失败"));
               setRunTrace((items) => items.map((item) => item.status === "running" ? { ...item, status: "failed" } : item));
               updateTrace("finished", "结束运行", "failed", String(ev.data.error ?? "运行失败"));
             } else if (ev.event === "run.cancelled") {
+              setCurrentRun(null);
+              setTraceOpen(false);
               const reason = String(ev.data.reason ?? "运行已停止");
-              setPlan((current) => current ? { ...current, status: "cancelled" } : current);
               setRunTrace((items) => items.map((item) => item.status === "running" ? { ...item, status: "cancelled" } : item));
               updateTrace("finished", "停止运行", "cancelled", reason);
             } else if (ev.event === "run.completed") {
+              setCurrentRun(null);
+              setTraceOpen(false);
               const usage = (ev.data.token_usage ?? {}) as Record<string, unknown>;
-              const rawCacheHitRate = usage.cache_hit_rate;
+              const rawCacheHitRate = usage.average_cache_hit_rate;
               setCacheHitRate(rawCacheHitRate === undefined || rawCacheHitRate === null ? null : Number(rawCacheHitRate));
               updateTrace("finished", "完成运行", "completed", `输入 ${Number(usage.prompt_tokens ?? 0)} tokens，输出 ${Number(usage.completion_tokens ?? 0)} tokens`);
             } else if (ev.event === "message.completed") {
-              updateTrace("model", "生成回答", "completed", "回答已生成并保存到当前对话");
-            } else if (ev.event === "plan.created") {
-              updateTrace("planning", "制定执行计划", "completed", `已生成 ${Array.isArray(ev.data.steps) ? ev.data.steps.length : 0} 个步骤`);
-              setPlan({
-                id: String(ev.data.plan_id),
-                run_id: "",
-                conversation_id: convId,
-                activity_id: null,
-                goal: String(ev.data.goal ?? text),
-                status: "running",
-                current_version: Number(ev.data.version ?? 1),
-                replan_count: 0,
-                error: null,
-                steps: normalizePlanSteps(ev.data.steps),
-              });
-            } else if (ev.event.startsWith("plan.step.")) {
-              const stepId = String(ev.data.step_id);
-              setPlan((current) => current ? {
-                ...current,
-                steps: current.steps.map((step) => step.id === stepId ? {
-                  ...step,
-                  status: String(ev.data.status ?? step.status) as PlanStep["status"],
-                  output_summary: ev.data.output_summary ? String(ev.data.output_summary) : step.output_summary,
-                  error: ev.data.error ? String(ev.data.error) : step.error,
-                } : step),
-              } : current);
-            } else if (ev.event === "plan.replanned") {
-              setPlan((current) => current ? {
-                ...current,
-                current_version: Number(ev.data.version),
-                replan_count: current.replan_count + 1,
-                steps: [
-                  ...current.steps.map((step) => ["pending", "blocked"].includes(step.status) ? { ...step, status: "superseded" as const } : step),
-                  ...normalizePlanSteps(ev.data.steps),
-                ],
-              } : current);
-            } else if (ev.event === "plan.completed") {
-              setPlan((current) => current ? { ...current, status: "completed" } : current);
-            } else if (ev.event === "plan.failed") {
-              setPlan((current) => current ? { ...current, status: "failed", error: String(ev.data.error ?? "计划失败") } : current);
+              updateTrace("model", executionMode === "planned" ? "生成规划文档" : "生成回答", "completed", executionMode === "planned" ? "Markdown 实施方案已保存到当前对话" : "回答已生成并保存到当前对话");
+            } else if (ev.event === "planning.document.completed") {
+              updateTrace("planning", "编写规划文档", "completed", "方案已生成；本次没有调用工具或执行任务");
             }
           },
           controller.signal,
@@ -1094,11 +1151,18 @@ export default function ChatView({
           selectedModelId,
           chatImages.map((image) => image.id),
           runId,
-          executionMode === "planned",
+          false,
         );
-        const msgs = await fetchMessages(convId);
+        const [msgs, history] = await Promise.all([
+          fetchMessages(convId),
+          fetchConversationRunHistory(convId),
+        ]);
         const cumulativeTokens = msgs.reduce((total, row) => total + Number(row.token_estimate || 0), 0);
         setMessages(msgs);
+        setRunHistory(Object.fromEntries(history.map((run) => [run.id, run])));
+        // 已完成的实时记录由消息旁的持久化历史记录接管，避免同一 Run 展示两遍。
+        setRunTrace([]);
+        setTraceOpen(false);
         setConversationTokens(cumulativeTokens);
         setContextUsage((current) => current ? { ...current, conversationTokens: cumulativeTokens } : current);
         onFinished(convId);
@@ -1119,6 +1183,7 @@ export default function ChatView({
         stoppingRef.current = false;
         setIsStopping(false);
         setIsStreaming(false);
+        void fetchCurrentConversationRun(convId).then(setCurrentRun).catch(() => undefined);
       }
     },
     [conversationId, conversationTokens, executionMode, onAutoCreate, onFinished, onStarted, selectedModelId, updateToolActivity, updateTrace],
@@ -1131,25 +1196,63 @@ export default function ChatView({
     setRunTrace((items) => items.map((item) => item.status === "running" ? { ...item, status: "cancelled" } : item));
     updateTrace("finished", "停止运行", "cancelled", "正在通知后端停止模型、工具和后续步骤…");
     const runId = activeRunIdRef.current;
+    const interruptedDraft = streaming;
+    const localDraftId = runId ? `local-interrupted-${runId}` : "";
+    if (runId && interruptedDraft.trim()) {
+      setMessages((items) => [
+        ...items,
+        {
+          id: localDraftId,
+          role: "assistant",
+          content: interruptedDraft,
+          citations: streamingSources,
+          images: [],
+          run_id: runId,
+          status: "interrupted",
+          token_estimate: 0,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+      setStreaming("");
+      setStreamingSources([]);
+    }
     try {
-      if (runId) await cancelChatRun(runId);
+      if (runId) {
+        await cancelChatRun(runId);
+        setCurrentRun((current) => current?.id === runId ? { ...current, status: "interrupted", error: "用户已停止运行" } : current);
+      }
       updateTrace("finished", "停止运行", "cancelled", "后端已接受停止请求，本次运行不会继续后续步骤");
     } catch {
       updateTrace("finished", "停止运行", "cancelled", "连接已中断；运行可能已经结束，系统不会继续接收结果");
     } finally {
       abortRef.current?.abort();
+      if (conversationId) {
+        window.setTimeout(() => {
+          void Promise.all([
+            fetchMessages(conversationId),
+            fetchCurrentConversationRun(conversationId),
+            fetchConversationRunHistory(conversationId),
+          ]).then(([nextMessages, run, history]) => {
+            setMessages((current) => {
+              const localDraft = current.find((item) => item.id === localDraftId);
+              const persisted = runId && nextMessages.some((item) => item.run_id === runId && item.status === "interrupted");
+              return localDraft && !persisted ? [...nextMessages, localDraft] : nextMessages;
+            });
+            setConversationTokens(nextMessages.reduce((total, row) => total + Number(row.token_estimate || 0), 0));
+            setCurrentRun(run);
+            setRunHistory(Object.fromEntries(history.map((item) => [item.id, item])));
+            setRunTrace([]);
+            setTraceOpen(false);
+          }).catch(() => undefined);
+        }, 250);
+      }
     }
-  };
-
-  const retry = () => {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    if (lastUser) send(lastUser.content);
   };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const text = input.trim() || (images.length > 0 ? "请描述并分析这些图片。" : "");
-    if (!text || isStreaming || uploadBusy) return;
+    if (!text || isStreaming || currentRun?.status === "running" || uploadBusy) return;
     setInput("");
     const documentIds = attachments.map((document) => document.id);
     const selectedImages = images;
@@ -1191,12 +1294,7 @@ export default function ChatView({
       setError("仅支持 JPG、PNG、WebP 图片");
       return;
     }
-    if (executionMode === "planned") {
-      setExecutionMode("direct");
-      setComposerNotice("图片识别已自动切换为直接回答模式");
-    } else {
-      setComposerNotice("");
-    }
+    setComposerNotice("");
     setUploadBusy(true);
     setError("");
     try {
@@ -1220,30 +1318,34 @@ export default function ChatView({
     void deleteStagedChatImage(id).catch(() => undefined);
   };
 
-  const empty = messages.length === 0 && !streaming && toolActivities.length === 0 && approvals.length === 0 && !plan;
-  const composerProps = { projects, activeProjectId, onSelectProject, onCreateProject, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage };
-  const completedRunMessage = runTrace.length > 0 && !isStreaming && messages.at(-1)?.role === "assistant" ? messages.at(-1)! : null;
+  const empty = messages.length === 0 && !streaming && toolActivities.length === 0 && approvals.length === 0 && !currentRun;
+  const composerProps = { projects, activeProjectId, onSelectProject, onCreateProject, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage, onStop: () => void stop(), isStopping };
+  const completedRunMessage = runTrace.length > 0 && !isStreaming && messages.at(-1)?.role === "assistant" && messages.at(-1)?.status === "completed" ? messages.at(-1)! : null;
   const visibleMessages = completedRunMessage ? messages.slice(0, -1) : messages;
+  const composerLocked = isStreaming || currentRun?.status === "running";
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#fcfcfc]">
       {empty && !loading ? (
         <div className="flex min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8">
           <section className="m-auto w-full max-w-5xl py-6 sm:py-12" aria-label="新任务输入区">
-            <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={isStreaming} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={appSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} hero uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
+            <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={appSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} hero uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
             {(composerNotice || error) && <p className={`mt-3 text-center text-sm ${error ? "text-red-600" : "text-emerald-700"}`} role={error ? "alert" : "status"}>{error || composerNotice}</p>}
           </section>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto w-full max-w-4xl space-y-5">
-            {visibleMessages.map((message) => <MessageBubble key={message.id} role={message.role} content={message.content} citations={message.citations} images={message.images} />)}
+            {visibleMessages.map((message) => <div key={message.id} className="contents">
+              {message.role === "assistant" && message.run_id && runHistory[message.run_id] && (
+                <HistoricalRunTrace run={runHistory[message.run_id]} />
+              )}
+              <MessageBubble role={message.role} content={message.content} status={message.status} citations={message.citations} images={message.images} />
+            </div>)}
             <RunTracePanel items={runTrace} open={traceOpen} active={isStreaming} elapsedSeconds={elapsedSeconds} onToggle={() => setTraceOpen((value) => !value)} />
-            <PlanProgress plan={plan} />
-            {planApproval && <PlanApprovalCard item={planApproval} onSubmit={handlePlanApproval} />}
             <ToolActivityList items={toolActivities} />
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
-            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} citations={completedRunMessage.citations} images={completedRunMessage.images} />}
+            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} status={completedRunMessage.status} citations={completedRunMessage.citations} images={completedRunMessage.images} />}
             {(streaming !== "" || (loading && conversationId)) && <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== ""} />}
             {error && <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>}
             <div ref={bottomRef} />
@@ -1252,50 +1354,9 @@ export default function ChatView({
       )}
 
       {!empty && <div className="border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur sm:px-6">
-        {isStreaming && (
-          <div className="mx-auto mb-2 flex max-w-4xl items-center justify-between px-1 text-xs text-gray-500">
-            <span>正在生成…</span>
-            <button
-              type="button"
-              onClick={() => void stop()}
-              disabled={isStopping}
-              className="min-h-11 rounded border px-3 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500 focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60"
-            >
-              {isStopping ? "正在停止…" : "停止"}
-            </button>
-          </div>
-        )}
-        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={isStreaming} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={appSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
+        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={appSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
         {composerNotice && <p className="mx-auto mt-2 max-w-4xl px-1 text-xs text-emerald-700">{composerNotice}</p>}
-        {!isStreaming && messages.some((m) => m.role === "assistant") && (
-          <div className="mx-auto mt-1 max-w-4xl px-1 text-right">
-            <button
-              onClick={retry}
-              className="text-xs text-gray-400 hover:text-blue-600"
-            >
-              重新生成最后回复
-            </button>
-          </div>
-        )}
       </div>}
     </main>
   );
-}
-
-function normalizePlanSteps(value: unknown): PlanStep[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => {
-    const step = item as Record<string, unknown>;
-    return {
-      id: String(step.step_id ?? step.id),
-      version: Number(step.version ?? 1),
-      position: Number(step.position ?? 0),
-      title: String(step.title ?? "计划步骤"),
-      instruction: String(step.instruction ?? ""),
-      tool_hints: Array.isArray(step.tool_hints) ? step.tool_hints.map(String) : [],
-      status: String(step.status ?? "pending") as PlanStep["status"],
-      output_summary: step.output_summary ? String(step.output_summary) : null,
-      error: step.error ? String(step.error) : null,
-    };
-  });
 }

@@ -13,6 +13,7 @@ class ActiveChatRun:
 
 
 ACTIVE_CHAT_RUNS: dict[str, ActiveChatRun] = {}
+USER_CANCELLED_RUNS: set[str] = set()
 
 
 def register_chat_run(run_id: str, conversation_id: str) -> None:
@@ -33,5 +34,13 @@ def cancel_chat_run(run_id: str) -> bool:
     active = ACTIVE_CHAT_RUNS.get(run_id)
     if active is None or active.task.done():
         return False
+    USER_CANCELLED_RUNS.add(run_id)
     active.task.cancel()
+    return True
+
+
+def consume_user_cancellation(run_id: str) -> bool:
+    if run_id not in USER_CANCELLED_RUNS:
+        return False
+    USER_CANCELLED_RUNS.discard(run_id)
     return True

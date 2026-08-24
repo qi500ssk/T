@@ -111,7 +111,18 @@ async def generate_plan(provider, goal: str, allowed_tools: set[str], tool_detai
         ],
         temperature=0.0,
     )
-    return parse_plan(result, allowed_tools, max_steps)
+    try:
+        return parse_plan(result, allowed_tools, max_steps)
+    except PlanValidationError as exc:
+        repaired = await _repair_plan(
+            provider,
+            result,
+            str(exc),
+            allowed_tools,
+            max_steps,
+            min_steps=2,
+        )
+        return parse_plan(repaired, allowed_tools, max_steps)
 
 
 async def generate_replan(
@@ -140,7 +151,50 @@ async def generate_replan(
         ],
         temperature=0.0,
     )
-    return parse_plan(result, allowed_tools, max_steps, min_steps=1)
+    try:
+        return parse_plan(result, allowed_tools, max_steps, min_steps=1)
+    except PlanValidationError as exc:
+        repaired = await _repair_plan(
+            provider,
+            result,
+            str(exc),
+            allowed_tools,
+            max_steps,
+            min_steps=1,
+        )
+        return parse_plan(repaired, allowed_tools, max_steps, min_steps=1)
+
+
+async def _repair_plan(
+    provider,
+    invalid_output: str,
+    validation_error: str,
+    allowed_tools: set[str],
+    max_steps: int,
+    *,
+    min_steps: int,
+) -> str:
+    """格式错误时只修复一次；修复结果仍由同一严格解析器裁决。"""
+    payload = json.dumps(
+        {
+            "validation_error": validation_error,
+            "invalid_output": invalid_output[:12000],
+            "allowed_tools": sorted(allowed_tools),
+            "min_steps": min_steps,
+            "max_steps": max_steps,
+        },
+        ensure_ascii=False,
+    )
+    return await provider.complete(
+        [
+            {
+                "role": "system",
+                "content": (PROMPT_ROOT / "repair.md").read_text(encoding="utf-8"),
+            },
+            {"role": "user", "content": payload},
+        ],
+        temperature=0.0,
+    )
 
 
 def create_planning_record(

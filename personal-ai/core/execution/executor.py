@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import time
 import uuid
@@ -13,6 +14,7 @@ from typing import AsyncIterator, Literal
 import anyio
 
 from core.execution.permissions import create_approval, wait_for_approval
+from core.chat.checkpoints import create_checkpoint
 from core.execution.tool_pipeline import ToolInvocation, run_post_tool_hooks, run_pre_tool_hooks
 from core.execution.tools import TOOLS, ToolValidationError, execute_tool, prepare_tool
 from infrastructure.config import settings
@@ -23,6 +25,13 @@ logger = logging.getLogger(__name__)
 MAX_SUMMARY_CHARS = 500
 MAX_ARGS_SUMMARY_CHARS = 300
 STEP_LIMIT_REPLY = "已达到工具调用步骤上限，请缩小任务范围后重试。"
+_BLOCKED_PROTOCOL_TAGS = (
+    "source",
+    "tool_call",
+    "tool_calls",
+    "function_call",
+    "function_calls",
+)
 
 
 @dataclass
@@ -35,6 +44,101 @@ class ExecutorEvent:
 class ToolCallBudget:
     remaining: int
     used: int = 0
+
+
+@dataclass(frozen=True)
+class ToolRunReservation:
+    id: str
+    reused: bool = False
+    result: str = ""
+
+
+class ProtocolLeakFilter:
+    """流式移除模型误复述的内部 RAG/工具协议，同时保留普通 Markdown 代码。"""
+
+    def __init__(self) -> None:
+        self._state = "text"
+        self._pending = ""
+        self._tag = ""
+        self._close_tail = ""
+        self._in_code_fence = False
+        self._backticks = 0
+
+    def feed(self, text: str) -> str:
+        visible: list[str] = []
+        for char in text:
+            if self._state == "blocked":
+                close = f"</{self._tag}>"
+                self._close_tail = (self._close_tail + char)[-len(close):]
+                if self._close_tail.lower() == close:
+                    self._state = "text"
+                    self._tag = ""
+                    self._close_tail = ""
+                continue
+
+            if self._state == "opening":
+                self._pending += char
+                if char == ">":
+                    if self._pending.rstrip().endswith("/>"):
+                        self._state = "text"
+                        self._tag = ""
+                    else:
+                        self._state = "blocked"
+                    self._pending = ""
+                continue
+
+            if self._pending:
+                self._pending += char
+                lowered = self._pending.lower()
+                prefixes = [f"<{tag}" for tag in _BLOCKED_PROTOCOL_TAGS]
+                if any(prefix.startswith(lowered) for prefix in prefixes):
+                    continue
+                matched_tag = next(
+                    (
+                        tag
+                        for tag in _BLOCKED_PROTOCOL_TAGS
+                        if lowered.startswith(f"<{tag}")
+                        and lowered[len(tag) + 1 : len(tag) + 2]
+                        in {" ", "\t", "\r", "\n", ">", "/"}
+                    ),
+                    None,
+                )
+                if matched_tag:
+                    self._tag = matched_tag
+                    if char == ">":
+                        self._state = "blocked"
+                        self._pending = ""
+                    else:
+                        self._state = "opening"
+                    continue
+                visible.append(self._pending)
+                self._pending = ""
+                continue
+
+            if char == "`":
+                visible.append(char)
+                self._backticks += 1
+                if self._backticks == 3:
+                    self._in_code_fence = not self._in_code_fence
+                    self._backticks = 0
+                continue
+            self._backticks = 0
+            if self._in_code_fence:
+                visible.append(char)
+                continue
+            if char == "<":
+                self._pending = char
+            else:
+                visible.append(char)
+        return "".join(visible)
+
+    def finish(self) -> str:
+        if self._state == "text":
+            tail = self._pending
+            self._pending = ""
+            return tail
+        self._pending = ""
+        return ""
 
 
 def merge_tool_call_deltas(target: dict[int, dict], deltas: list[dict]) -> None:
@@ -104,6 +208,10 @@ async def execute_model_loop(
     approval_mode: Literal["interactive", "deny"] = "interactive",
     max_turns: int,
     tool_budget: ToolCallBudget,
+    plan_id: str | None = None,
+    plan_version: int | None = None,
+    plan_step_id: str | None = None,
+    checkpoint_state: dict | None = None,
 ) -> AsyncIterator[ExecutorEvent]:
     """执行有限模型/工具循环，最后产生仅供 Agent 消费的 executor.completed。"""
     reply_parts: list[str] = []
@@ -114,11 +222,14 @@ async def execute_model_loop(
     for round_index in range(max_turns):
         turn_text: list[str] = []
         tool_deltas: dict[int, dict] = {}
+        protocol_filter = ProtocolLeakFilter()
         async for chunk in provider.stream(messages, tools=schemas):
             if chunk.text:
-                turn_text.append(chunk.text)
-                reply_parts.append(chunk.text)
-                yield ExecutorEvent("message.delta", {"content": chunk.text})
+                visible_text = protocol_filter.feed(chunk.text)
+                if visible_text:
+                    turn_text.append(visible_text)
+                    reply_parts.append(visible_text)
+                    yield ExecutorEvent("message.delta", {"content": visible_text})
             if chunk.tool_calls_delta:
                 merge_tool_call_deltas(tool_deltas, chunk.tool_calls_delta)
             if chunk.usage:
@@ -130,22 +241,27 @@ async def execute_model_loop(
                         int(usage.get("cached_prompt_tokens", 0)) + cached_tokens
                     )
 
+        visible_tail = protocol_filter.finish()
+        if visible_tail:
+            turn_text.append(visible_tail)
+            reply_parts.append(visible_tail)
+            yield ExecutorEvent("message.delta", {"content": visible_tail})
+
         tool_calls = finalize_tool_calls(tool_deltas)
         if not tool_calls:
             break
-        if round_index == max_turns - 1 or len(tool_calls) > tool_budget.remaining:
+        if round_index == max_turns - 1:
             reply_parts.append(STEP_LIMIT_REPLY)
             yield ExecutorEvent("message.delta", {"content": STEP_LIMIT_REPLY})
             failures += 1
             break
 
-        tool_budget.remaining -= len(tool_calls)
         messages.append(
             {"role": "assistant", "content": "".join(turn_text) or None, "tool_calls": tool_calls}
         )
+        limit_announced = False
         for call in tool_calls:
             step_index = tool_budget.used
-            tool_budget.used += 1
             function = call.get("function") or {}
             name = str(function.get("name") or "")
             raw_arguments = str(function.get("arguments") or "{}")
@@ -161,13 +277,24 @@ async def execute_model_loop(
             try:
                 validated_tool, validated_args = prepare_tool(name, args, allowed_tools)
             except ToolValidationError as exc:
+                if tool_budget.remaining <= 0:
+                    result = STEP_LIMIT_REPLY
+                    if not limit_announced:
+                        reply_parts.append(STEP_LIMIT_REPLY)
+                        yield ExecutorEvent("message.delta", {"content": STEP_LIMIT_REPLY})
+                        limit_announced = True
+                    failures += 1
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                    continue
+                tool_budget.remaining -= 1
+                tool_budget.used += 1
                 result = f"工具错误：{exc}"
-                tool_run_id = await _create_tool_run(
+                tool_run = await _create_tool_run(
                     run_id, conversation_id, call["id"], step_index, name or "unknown",
                     summary, risk, "failed",
                 )
                 await _finish_tool_run(
-                    tool_run_id, "failed", result, int((time.perf_counter() - started) * 1000)
+                    tool_run.id, "failed", result, int((time.perf_counter() - started) * 1000)
                 )
                 failures += 1
                 yield ExecutorEvent(
@@ -186,7 +313,19 @@ async def execute_model_loop(
             )
             policy_denial = await run_pre_tool_hooks(invocation)
             if policy_denial:
-                tool_run_id = await _create_tool_run(
+                if tool_budget.remaining <= 0:
+                    if not limit_announced:
+                        reply_parts.append(STEP_LIMIT_REPLY)
+                        yield ExecutorEvent("message.delta", {"content": STEP_LIMIT_REPLY})
+                        limit_announced = True
+                    failures += 1
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": STEP_LIMIT_REPLY}
+                    )
+                    continue
+                tool_budget.remaining -= 1
+                tool_budget.used += 1
+                tool_run = await _create_tool_run(
                     run_id,
                     conversation_id,
                     call["id"],
@@ -197,7 +336,7 @@ async def execute_model_loop(
                     "rejected",
                 )
                 await _finish_tool_run(
-                    tool_run_id,
+                    tool_run.id,
                     "rejected",
                     policy_denial,
                     int((time.perf_counter() - started) * 1000),
@@ -228,6 +367,52 @@ async def execute_model_loop(
             )
 
             background_rejected = validated_tool.risk_level == "high" and approval_mode == "deny"
+            idempotency_key = _tool_idempotency_key(
+                run_id,
+                plan_version,
+                plan_step_id,
+                name,
+                validated_args,
+            )
+            if idempotency_key:
+                cached = await _completed_tool_run(idempotency_key)
+                if cached is not None:
+                    successes += 1
+                    yield ExecutorEvent(
+                        "tool.reused",
+                        {
+                            **_tool_event(
+                                run_id,
+                                step_index,
+                                name,
+                                summary,
+                                cached.result_summary or "",
+                                "completed",
+                            ),
+                            "idempotency_key": idempotency_key,
+                            "reused": True,
+                        },
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": cached.result_summary or "工具已在中断前完成",
+                        }
+                    )
+                    continue
+            if tool_budget.remaining <= 0:
+                if not limit_announced:
+                    reply_parts.append(STEP_LIMIT_REPLY)
+                    yield ExecutorEvent("message.delta", {"content": STEP_LIMIT_REPLY})
+                    limit_announced = True
+                failures += 1
+                messages.append(
+                    {"role": "tool", "tool_call_id": call["id"], "content": STEP_LIMIT_REPLY}
+                )
+                continue
+            tool_budget.remaining -= 1
+            tool_budget.used += 1
             approval_id = None
             initial_status = (
                 "rejected" if background_rejected else
@@ -235,15 +420,18 @@ async def execute_model_loop(
             )
             if validated_tool.risk_level == "high" and not background_rejected:
                 approval_id = create_approval(run_id)
-            tool_run_id = await _create_tool_run(
+            tool_run = await _create_tool_run(
                 run_id, conversation_id, call["id"], step_index, name, summary,
                 validated_tool.risk_level, initial_status, approval_id,
+                plan_version=plan_version,
+                plan_step_id=plan_step_id,
+                idempotency_key=idempotency_key,
             )
 
             if background_rejected:
                 result = "后台任务不能执行需要用户审批的工具"
                 await _finish_tool_run(
-                    tool_run_id, "rejected", result, int((time.perf_counter() - started) * 1000)
+                    tool_run.id, "rejected", result, int((time.perf_counter() - started) * 1000)
                 )
                 failures += 1
                 yield ExecutorEvent(
@@ -253,6 +441,23 @@ async def execute_model_loop(
                 continue
 
             if approval_id:
+                if plan_id and plan_step_id:
+                    state = dict(checkpoint_state or {})
+                    state.update(
+                        {
+                            "pending_approval_id": approval_id,
+                            "pending_tool": name,
+                            "pending_tool_run_id": tool_run.id,
+                        }
+                    )
+                    await anyio.to_thread.run_sync(
+                        create_checkpoint,
+                        run_id,
+                        plan_id,
+                        plan_step_id,
+                        state,
+                        "awaiting_approval",
+                    )
                 yield ExecutorEvent("approval.required", {
                     "approval_id": approval_id, "run_id": run_id,
                     "step_index": step_index, "tool": name,
@@ -268,7 +473,7 @@ async def execute_model_loop(
                     status = "timeout" if approved is None else "rejected"
                     result = "审批超时，未执行工具" if approved is None else "用户拒绝了该操作"
                     await _finish_tool_run(
-                        tool_run_id, status, result, int((time.perf_counter() - started) * 1000)
+                        tool_run.id, status, result, int((time.perf_counter() - started) * 1000)
                     )
                     failures += 1
                     yield ExecutorEvent(
@@ -276,7 +481,7 @@ async def execute_model_loop(
                     )
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                     continue
-                await _approve_tool_run(tool_run_id)
+                await _approve_tool_run(tool_run.id)
 
             yield ExecutorEvent("agent.status", {"status": "running_tool", "tool": name})
             yield ExecutorEvent("tool.started", {
@@ -287,7 +492,7 @@ async def execute_model_loop(
             execution = await execute_tool(name, validated_args, allowed_tools)
             execution = await run_post_tool_hooks(invocation, execution)
             duration_ms = int((time.perf_counter() - started) * 1000)
-            await _finish_tool_run(tool_run_id, execution.status, execution.content, duration_ms)
+            await _finish_tool_run(tool_run.id, execution.status, execution.content, duration_ms)
             if execution.status == "completed":
                 successes += 1
             else:
@@ -322,18 +527,78 @@ async def _create_tool_run(
     run_id: str, conversation_id: str, tool_call_id: str, step_index: int,
     tool: str, args_summary: str, risk_level: str, status: str,
     approval_id: str | None = None,
-) -> str:
-    def _create() -> str:
+    *,
+    plan_version: int | None = None,
+    plan_step_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> ToolRunReservation:
+    def _create() -> ToolRunReservation:
         with SessionLocal() as session:
+            if idempotency_key:
+                existing = (
+                    session.query(ToolRun)
+                    .filter(ToolRun.idempotency_key == idempotency_key)
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if existing is not None:
+                    if existing.status == "completed":
+                        return ToolRunReservation(
+                            existing.id, reused=True, result=existing.result_summary or ""
+                        )
+                    existing.tool_call_id = tool_call_id
+                    existing.step_index = step_index
+                    existing.args_summary = args_summary[:MAX_SUMMARY_CHARS]
+                    existing.risk_level = risk_level
+                    existing.approval_id = approval_id
+                    existing.approved_at = None
+                    existing.status = status
+                    existing.result_summary = None
+                    existing.duration_ms = None
+                    existing.completed_at = None
+                    session.commit()
+                    return ToolRunReservation(existing.id)
             row = ToolRun(
                 run_id=run_id, conversation_id=conversation_id, tool_call_id=tool_call_id,
                 step_index=step_index, tool=tool, args_summary=args_summary[:MAX_SUMMARY_CHARS],
                 risk_level=risk_level, approval_id=approval_id, status=status,
+                plan_version=plan_version, plan_step_id=plan_step_id,
+                idempotency_key=idempotency_key,
             )
             session.add(row)
             session.commit()
-            return row.id
+            return ToolRunReservation(row.id)
     return await anyio.to_thread.run_sync(_create)
+
+
+def _tool_idempotency_key(
+    run_id: str,
+    plan_version: int | None,
+    plan_step_id: str | None,
+    tool: str,
+    args: dict,
+) -> str | None:
+    if plan_version is None or not plan_step_id:
+        return None
+    normalized = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    args_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    raw = f"{run_id}:{plan_version}:{plan_step_id}:{tool}:{args_hash}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _completed_tool_run(idempotency_key: str) -> ToolRun | None:
+    def _load() -> ToolRun | None:
+        with SessionLocal() as session:
+            return (
+                session.query(ToolRun)
+                .filter(
+                    ToolRun.idempotency_key == idempotency_key,
+                    ToolRun.status == "completed",
+                )
+                .one_or_none()
+            )
+
+    return await anyio.to_thread.run_sync(_load)
 
 
 async def _approve_tool_run(tool_run_id: str) -> None:

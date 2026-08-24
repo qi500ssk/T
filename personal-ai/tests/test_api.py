@@ -1,5 +1,6 @@
 import json
 
+from infrastructure.database import AgentRun, Message, SessionLocal, ToolRun
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
     """把 SSE 响应文本解析为 [(event, data), ...]。"""
@@ -25,6 +26,50 @@ def test_create_and_list_conversations(client):
     assert conv["title"] == "测试会话"
     rows = client.get("/api/conversations").json()
     assert any(c["id"] == conv["id"] for c in rows)
+
+
+def test_conversation_cache_stats_are_token_weighted_and_persisted(client):
+    conv = client.post("/api/conversations", json={}).json()
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                AgentRun(
+                    conversation_id=conv["id"],
+                    status="completed",
+                    input_tokens=100,
+                    cached_input_tokens=50,
+                ),
+                AgentRun(
+                    conversation_id=conv["id"],
+                    status="completed",
+                    input_tokens=300,
+                    cached_input_tokens=240,
+                ),
+                # 上游没有返回缓存字段时不应被误算成 0% 命中。
+                AgentRun(
+                    conversation_id=conv["id"],
+                    status="completed",
+                    input_tokens=1_000,
+                    cached_input_tokens=None,
+                ),
+                AgentRun(
+                    conversation_id=conv["id"],
+                    status="failed",
+                    input_tokens=100,
+                    cached_input_tokens=100,
+                ),
+            ]
+        )
+        session.commit()
+
+    stats = client.get(f"/api/conversations/{conv['id']}/runs/stats")
+    assert stats.status_code == 200
+    assert stats.json() == {
+        "eligible_run_count": 2,
+        "input_tokens": 400,
+        "cached_input_tokens": 290,
+        "average_cache_hit_rate": 72.5,
+    }
 
 
 def test_projects_group_tasks_and_protect_non_empty_project(client, tmp_path):
@@ -88,10 +133,71 @@ def test_chat_stream_events(client):
     # 消息已持久化，会话标题自动取消息前 20 字
     msgs = client.get(f"/api/conversations/{conv['id']}/messages").json()
     assert msgs[0]["role"] == "user" and msgs[0]["content"] == "你好"
+    assert msgs[0]["status"] == "completed"
     assert msgs[0]["token_estimate"] > 0
     assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"]
+    assert msgs[-1]["status"] == "completed"
+    assert msgs[-1]["run_id"] == started["run_id"]
     rows = client.get("/api/conversations").json()
     assert [c for c in rows if c["id"] == conv["id"]][0]["title"] == "你好"
+
+    # Run 的处理摘要会持久化，刷新或切换会话后仍能恢复为折叠记录。
+    history = client.get(f"/api/conversations/{conv['id']}/runs/history")
+    assert history.status_code == 200
+    run = history.json()[0]
+    assert run["id"] == started["run_id"]
+    assert run["input_message"] == "你好"
+    assert run["status"] == "completed"
+    assert run["intent"]
+    assert run["context_stats"]["conversation_token_estimate"] > 0
+    assert run["input_tokens"] > 0
+    assert run["tools"] == []
+
+
+def test_run_history_includes_tool_records(client):
+    conv = client.post("/api/conversations", json={}).json()
+    with SessionLocal() as session:
+        run = AgentRun(
+            conversation_id=conv["id"],
+            execution_mode="direct",
+            status="completed",
+            input_tokens=120,
+            output_tokens=30,
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            ToolRun(
+                run_id=run.id,
+                conversation_id=conv["id"],
+                tool_call_id="call-history-test",
+                step_index=0,
+                tool="write_file",
+                args_summary='path="notes.md", content_bytes=12',
+                result_summary="notes.md",
+                risk_level="high",
+                status="completed",
+                duration_ms=25,
+            )
+        )
+        session.commit()
+        run_id = run.id
+
+    history = client.get(f"/api/conversations/{conv['id']}/runs/history")
+    assert history.status_code == 200
+    run = history.json()[0]
+    assert run["id"] == run_id
+    assert run["tools"] == [
+        {
+            "id": run["tools"][0]["id"],
+            "tool": "write_file",
+            "args_summary": 'path="notes.md", content_bytes=12',
+            "result_summary": "notes.md",
+            "risk_level": "high",
+            "status": "completed",
+            "duration_ms": 25,
+        }
+    ]
 
 
 def test_chat_unknown_conversation_404(client):
@@ -127,6 +233,34 @@ def test_duplicate_manual_memory_returns_409(client):
     duplicate = client.post("/api/memories", json=body)
     assert duplicate.status_code == 409
     assert len(client.get("/api/memories").json()) == 1
+
+
+def test_project_memory_requires_existing_project(client):
+    missing = client.post(
+        "/api/memories",
+        json={
+            "content": "项目使用 PostgreSQL",
+            "kind": "semantic",
+            "scope_type": "project",
+            "scope_key": "missing-project",
+        },
+    )
+    assert missing.status_code == 404
+
+    project = client.post(
+        "/api/projects", json={"name": "JQ", "workspace_dir": "E:/Pycharm/JQ"}
+    ).json()
+    created = client.post(
+        "/api/memories",
+        json={
+            "content": "项目使用 PostgreSQL",
+            "kind": "semantic",
+            "scope_type": "project",
+            "scope_key": project["id"],
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["scope_key"] == project["id"]
 
 
 def test_sensitive_memory_create_and_update_are_rejected(client):
@@ -235,3 +369,84 @@ def test_unknown_approval_returns_404(client):
 def test_unknown_or_invalid_chat_cancel_is_rejected(client):
     assert client.post(f"/api/chat/{'0' * 32}/cancel").status_code == 404
     assert client.post("/api/chat/not-a-run/cancel").status_code == 422
+
+
+def test_current_run_exposes_direct_interruption_for_frontend_card(client):
+    conversation = client.post("/api/conversations", json={}).json()
+    with SessionLocal() as session:
+        message = Message(
+            conversation_id=conversation["id"],
+            role="user",
+            content="继续分析这个问题",
+        )
+        session.add(message)
+        session.flush()
+        run = AgentRun(
+            conversation_id=conversation["id"],
+            input_message_id=message.id,
+            execution_mode="direct",
+            status="interrupted",
+            error="应用重启或运行进程中断",
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+    response = client.get(f"/api/conversations/{conversation['id']}/runs/current")
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": run_id,
+        "conversation_id": conversation["id"],
+        "execution_mode": "direct",
+        "status": "interrupted",
+        "input_message": "继续分析这个问题",
+        "error": "应用重启或运行进程中断",
+        "has_checkpoint": False,
+        "created_at": response.json()["created_at"],
+    }
+
+
+def test_completed_retry_hides_older_interrupted_run_card(client):
+    conversation = client.post("/api/conversations", json={}).json()
+    with SessionLocal() as session:
+        interrupted = AgentRun(
+            id="1" * 32,
+            conversation_id=conversation["id"],
+            execution_mode="direct",
+            status="interrupted",
+        )
+        completed = AgentRun(
+            id="2" * 32,
+            conversation_id=conversation["id"],
+            execution_mode="direct",
+            status="completed",
+        )
+        session.add_all([interrupted, completed])
+        session.flush()
+        completed.created_at = interrupted.created_at
+        session.commit()
+
+    response = client.get(f"/api/conversations/{conversation['id']}/runs/current")
+    assert response.status_code == 200
+    assert response.json() is None
+
+
+def test_cancel_stale_database_run_releases_conversation_lock(client):
+    conversation = client.post("/api/conversations", json={}).json()
+    with SessionLocal() as session:
+        run = AgentRun(conversation_id=conversation["id"], status="running")
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+    response = client.post(f"/api/chat/{run_id}/cancel")
+    assert response.status_code == 200
+    assert response.json()["status"] == "interrupted"
+    with SessionLocal() as session:
+        assert session.get(AgentRun, run_id).status == "interrupted"
+    retry = client.post(
+        "/api/chat",
+        json={"conversation_id": conversation["id"], "message": "重新回答"},
+    )
+    assert retry.status_code == 200
+    assert "run.completed" in [event for event, _ in parse_sse(retry.text)]

@@ -49,16 +49,16 @@ Personal AI 的信息系统采用五层逻辑架构：
 |---|---|---|
 | 数据库 | 正式库 PostgreSQL 5432，隔离测试库 PostgreSQL 5433 | 已完成 |
 | 会话 | `conversations`、`messages` | 已完成 |
-| 短期上下文 | 最近消息、摘要、token 预算裁剪 | 基础完成 |
-| 模型上下文容量 | 按所选模型窗口和输出预留动态计算 | 基础完成 |
-| 工作状态 | `agent_runs`、`plans`、`plan_steps`、`tool_runs` | 部分完成 |
-| Checkpoint | 无独立结构化恢复点 | 待实现 |
+| 短期上下文 | 最近消息、摘要、token 预算裁剪、候选/使用/裁剪统计 | 已完成 |
+| 模型上下文容量 | 按所选模型窗口和输出预留动态计算 | 已完成 |
+| 工作状态 | `agent_runs`、`plans`、`plan_steps`、`tool_runs` | 已完成 |
+| Checkpoint | `checkpoints`、启动恢复、显式继续、ToolRun 幂等复用 | 已完成 |
 | 长期记忆 | `memories`，支持 `episodic/semantic/profile` | 基础完成 |
 | 记忆向量 | pgvector `vector(512)` + HNSW | 已完成 |
-| 记忆治理 | 作用域、冲突、替换、过期、使用反馈 | 待实现 |
+| 记忆治理 | 作用域、冲突、替换、过期、使用反馈 | 已完成 |
 | 知识库 | `documents`、`document_chunks`、BM25 + pgvector + RRF | 基础完成 |
-| 意图识别 | RAG 查询门控、模型工具选择、显式 direct/planned | 部分完成 |
-| 统一意图路由 | 无统一结构化输出 | 待实现 |
+| 意图识别 | 规则短路、长尾 RAG 门控、模型工具选择、显式 direct/planned | 已完成 |
+| 统一意图路由 | 稳定结构化输出、模糊请求轻量分类、低置信度回退 | 已完成 |
 
 ## 5. 总体架构
 
@@ -291,6 +291,8 @@ created_at
 updated_at
 ```
 
+`status` 与 `is_active` 是两套互补机制，职责固定：`status` 由系统按记忆生命周期管理（`active/superseded/expired`），记忆界面的“停用”开关只翻转 `is_active`，不改动 `status`。召回硬过滤要求两个条件同时通过；界面停用等价于对召回不可见，替换与过期只通过 `status` 表达。
+
 ### 7.1 作用域规则
 
 ```text
@@ -320,6 +322,8 @@ conversation
 `scope_key` 不允许为 `NULL`。如果提取模型无法可靠判断作用域，默认写入当前 `conversation`，将错误影响限制在最小范围；只有用户明确声明长期偏好、项目约定，或同一事实经过多次确认后，才允许提升为 `project/global`。作用域提升必须产生可审计的更新，不在后台静默扩大可见范围。
 
 现有数据库中的旧记忆迁移时采用保守回填：有 `source_conversation_id` 的记忆先进入对应 conversation scope；没有来源的人工记忆进入 global scope。之后通过用户确认或规则评审提升作用域，不使用一次新的 LLM 分类批量猜测全局范围。
+
+回填上线后召回会明显变安静：原有带来源的记忆只在各自来源会话内可见，新会话只剩 global 范围。这是迁移的预期行为而不是召回退化；在记忆设置页逐条确认提升作用域后即可恢复可见。确定性的中间档允许在回填时使用：记忆来源会话已归属某个 project（`conversations.project_id` 非空）时，可以直接回填到该 project scope，这不依赖 LLM 猜测；但不做进一步的批量推断。
 
 ### 7.2 唯一约束与查重
 
@@ -423,7 +427,7 @@ embedding_model 与 embedding_dim 匹配
 
 向量检索负责语义相近，关键词检索负责专有名词、路径、版本号和精确事实。任何一方都不能单独成为最终结果。
 
-当前实现只是读取最近更新的 200 条记忆后在 Python 中打分，不是真正的数据库关键词召回。阶段 A 必须新增词法查询通道，不能把现有逻辑视为已经完成。中文短语、文件路径和版本号第一版优先使用 `pg_trgm`，不依赖 PostgreSQL 默认 `tsvector` 完成中文分词。
+当前实现已经改为数据库候选生成：`normalized_key` 精确匹配、`ILIKE`/中文二元词元、`pg_trgm` 与 pgvector HNSW 并行召回，再统一排序；不再扫描最近更新的 200 条记忆。中文短语、文件路径和版本号优先使用 `pg_trgm` 与词元通道，不依赖 PostgreSQL 默认 `tsvector` 完成中文分词。
 
 建议候选流程：
 
@@ -658,7 +662,7 @@ GET    /api/memories/{id}/history
 
 ## 15. 分阶段实施
 
-### 阶段 A：记忆作用域与生命周期
+### 阶段 A：记忆作用域与生命周期（已完成）
 
 - 通过 Alembic 为 `memories` 增加 scope、status、supersedes、usage 和 expiration 字段；
 - 按保守规则回填旧数据，并把唯一约束替换为 `(user_id, scope_type, scope_key, normalized_key)`；
@@ -671,7 +675,7 @@ GET    /api/memories/{id}/history
 
 验收：不同项目的记忆不会串用，一次性要求不会污染全局偏好，新事实可以替换旧事实。
 
-### 阶段 B：工作状态 Checkpoint
+### 阶段 B：工作状态 Checkpoint（已完成）
 
 - 新增 `checkpoints`；
 - 在计划步骤完成、审批等待和安全中断时保存恢复点；
@@ -683,7 +687,7 @@ GET    /api/memories/{id}/history
 
 验收：任务在步骤之间中断后可以继续，且不会重复已完成的高风险工具调用。
 
-### 阶段 C：统一意图路由
+### 阶段 C：统一意图路由（已完成）
 
 - 增加规则优先的 Intent Router；
 - 规则命中直接返回，只有模糊且影响路由的请求才调用轻量模型；
@@ -693,7 +697,7 @@ GET    /api/memories/{id}/history
 
 验收：固定意图测试集准确，规则可判定的简单请求不增加模型往返，低置信度安全回退，不改变工具审批边界。
 
-### 阶段 D：评测与可观察性
+### 阶段 D：评测与可观察性（已完成）
 
 - 建立记忆提取、去重、冲突和召回固定测试集；
 - 记录候选、实际使用和被预算裁剪的原因；
@@ -701,6 +705,25 @@ GET    /api/memories/{id}/history
 - 根据评测结果调整召回权重。
 
 验收：能够量化错误记忆率、重复率、Recall@K、作用域误召回率和上下文实际使用率。
+
+### 15.1 实际落地清单
+
+- Alembic revision `20260823_02` 完成记忆作用域、生命周期、替换链和检索索引；
+- Alembic revision `20260823_03` 完成 Checkpoint、Run 原始输入/意图快照、ToolRun 计划定位与幂等键；
+- 应用启动时清理进程内 Approval，并把数据库遗留 `running` 规划任务安全转为 `interrupted`；
+- `POST /api/chat/{run_id}/resume` 只恢复同一 Run，能力版本不一致时拒绝恢复；
+- `GET /api/runs/{run_id}/checkpoints` 与 `GET /api/conversations/{conversation_id}/checkpoints` 提供只读恢复历史；
+- 前端展示最近 Checkpoint、恢复按钮、意图类型以及记忆/知识候选、实际使用和裁剪数量；
+- 固定评测入口为 `uv run python -m evaluation.rag`、`uv run python -m evaluation.intent` 和 `uv run python -m evaluation.memory`；
+- 自动化测试和评测只允许连接数据库名为 `personal_ai_test` 的 5433 隔离测试库。
+
+### 15.2 2026-08-23 验证基线
+
+- 后端：186 passed，1 skipped；
+- 前端：`npm run build` 通过，`npm run lint` 0 error（保留 2 个既有 `<img>` 性能提示）；
+- 意图评测：Accuracy 1.000，规则短路率 1.000，规则用例模型往返 0；
+- 记忆评测：错误记忆率 0、重复率 0、Recall@3 1.000、作用域误召回率 0、冲突处理率 1.000、上下文实际使用率 1.000；
+- RAG 评测：Recall@1/3/5、MRR、章节命中和关键词命中均为 1.000。
 
 ## 16. 核心验收场景
 

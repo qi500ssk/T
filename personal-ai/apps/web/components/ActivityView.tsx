@@ -198,7 +198,7 @@ export default function ActivityView({ onOpenConversation }: ActivityViewProps) 
                     onClick={() => setExecutionMode(value)}
                     className={`rounded px-3 text-sm ${executionMode === value ? "bg-white font-medium shadow-sm" : "text-gray-600 hover:text-gray-900"}`}
                   >
-                    {value === "direct" ? "直接" : "规划"}
+                    {value === "direct" ? "自主" : "规划"}
                   </button>
                 ))}
               </div>
@@ -245,7 +245,7 @@ export default function ActivityView({ onOpenConversation }: ActivityViewProps) 
                         {STATUS_LABEL[activity.status]}
                       </span>
                       <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">
-                        {activity.execution_mode === "planned" ? "规划执行" : "直接执行"}
+                        {activity.execution_mode === "planned" ? "规划模式" : "自主模式"}
                       </span>
                     </div>
                     <p className="mt-1 line-clamp-2 text-sm text-gray-500">{activity.prompt}</p>

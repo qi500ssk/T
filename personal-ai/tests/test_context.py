@@ -1,3 +1,6 @@
+from sqlalchemy import text
+
+import core.chat.context as context_module
 from core.chat.context import build_context, estimate_tokens
 from infrastructure.database import Conversation, Memory, Message, SessionLocal
 
@@ -46,6 +49,39 @@ def test_build_context_recent_limit():
     assert len(ctx.messages) == 6  # 最近 5 条历史 + 本次输入
 
 
+def test_interrupted_assistant_draft_is_not_added_to_model_context():
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                Message(
+                    conversation_id="draft-context",
+                    role="assistant",
+                    content="半截且可能错误的结论",
+                    status="interrupted",
+                ),
+                Message(
+                    conversation_id="draft-context",
+                    role="user",
+                    content="已经完成的历史消息",
+                ),
+            ]
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        ctx = build_context(
+            session,
+            "SYSTEM",
+            "draft-context",
+            "重新回答",
+            max_tokens=2_000,
+            recent_count=10,
+        )
+
+    assert not any("半截且可能错误" in str(item["content"]) for item in ctx.messages)
+    assert any("已经完成的历史消息" in str(item["content"]) for item in ctx.messages)
+
+
 def test_build_context_injects_relevant_active_memory():
     with SessionLocal() as session:
         session.add(Conversation(id="c3", summary="用户正在规划早餐。"))
@@ -69,6 +105,106 @@ def test_build_context_injects_relevant_active_memory():
     assert "用户喜欢无糖拿铁" in ctx.system
     assert "用户喜欢红茶" not in ctx.system
     assert "用户正在规划早餐" in ctx.system
+
+
+def test_build_context_marks_memory_usage_and_respects_scope():
+    """装入上下文的记忆计一次使用；其他项目的 project 记忆不可见。"""
+    with SessionLocal() as session:
+        session.add(Conversation(id="c-scope-usage"))
+        session.add_all(
+            [
+                Memory(
+                    user_id="default",
+                    content="用户喜欢无糖拿铁",
+                    normalized_key="coffee",
+                    importance=4,
+                ),
+                Memory(
+                    user_id="default",
+                    content="JQ 项目数据库使用 PostgreSQL",
+                    normalized_key="db.engine",
+                    importance=5,
+                    scope_type="project",
+                    scope_key="proj-other",
+                ),
+            ]
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        ctx = build_context(session, "SYSTEM", "c-scope-usage", "我喜欢喝什么？", 2000, 40)
+
+    assert "用户喜欢无糖拿铁" in ctx.system
+    assert "JQ 项目数据库使用 PostgreSQL" not in ctx.system
+
+    with SessionLocal() as session:
+        memory = session.query(Memory).filter(Memory.normalized_key == "coffee").one()
+        assert memory.usage_count == 1
+        assert memory.last_used_at is not None
+
+
+def test_context_observability_distinguishes_candidates_usage_and_trimmed_items():
+    with SessionLocal() as session:
+        session.add(Conversation(id="c-observability"))
+        session.add_all(
+            [
+                Memory(
+                    user_id="default",
+                    content=f"咖啡偏好候选 {index}",
+                    normalized_key=f"coffee.{index}",
+                    importance=5 - index,
+                )
+                for index in range(3)
+            ]
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        context = build_context(
+            session,
+            "SYSTEM",
+            "c-observability",
+            "咖啡偏好",
+            2000,
+            40,
+            memory_limit=1,
+        )
+
+    assert context.memory_candidate_count == 3
+    assert len(context.memory_ids) == 1
+    assert sum(item["reason"] == "recall_limit" for item in context.memory_exclusions) == 2
+    with SessionLocal() as session:
+        rows = session.query(Memory).order_by(Memory.normalized_key).all()
+        assert sum(row.usage_count for row in rows) == 1
+
+
+def test_usage_feedback_failure_rolls_back_and_context_still_builds(monkeypatch):
+    with SessionLocal() as session:
+        session.add(Conversation(id="c-usage-failure"))
+        session.add(
+            Memory(
+                user_id="default",
+                content="用户喜欢无糖拿铁",
+                normalized_key="coffee",
+                importance=4,
+            )
+        )
+        session.commit()
+
+    def fail_feedback(session, _memory_ids):
+        session.execute(text("SELECT * FROM intentionally_missing_usage_table"))
+
+    monkeypatch.setattr(context_module, "mark_memories_used", fail_feedback)
+    with SessionLocal() as session:
+        context = build_context(
+            session,
+            "SYSTEM",
+            "c-usage-failure",
+            "我喜欢喝什么？",
+            2000,
+            40,
+        )
+    assert "用户喜欢无糖拿铁" in context.system
 
 
 def test_build_context_excludes_current_persisted_message():

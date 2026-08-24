@@ -5,8 +5,8 @@ from sqlalchemy.exc import IntegrityError
 
 from core.chat.agent import run_chat
 from core.chat.gateway import MockProvider
-from core.execution.permissions import APPROVAL_WAITERS, resolve_approval
-from core.automation.planner import PlanValidationError, parse_plan
+from core.execution.permissions import APPROVAL_WAITERS
+from core.automation.planner import PlanValidationError, generate_plan, parse_plan
 from core.capabilities.skills import load_skills
 from infrastructure.config import settings
 from infrastructure.database import (
@@ -44,6 +44,31 @@ class DoubleTimePlanProvider(MockProvider):
                             "instruction": "再次查询时间",
                             "tool_hints": ["get_time"],
                         },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        return await super().complete(messages, temperature=temperature)
+
+
+class RepairingPlannerProvider(MockProvider):
+    def __init__(self):
+        super().__init__(delay=0)
+        self.planner_calls = 0
+
+    async def complete(self, messages, temperature=0.2):
+        system = str(messages[0].get("content", ""))
+        if "PLANNER_CREATE_V1" in system:
+            self.planner_calls += 1
+            return '{"goal":{"text":"完成前端任务"},"steps":[]}'
+        if "PLANNER_REPAIR_V1" in system:
+            self.planner_calls += 1
+            return json.dumps(
+                {
+                    "goal": "完成前端任务",
+                    "steps": [
+                        {"title": "检查", "instruction": "检查现状", "tool_hints": []},
+                        {"title": "整理", "instruction": "整理结果", "tool_hints": []},
                     ],
                 },
                 ensure_ascii=False,
@@ -91,7 +116,44 @@ def test_parse_plan_validates_schema_and_tool_hints():
 
 
 @pytest.mark.asyncio
-async def test_planned_run_persists_steps_and_uses_one_agent_run(monkeypatch):
+async def test_planner_repairs_invalid_goal_shape_once():
+    provider = RepairingPlannerProvider()
+    draft = await generate_plan(provider, "完成前端任务", set(), [], 6)
+    assert provider.planner_calls == 2
+    assert draft.goal == "完成前端任务"
+    assert len(draft.steps) == 2
+
+
+@pytest.mark.asyncio
+async def test_planning_mode_keeps_document_semantics_for_capability_question(monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    events = []
+    async for event in run_chat(
+        MockProvider(delay=0),
+        _conversation(),
+        "你现在能写前端界面吗",
+        skills=load_skills(),
+        execution_mode="planned",
+        require_plan_approval=True,
+    ):
+        events.append(event)
+    types = [event.type for event in events]
+    assert "planning.started" in types
+    assert "planning.document.completed" in types
+    assert "plan.created" not in types
+    assert "plan.approval.required" not in types
+    started = next(event for event in events if event.type == "run.started")
+    assert started.data["execution_mode"] == "planned"
+    assert started.data["requested_execution_mode"] == "planned"
+    assert started.data["planning_skipped"] is False
+    assert started.data["planning_document_mode"] is True
+    with SessionLocal() as session:
+        assert session.query(AgentRun).one().execution_mode == "planned"
+        assert session.query(Plan).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_planning_mode_generates_markdown_without_tools_or_plan(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     events = []
     async for event in run_chat(
@@ -103,20 +165,22 @@ async def test_planned_run_persists_steps_and_uses_one_agent_run(monkeypatch):
     ):
         events.append(event)
     types = [event.type for event in events]
-    assert "plan.created" in types
-    assert types.count("plan.step.completed") == 2
-    assert "plan.completed" in types
+    assert "planning.started" in types
+    assert "planning.document.completed" in types
+    assert "plan.created" not in types
+    assert not any(event_type.startswith("tool.") for event_type in types)
     assert types[-1] == "run.completed"
     with SessionLocal() as session:
         assert session.query(AgentRun).one().execution_mode == "planned"
-        plan = session.query(Plan).one()
-        assert plan.status == "completed"
-        assert session.query(PlanStep).filter(PlanStep.status == "completed").count() == 2
-        assert session.query(ToolRun).count() == 1
+        assert session.query(Plan).count() == 0
+        assert session.query(PlanStep).count() == 0
+        assert session.query(ToolRun).count() == 0
+        reply = session.query(Message).filter(Message.role == "assistant").one()
+        assert "# 任务实施方案" in reply.content
 
 
 @pytest.mark.asyncio
-async def test_interactive_plan_waits_for_confirmation_and_can_be_cancelled(monkeypatch):
+async def test_chat_planning_mode_never_waits_for_plan_confirmation(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
     events = []
     async for event in run_chat(
@@ -128,15 +192,15 @@ async def test_interactive_plan_waits_for_confirmation_and_can_be_cancelled(monk
         require_plan_approval=True,
     ):
         events.append(event)
-        if event.type == "plan.approval.required":
-            assert resolve_approval(event.data["approval_id"], False)
     types = [event.type for event in events]
-    assert types.index("plan.created") < types.index("plan.approval.required")
+    assert "planning.document.completed" in types
+    assert "plan.approval.required" not in types
     assert "plan.step.started" not in types
-    assert types[-1] == "run.cancelled"
+    assert types[-1] == "run.completed"
+    assert not APPROVAL_WAITERS
     with SessionLocal() as session:
-        assert session.query(Plan).one().status == "cancelled"
-        assert session.query(AgentRun).one().status == "cancelled"
+        assert session.query(Plan).count() == 0
+        assert session.query(AgentRun).one().status == "completed"
 
 
 @pytest.mark.asyncio
@@ -176,9 +240,9 @@ def test_plan_and_capability_api(client):
     )
     assert response.status_code == 200
     plans = client.get(f"/api/conversations/{conv['id']}/plans")
-    assert plans.status_code == 200 and len(plans.json()) == 1
-    plan_id = plans.json()[0]["id"]
-    assert client.get(f"/api/plans/{plan_id}").json()["status"] == "completed"
+    assert plans.status_code == 200 and plans.json() == []
+    messages = client.get(f"/api/conversations/{conv['id']}/messages").json()
+    assert any(item["role"] == "assistant" and "# 任务实施方案" in item["content"] for item in messages)
     capabilities = client.get("/api/capabilities")
     assert capabilities.status_code == 200
     assert any(item["name"] == "get_time" for item in capabilities.json())
@@ -218,6 +282,8 @@ async def test_invalid_planner_output_fails_plan_and_saves_explanation(monkeypat
         "执行一个复杂目标",
         skills=load_skills(),
         execution_mode="planned",
+        activity_id="activity-invalid-plan",
+        approval_mode="deny",
     ):
         events.append(event.type)
     assert events[-1] == "run.failed"
@@ -242,6 +308,8 @@ async def test_plan_steps_share_total_tool_budget(monkeypatch):
         "执行两次时间查询",
         skills=load_skills(),
         execution_mode="planned",
+        activity_id="activity-tool-budget",
+        approval_mode="deny",
     ):
         events.append(event.type)
     assert events[-1] == "run.failed"
@@ -252,13 +320,13 @@ async def test_plan_steps_share_total_tool_budget(monkeypatch):
         assert session.query(PlanStep).filter(PlanStep.status == "blocked").count() == 1
 
 
-def test_planner_disabled_rejects_chat_and_activity(client, monkeypatch):
+def test_planner_disabled_still_allows_chat_document_but_rejects_activity(client, monkeypatch):
     monkeypatch.setattr(settings, "planner_enabled", False)
     conv = client.post("/api/conversations", json={}).json()
     assert client.post(
         "/api/chat",
         json={"conversation_id": conv["id"], "message": "规划", "execution_mode": "planned"},
-    ).status_code == 409
+    ).status_code == 200
     assert client.post(
         "/api/activities",
         json={

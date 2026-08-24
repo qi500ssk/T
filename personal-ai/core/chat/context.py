@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from core.chat.memory import retrieve_memories
+from core.chat.memory import mark_memories_used, retrieve_memories
 from core.rag.retrieval import retrieve, should_retrieve_knowledge
 from infrastructure.config import settings
 from infrastructure.database import ChatImage, Conversation, Message
 from core.chat.images import image_data_url
 
+
+logger = logging.getLogger(__name__)
 
 IMAGE_TOKEN_ESTIMATE = 1024
 
@@ -76,6 +79,10 @@ class Context:
     conversation_token_estimate: int = 0
     memory_ids: list[str] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
+    memory_candidate_count: int = 0
+    memory_exclusions: list[dict] = field(default_factory=list)
+    knowledge_candidate_count: int = 0
+    knowledge_exclusions: list[dict] = field(default_factory=list)
 
 
 def build_context(
@@ -92,12 +99,20 @@ def build_context(
     rag_settings=None,
     system_addendum: str = "",
     document_ids: list[str] | None = None,
+    knowledge_intent: bool | None = None,
+    retrieval_query: str | None = None,
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
+    query_text = retrieval_query or message
+    conversation = session.get(Conversation, conversation_id)
+    project_id = conversation.project_id if conversation else None
     conversation_rows = (
         session.query(Message.id, Message.content)
-        .filter(Message.conversation_id == conversation_id)
+        .filter(
+            Message.conversation_id == conversation_id,
+            Message.status == "completed",
+        )
         .all()
     )
     conversation_message_ids = [row.id for row in conversation_rows]
@@ -145,41 +160,69 @@ def build_context(
         retrieve_memories(
             session,
             user_id,
-            message,
-            memory_limit,
+            query_text,
+            max(memory_limit * 3, memory_limit),
             embedding_provider=embedding_provider,
             min_vector_similarity=config.rag_min_vector_similarity,
+            conversation_id=conversation_id,
+            project_id=project_id,
         )
         if memory_limit
         else []
     )
     memory_lines: list[str] = []
+    memory_exclusions: list[dict] = []
     for item in memories:
+        if len(memory_lines) >= memory_limit:
+            memory_exclusions.append({"id": item.id, "reason": "recall_limit"})
+            continue
         candidate_lines = [*memory_lines, f"- {item.content}"]
         section = "[相关用户记忆]\n" + "\n".join(candidate_lines)
         if estimate_tokens(section) > config.memory_tokens_budget:
-            break
+            memory_exclusions.append({"id": item.id, "reason": "memory_token_budget"})
+            continue
         if total_cost([*system_parts, section]) > max_tokens:
-            break
+            memory_exclusions.append({"id": item.id, "reason": "context_budget"})
+            continue
         memory_lines = candidate_lines
         memory_ids.append(item.id)
     if memory_lines:
         memory_section = "[相关用户记忆]\n" + "\n".join(memory_lines)
         system_parts.append(memory_section)
+    if memory_ids:
+        # 只有真正装入上下文的记忆计一次使用；反馈失败不影响上下文装配。
+        try:
+            mark_memories_used(session, memory_ids)
+        except Exception:
+            session.rollback()
+            logger.exception("记忆使用反馈写入失败")
 
-    should_retrieve = bool(document_ids) or not config.rag_query_gate_enabled or should_retrieve_knowledge(message)
+    should_retrieve = bool(document_ids) or (
+        knowledge_intent
+        if knowledge_intent is not None
+        else (not config.rag_query_gate_enabled or should_retrieve_knowledge(query_text))
+    )
+    knowledge_candidate_count = 0
+    knowledge_exclusions: list[dict] = []
     if embedding_provider is not None and config.rag_enabled and should_retrieve:
         results = retrieve(
             session,
             embedding_provider,
-            message,
+            query_text,
             config,
             user_id,
+            final_limit=max(config.rag_final_top_k * 3, config.rag_final_top_k),
             document_ids=document_ids,
         )
+        knowledge_candidate_count = len(results)
         rag_prompt = Path(config.rag_context_prompt_file).read_text(encoding="utf-8").strip()
         source_blocks: list[str] = []
         for result in results:
+            if len(sources) >= config.rag_final_top_k:
+                knowledge_exclusions.append(
+                    {"id": result.chunk_id, "reason": "recall_limit"}
+                )
+                continue
             citation_id = f"c{len(sources) + 1}"
             block = (
                 f'<source citation_id="{citation_id}" file="{escape(result.filename, quote=True)}" '
@@ -189,9 +232,15 @@ def build_context(
             candidate_blocks = [*source_blocks, block]
             section = rag_prompt + "\n\n" + "\n\n".join(candidate_blocks)
             if estimate_tokens(section) > config.rag_tokens_budget:
-                break
+                knowledge_exclusions.append(
+                    {"id": result.chunk_id, "reason": "rag_token_budget"}
+                )
+                continue
             if total_cost([*system_parts, section]) > max_tokens:
-                break
+                knowledge_exclusions.append(
+                    {"id": result.chunk_id, "reason": "context_budget"}
+                )
+                continue
             source_blocks = candidate_blocks
             sources.append(
                 {
@@ -212,7 +261,6 @@ def build_context(
             knowledge_section = rag_prompt + "\n\n" + "\n\n".join(source_blocks)
             system_parts.append(knowledge_section)
 
-    conversation = session.get(Conversation, conversation_id)
     if conversation and conversation.summary:
         header = "[会话摘要]\n"
         remaining = max_tokens - total_cost()
@@ -227,7 +275,10 @@ def build_context(
                 summary_section = section
                 system_parts.append(section)
 
-    query = session.query(Message).filter(Message.conversation_id == conversation_id)
+    query = session.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.status == "completed",
+    )
     if exclude_message_id:
         query = query.filter(Message.id != exclude_message_id)
     history_count = query.count()
@@ -303,4 +354,8 @@ def build_context(
         conversation_token_estimate=conversation_token_estimate,
         memory_ids=memory_ids,
         sources=sources,
+        memory_candidate_count=len(memories),
+        memory_exclusions=memory_exclusions,
+        knowledge_candidate_count=knowledge_candidate_count,
+        knowledge_exclusions=knowledge_exclusions,
     )

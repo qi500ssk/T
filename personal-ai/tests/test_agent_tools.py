@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -5,10 +6,12 @@ import pytest
 from core.chat.agent import merge_tool_call_deltas, run_chat
 from core.chat.gateway import MockProvider, StreamChunk
 from core.execution.permissions import APPROVAL_WAITERS, resolve_approval
+from core.execution.executor import ProtocolLeakFilter, ToolCallBudget, execute_model_loop
+from core.chat.run_control import cancel_chat_run, register_chat_run, unregister_chat_run
 from core.capabilities.skills import load_skills
 from core.execution.tool_pipeline import register_pre_tool_hook
 from infrastructure.config import settings
-from infrastructure.database import AgentRun, Conversation, SessionLocal, ToolRun
+from infrastructure.database import AgentRun, Conversation, Message, SessionLocal, ToolRun
 
 
 def _conversation() -> str:
@@ -54,6 +57,176 @@ def test_streaming_tool_calls_are_assembled_by_index():
     assert json.loads(target[1]["function"]["arguments"]) == {"path": "notes.md"}
 
 
+def test_protocol_filter_hides_split_internal_rag_markup():
+    protocol_filter = ProtocolLeakFilter()
+    visible = [
+        protocol_filter.feed("先说结论。<sou"),
+        protocol_filter.feed('rce id="c1">内部检索正文'),
+        protocol_filter.feed("和协议 JSON</source>最后答案。"),
+        protocol_filter.finish(),
+    ]
+    assert "".join(visible) == "先说结论。最后答案。"
+
+
+def test_protocol_filter_preserves_normal_markdown_code():
+    text = "示例：\n```python\nprint('<source is text>')\n```"
+    protocol_filter = ProtocolLeakFilter()
+    visible = protocol_filter.feed(text) + protocol_filter.finish()
+    assert visible == text
+
+
+@pytest.mark.asyncio
+async def test_executor_never_streams_internal_rag_protocol():
+    class ProtocolEchoProvider:
+        async def stream(self, messages, temperature=0.7, tools=None):
+            yield StreamChunk(text="答案开头<sou")
+            yield StreamChunk(text='rce id="c1">内部资料</source>答案结尾')
+
+    events = []
+    async for event in execute_model_loop(
+        ProtocolEchoProvider(),
+        [{"role": "user", "content": "问题"}],
+        None,
+        set(),
+        "0" * 32,
+        "1" * 32,
+        max_turns=1,
+        tool_budget=ToolCallBudget(0),
+    ):
+        events.append(event)
+    streamed = "".join(
+        event.data["content"] for event in events if event.type == "message.delta"
+    )
+    assert streamed == "答案开头答案结尾"
+    assert events[-1].data["content"] == streamed
+
+
+@pytest.mark.asyncio
+async def test_user_stop_persists_partial_reply_as_interrupted(monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    ready = asyncio.Event()
+    run_id = "e" * 32
+    conversation_id = _conversation()
+
+    class PartialProvider:
+        async def stream(self, messages, temperature=0.7, tools=None):
+            yield StreamChunk(text="这是一段已经显示的部分回答。")
+            await asyncio.Event().wait()
+
+        async def complete(self, messages, temperature=0.0):
+            return ""
+
+    async def worker():
+        register_chat_run(run_id, conversation_id)
+        try:
+            async for event in run_chat(
+                PartialProvider(),
+                conversation_id,
+                "你好",
+                skills=[],
+                run_id=run_id,
+            ):
+                if event.type == "message.delta":
+                    ready.set()
+        finally:
+            unregister_chat_run(run_id)
+
+    task = asyncio.create_task(worker())
+    await asyncio.wait_for(ready.wait(), timeout=2)
+    assert cancel_chat_run(run_id)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        draft = (
+            session.query(Message)
+            .filter(Message.run_id == run_id, Message.role == "assistant")
+            .one()
+        )
+        assert run.status == "interrupted"
+        assert draft.status == "interrupted"
+        assert draft.content == "这是一段已经显示的部分回答。"
+
+
+@pytest.mark.asyncio
+async def test_continue_creates_new_reply_from_latest_interrupted_draft(monkeypatch):
+    monkeypatch.setattr(settings, "memory_enabled", False)
+    conversation_id = _conversation()
+    with SessionLocal() as session:
+        original = Message(
+            conversation_id=conversation_id,
+            role="user",
+            content="写一个三段的小故事",
+        )
+        session.add(original)
+        session.flush()
+        interrupted_run = AgentRun(
+            conversation_id=conversation_id,
+            input_message_id=original.id,
+            execution_mode="direct",
+            status="interrupted",
+        )
+        session.add(interrupted_run)
+        session.flush()
+        interrupted = Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="第一段已经写到这里，主角推开了门。",
+            run_id=interrupted_run.id,
+            status="interrupted",
+        )
+        session.add(interrupted)
+        session.commit()
+        interrupted_ids = interrupted_run.id, interrupted.id
+
+    class ContinuationProvider:
+        def __init__(self):
+            self.messages = []
+
+        async def stream(self, messages, temperature=0.7, tools=None):
+            self.messages = messages
+            yield StreamChunk(text="门后是故事的下一幕。", finish_reason="stop")
+
+        async def complete(self, messages, temperature=0.0):
+            return ""
+
+    provider = ContinuationProvider()
+    events = []
+    async for event in run_chat(
+        provider,
+        conversation_id,
+        "继续",
+        skills=[],
+        run_id="f" * 32,
+    ):
+        events.append(event)
+
+    system_text = "\n".join(
+        str(item.get("content") or "")
+        for item in provider.messages
+        if item.get("role") == "system"
+    )
+    assert "写一个三段的小故事" in system_text
+    assert "第一段已经写到这里，主角推开了门。" in system_text
+    assert "避免重复已经显示的部分" in system_text
+    assert [event.type for event in events][-2:] == ["message.completed", "run.completed"]
+
+    with SessionLocal() as session:
+        old_draft = session.get(Message, interrupted_ids[1])
+        replies = (
+            session.query(Message)
+            .filter(Message.conversation_id == conversation_id, Message.role == "assistant")
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        assert old_draft.status == "interrupted"
+        assert len(replies) == 2
+        assert replies[-1].content == "门后是故事的下一幕。"
+        assert replies[-1].status == "completed"
+        assert replies[-1].run_id != interrupted_ids[0]
+
+
 @pytest.mark.asyncio
 async def test_mock_tool_flow_and_tool_run_record(monkeypatch):
     monkeypatch.setattr(settings, "memory_enabled", False)
@@ -71,7 +244,9 @@ async def test_mock_tool_flow_and_tool_run_record(monkeypatch):
         assert row.status == "completed"
         run = session.query(AgentRun).one()
         assert len(run.capability_version) == 64
-        assert "skill_load" in run.capability_snapshot["tools"]
+        # 意图只推荐候选，所有由用户启用的工具仍保留在本轮能力边界内。
+        assert "get_time" in run.capability_snapshot["tools"]
+        assert "calculate" in run.capability_snapshot["tools"]
     started = next(event for event in events if event.type == "run.started")
     assert started.data["capability_version"]
     assert "file-notes" in started.data["enabled_skills"]

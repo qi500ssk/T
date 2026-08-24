@@ -24,7 +24,10 @@ async def update_conversation_summary(
             return False
         messages = (
             session.query(Message)
-            .filter(Message.conversation_id == conversation_id)
+            .filter(
+                Message.conversation_id == conversation_id,
+                Message.status == "completed",
+            )
             .order_by(Message.created_at.asc())
             .all()
         )

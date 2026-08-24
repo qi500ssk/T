@@ -1,0 +1,26 @@
+[
+  {
+    "name": "alpha_project_database",
+    "conversation": "alpha",
+    "query": "项目数据库是什么",
+    "expect_contains": "PostgreSQL 16"
+  },
+  {
+    "name": "beta_project_database",
+    "conversation": "beta",
+    "query": "项目数据库是什么",
+    "expect_contains": "SQLite"
+  },
+  {
+    "name": "global_response_preference",
+    "conversation": "alpha",
+    "query": "回答语言偏好",
+    "expect_contains": "中文回答"
+  },
+  {
+    "name": "conversation_only_fact",
+    "conversation": "alpha",
+    "query": "当前会话代号",
+    "expect_contains": "A-17"
+  }
+]

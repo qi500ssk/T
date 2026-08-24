@@ -125,6 +125,28 @@ class MockProvider:
         system_text = "\n".join(
             str(item.get("content") or "") for item in messages if item.get("role") == "system"
         )
+        if "PLANNING_DOCUMENT_V1" in system_text:
+            reply = (
+                "# 任务实施方案\n\n"
+                "## 1. 目标\n\n"
+                f"围绕“{last[:60]}”形成可实施、可验证的完成路径。\n\n"
+                "## 2. 实施步骤\n\n"
+                "1. 确认需求、范围与约束。\n"
+                "2. 设计实现方案并识别涉及模块。\n"
+                "3. 按步骤实施并记录关键结果。\n"
+                "4. 完成测试、回归检查与交付说明。\n\n"
+                "## 3. 验证方案\n\n"
+                "覆盖正常流程、异常路径和相关回归检查。\n\n"
+                "## 4. 验收标准\n\n"
+                "- [ ] 需求范围明确且无遗漏\n"
+                "- [ ] 实现结果通过必要验证\n"
+                "- [ ] 风险与回退方式已有记录\n\n"
+                "## 5. 风险与回退\n\n"
+                "实施前确认受影响范围，并保留可恢复的变更记录。"
+            )
+            async for chunk in self._stream_reply(reply):
+                yield chunk
+            return
         if "PLANNER_SYNTHESIZE_V1" in system_text:
             try:
                 payload = json.loads(last)
@@ -299,6 +321,21 @@ class MockProvider:
                 },
                 ensure_ascii=False,
             )
+        if "INTENT_CLASSIFICATION_V1" in system:
+            return json.dumps(
+                {
+                    "intent": "conversation",
+                    "action": "clarify_or_respond",
+                    "needs_memory": True,
+                    "needs_knowledge": False,
+                    "needs_workspace": False,
+                    "needs_plan": False,
+                    "candidate_tools": [],
+                    "risk_hint": "low",
+                    "confidence": 0.4,
+                },
+                ensure_ascii=False,
+            )
         if "MEMORY_EXTRACTION" in system:
             try:
                 user_input = str(json.loads(content).get("user_input", ""))
@@ -314,6 +351,7 @@ class MockProvider:
                         {
                             "key": "preference." + re.sub(r"\s+", "", preference)[:40],
                             "kind": "profile",
+                            "scope": "global",
                             "content": f"用户喜欢{preference}",
                             "importance": 4,
                             "confidence": 0.95,

@@ -1,20 +1,28 @@
-"""P2 固定知识库检索评测，不读写运行时数据库。"""
+"""P2 固定知识库检索评测，运行在独立的 PostgreSQL 测试库。"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+# 评测库必须在导入应用模块前确定：默认使用 5433 隔离测试库。
+os.environ["DATABASE_URL"] = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+psycopg://personal_ai:personal_ai_test_local@localhost:5433/personal_ai_test",
+)
+if not os.environ["DATABASE_URL"].rstrip("/").endswith("/personal_ai_test"):
+    raise RuntimeError("检索评测只允许连接 personal_ai_test 数据库")
 
-from core.rag.embedding import build_embedding_provider
-from core.rag.chunking import split_into_chunks
-from core.rag.parsers import parse_document
-from core.rag.retrieval import retrieve
-from infrastructure.config import settings
-from infrastructure.database import Base, Document, DocumentChunk
+from sqlalchemy.orm import Session  # noqa: E402
+
+from core.rag.embedding import build_embedding_provider  # noqa: E402
+from core.rag.chunking import split_into_chunks  # noqa: E402
+from core.rag.parsers import parse_document  # noqa: E402
+from core.rag.retrieval import retrieve  # noqa: E402
+from infrastructure.config import settings  # noqa: E402
+from infrastructure.database import Document, DocumentChunk, SessionLocal, init_db  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +30,13 @@ DOCUMENT_DIR = ROOT / "tests" / "eval" / "documents"
 CASE_FILE = ROOT / "tests" / "eval" / "rag_cases.json"
 
 
-def build_corpus(session, provider) -> None:
+def reset_corpus(session: Session) -> None:
+    session.query(DocumentChunk).delete()
+    session.query(Document).delete()
+    session.commit()
+
+
+def build_corpus(session: Session, provider) -> None:
     for path in sorted(DOCUMENT_DIR.iterdir()):
         if path.suffix.lower() not in {".md", ".txt", ".docx", ".pdf"}:
             continue
@@ -63,16 +77,15 @@ def build_corpus(session, provider) -> None:
 
 def main() -> None:
     provider = build_embedding_provider(settings)
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    EvalSession = sessionmaker(bind=engine, expire_on_commit=False)
+    init_db()
     cases = json.loads(CASE_FILE.read_text(encoding="utf-8"))
     ranks: list[int | None] = []
     keyword_hits = 0
     section_hits = 0
     failures: list[str] = []
     try:
-        with EvalSession() as session:
+        with SessionLocal() as session:
+            reset_corpus(session)
             build_corpus(session, provider)
             for case in cases:
                 results = retrieve(session, provider, case["question"], settings, final_limit=5)

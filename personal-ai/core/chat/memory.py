@@ -1,7 +1,8 @@
-"""聊天域长期记忆：提取事实、去重写入并按当前问题召回。"""
+"""聊天域长期记忆：提取事实、按作用域去重写入并按当前问题召回。"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from infrastructure.database import Memory
@@ -19,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parents[2] / "prompts" / "memory" / "extract.md"
 _KINDS = {"episodic", "semantic", "profile"}
+_SCOPES = {"global", "project", "conversation"}
+EXTRACTION_VERSION = "extract-v2"
+_NEAR_DUPLICATE_DISTANCE = 0.02
 _OPT_OUT_PATTERN = re.compile(
     r"(?:不要|别|请勿)(?:再)?(?:记住|记录|保存|存储|写入记忆)|"
     r"(?:do not|don't|dont|never)\s+(?:remember|store|save)",
@@ -48,6 +53,7 @@ class MemoryCandidate:
     content: str
     importance: int
     confidence: float
+    scope_type: str = "conversation"
 
 
 def _parse_json(text: str) -> dict:
@@ -67,6 +73,10 @@ def _parse_json(text: str) -> dict:
 def normalize_memory_key(value: str, content: str) -> str:
     raw = value.strip().lower() or content.strip().lower()
     return re.sub(r"[^\w.\u4e00-\u9fff]+", "", raw)[:200]
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def contains_sensitive_information(text: str) -> bool:
@@ -104,10 +114,52 @@ async def extract_memories(provider, user_input: str, assistant_response: str) -
             confidence = max(0.0, min(1.0, float(item.get("confidence", 0))))
         except (TypeError, ValueError):
             continue
+        scope_type = str(item.get("scope", ""))
+        if scope_type not in _SCOPES:
+            scope_type = "conversation"
         key = normalize_memory_key(str(item.get("key", "")), content)
         if kind in _KINDS and content and key and not contains_sensitive_information(content):
-            candidates.append(MemoryCandidate(key, kind, content[:2000], importance, confidence))
+            candidates.append(
+                MemoryCandidate(key, kind, content[:2000], importance, confidence, scope_type)
+            )
     return candidates
+
+
+def _resolve_scope(
+    scope_type: str, conversation_id: str, project_id: str | None
+) -> tuple[str, str]:
+    """无法判断或 project 缺少上下文时，一律保守降级到 conversation scope。"""
+    if scope_type not in _SCOPES:
+        scope_type = "conversation"
+    if scope_type == "project" and not project_id:
+        scope_type = "conversation"
+    scope_key = {"global": "global", "project": project_id or "", "conversation": conversation_id}[
+        scope_type
+    ]
+    return scope_type, scope_key
+
+
+def _recall_filters(
+    user_id: str,
+    conversation_id: str | None,
+    project_id: str | None,
+    now: datetime,
+) -> list:
+    """召回硬过滤：用户、状态、有效期和作用域，向量候选与词法候选共用。"""
+    scope_conditions = [and_(Memory.scope_type == "global", Memory.scope_key == "global")]
+    if conversation_id:
+        scope_conditions.append(
+            and_(Memory.scope_type == "conversation", Memory.scope_key == conversation_id)
+        )
+    if project_id:
+        scope_conditions.append(and_(Memory.scope_type == "project", Memory.scope_key == project_id))
+    return [
+        Memory.user_id == user_id,
+        Memory.is_active.is_(True),
+        Memory.status == "active",
+        or_(Memory.expires_at.is_(None), Memory.expires_at > now),
+        or_(*scope_conditions),
+    ]
 
 
 def save_memories(
@@ -118,6 +170,7 @@ def save_memories(
     min_importance: int,
     min_confidence: float,
     embedding_provider=None,
+    project_id: str | None = None,
 ) -> int:
     saved = 0
     accepted = [
@@ -136,44 +189,91 @@ def save_memories(
         except Exception:
             logger.exception("长期记忆向量生成失败，保留文本记忆并使用关键词召回")
     now = datetime.now(timezone.utc)
+    seen_in_batch: set[tuple[str, str, str]] = set()
     for candidate, embedding in zip(accepted, embeddings, strict=True):
-        existing = (
+        scope_type, scope_key = _resolve_scope(
+            candidate.scope_type, conversation_id, project_id
+        )
+        # 同一批候选里的重复 key 直接跳过：改名释放槽位依赖已提交状态。
+        if (scope_type, scope_key, candidate.key) in seen_in_batch:
+            continue
+        seen_in_batch.add((scope_type, scope_key, candidate.key))
+        content_hash = _content_hash(candidate.content)
+        exact_duplicate = (
             session.query(Memory)
-            .filter(Memory.user_id == user_id, Memory.normalized_key == candidate.key)
+            .filter(
+                Memory.user_id == user_id,
+                Memory.scope_type == scope_type,
+                Memory.scope_key == scope_key,
+                Memory.content_hash == content_hash,
+                Memory.status == "active",
+            )
             .first()
         )
-        if existing is None:
-            session.add(
-                Memory(
-                    user_id=user_id,
-                    kind=candidate.kind,
-                    content=candidate.content,
-                    normalized_key=candidate.key,
-                    source_conversation_id=conversation_id,
-                    importance=candidate.importance,
-                    confidence=candidate.confidence,
-                    embedding=embedding,
-                    embedding_model=(embedding_provider.model_name if embedding is not None else None),
-                    embedding_dim=(embedding_provider.dimension if embedding is not None else None),
-                    embedded_at=(now if embedding is not None else None),
+        if exact_duplicate is not None:
+            # content_hash 去重独立于 key 和 embedding；停用记录也不被自动复活。
+            continue
+        existing = (
+            session.query(Memory)
+            .filter(
+                Memory.user_id == user_id,
+                Memory.scope_type == scope_type,
+                Memory.scope_key == scope_key,
+                Memory.normalized_key == candidate.key,
+            )
+            .first()
+        )
+        if existing is not None and not existing.is_active:
+            # 用户手动停用的 key 不允许被后台提取流程换一种说法重新启用。
+            continue
+        if existing is None and embedding is not None:
+            near_duplicate = (
+                session.query(Memory)
+                .filter(
+                    Memory.user_id == user_id,
+                    Memory.scope_type == scope_type,
+                    Memory.scope_key == scope_key,
+                    Memory.is_active.is_(True),
+                    Memory.status == "active",
+                    or_(Memory.expires_at.is_(None), Memory.expires_at > now),
+                    Memory.embedding.is_not(None),
+                    Memory.embedding_model == embedding_provider.model_name,
+                    Memory.embedding_dim == embedding_provider.dimension,
+                    Memory.embedding.cosine_distance(embedding)
+                    < _NEAR_DUPLICATE_DISTANCE,
                 )
+                .first()
             )
-        else:
-            existing.kind = candidate.kind
-            existing.content = candidate.content
-            existing.source_conversation_id = conversation_id
-            existing.importance = candidate.importance
-            existing.confidence = candidate.confidence
-            existing.is_active = True
-            existing.embedding = embedding
-            existing.embedding_model = (
-                embedding_provider.model_name if embedding is not None else None
-            )
-            existing.embedding_dim = (
-                embedding_provider.dimension if embedding is not None else None
-            )
-            existing.embedded_at = now if embedding is not None else None
+            if near_duplicate is not None:
+                continue
+        supersedes_id = None
+        if existing is not None:
+            # 释放 normalized_key 唯一槽位并保留替换链，旧记忆不再直接覆盖。
+            supersedes_id = existing.id
+            existing.status = "superseded"
+            existing.normalized_key = f"superseded.{existing.id}"
             existing.updated_at = now
+        session.add(
+            Memory(
+                user_id=user_id,
+                kind=candidate.kind,
+                content=candidate.content,
+                normalized_key=candidate.key,
+                source_conversation_id=conversation_id,
+                importance=candidate.importance,
+                confidence=candidate.confidence,
+                scope_type=scope_type,
+                scope_key=scope_key,
+                content_hash=content_hash,
+                supersedes_id=supersedes_id,
+                extraction_version=EXTRACTION_VERSION,
+                embedding=embedding,
+                embedding_model=(embedding_provider.model_name if embedding is not None else None),
+                embedding_dim=(embedding_provider.dimension if embedding is not None else None),
+                embedding_version=(embedding_provider.model_name if embedding is not None else None),
+                embedded_at=(now if embedding is not None else None),
+            )
+        )
         saved += 1
     if saved:
         session.commit()
@@ -195,14 +295,36 @@ def retrieve_memories(
     limit: int,
     embedding_provider=None,
     min_vector_similarity: float = 0.3,
+    conversation_id: str | None = None,
+    project_id: str | None = None,
 ) -> list[Memory]:
-    query_terms = _terms(query)
-    keyword_rows = (
+    """向量 + 词法双通道召回：先做作用域与状态硬过滤，再统一排序。"""
+    now = datetime.now(timezone.utc)
+    filters = _recall_filters(user_id, conversation_id, project_id, now)
+    stripped = query.strip()
+    normalized = normalize_memory_key(stripped, stripped) if stripped else ""
+
+    lexical_conditions = []
+    if len(normalized) >= 2:
+        lexical_conditions.append(Memory.normalized_key == normalized)
+    if len(stripped) >= 2:
+        lexical_conditions.append(Memory.content.ilike(f"%{stripped}%"))
+        lexical_conditions.append(Memory.content.op("%")(stripped))  # pg_trgm 相似
+        term_patterns = [f"%{term}%" for term in sorted(_terms(stripped))[:32]]
+        if term_patterns:
+            # 词元（英文词 + 中文二元组）命中任意一个即可成为候选，
+            # 替代旧的“最近 200 条全量进池”，短查询也能召回。
+            lexical_conditions.append(
+                or_(*[Memory.content.ilike(pattern) for pattern in term_patterns])
+            )
+    lexical_rows = (
         session.query(Memory)
-        .filter(Memory.user_id == user_id, Memory.is_active.is_(True))
+        .filter(*filters, or_(*lexical_conditions))
         .order_by(Memory.updated_at.desc())
-        .limit(200)
+        .limit(50)
         .all()
+        if lexical_conditions
+        else []
     )
 
     vector_scores: dict[str, float] = {}
@@ -213,8 +335,7 @@ def retrieve_memories(
         matches = (
             session.query(Memory, distance)
             .filter(
-                Memory.user_id == user_id,
-                Memory.is_active.is_(True),
+                *filters,
                 Memory.embedding.is_not(None),
                 Memory.embedding_model == embedding_provider.model_name,
                 Memory.embedding_dim == embedding_provider.dimension,
@@ -229,15 +350,43 @@ def retrieve_memories(
                 vector_rows.append(memory)
                 vector_scores[memory.id] = similarity
 
-    rows_by_id = {memory.id: memory for memory in [*keyword_rows, *vector_rows]}
+    rows_by_id = {memory.id: memory for memory in [*lexical_rows, *vector_rows]}
+    query_terms = _terms(query)
 
     def score(memory: Memory) -> float:
         overlap = len(query_terms & _terms(memory.content))
-        exact = 3 if query.strip() and query.strip() in memory.content else 0
+        exact = 3 if stripped and stripped in memory.content else 0
+        key_exact = 3 if normalized and memory.normalized_key == normalized else 0
         semantic = vector_scores.get(memory.id, 0.0) * 2
-        return overlap * 2 + exact + semantic + memory.importance * 0.1
+        return (
+            overlap * 2
+            + exact
+            + key_exact
+            + semantic
+            + memory.importance * 0.1
+            + memory.confidence * 0.5
+        )
 
     ranked = [(score(memory), memory) for memory in rows_by_id.values()]
     ranked = [item for item in ranked if item[0] >= 1]
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [memory for _, memory in ranked[:limit]]
+
+
+def mark_memories_used(session: Session, memory_ids: list[str]) -> int:
+    """只有真正装入上下文的记忆计一次使用。"""
+    if not memory_ids:
+        return 0
+    updated = (
+        session.query(Memory)
+        .filter(Memory.id.in_(memory_ids))
+        .update(
+            {
+                Memory.usage_count: Memory.usage_count + 1,
+                Memory.last_used_at: datetime.now(timezone.utc),
+            },
+            synchronize_session=False,
+        )
+    )
+    session.commit()
+    return updated

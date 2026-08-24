@@ -4,6 +4,7 @@ import type { Plan } from "@/lib/api";
 const LABEL: Record<string, string> = {
   pending: "等待",
   running: "执行中",
+  interrupted: "已中断",
   completed: "完成",
   blocked: "受阻",
   failed: "失败",
@@ -23,7 +24,7 @@ export default function PlanProgress({ plan }: { plan: Plan | null }) {
         {plan.steps.map((step) => (
           <li key={step.id} className={`rounded-md border bg-white px-3 py-2 text-sm ${step.status === "superseded" ? "opacity-50" : ""}`}>
             <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${step.status === "completed" ? "bg-emerald-500" : step.status === "running" ? "animate-pulse bg-blue-500 motion-reduce:animate-none" : ["blocked", "failed"].includes(step.status) ? "bg-red-500" : "bg-gray-300"}`} />
+              <span className={`h-2 w-2 rounded-full ${step.status === "completed" ? "bg-emerald-500" : step.status === "running" ? "animate-pulse bg-blue-500 motion-reduce:animate-none" : step.status === "interrupted" ? "bg-amber-500" : ["blocked", "failed"].includes(step.status) ? "bg-red-500" : "bg-gray-300"}`} />
               <span className="font-medium text-gray-800">{step.title}</span>
               <span className="ml-auto text-xs text-gray-500">{LABEL[step.status] ?? step.status}</span>
             </div>
