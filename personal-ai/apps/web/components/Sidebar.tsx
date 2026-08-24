@@ -17,6 +17,7 @@ interface SidebarProps {
   view: WorkspaceView;
   onViewChange: (view: WorkspaceView) => void;
   onOpenSettings: () => void;
+  runIndicators: Record<string, "running" | "completed">;
   agent?: AgentSettings;
 }
 
@@ -28,13 +29,22 @@ const navigation: { id: WorkspaceView; label: string; icon: string }[] = [
 ];
 
 export default function Sidebar(props: SidebarProps) {
-  const { conversations, projects, activeId, activeProjectId, onSelect, onSelectProject, onCreate, onCreateProject, onDelete, view, onViewChange, onOpenSettings, agent } = props;
+  const { conversations, projects, activeId, activeProjectId, onSelect, onSelectProject, onCreate, onCreateProject, onDelete, view, onViewChange, onOpenSettings, runIndicators, agent } = props;
   const grouped = (projectId: string | null) => conversations.filter((item) => item.project_id === projectId);
   const openTask = (id: string) => { onViewChange("chat"); onSelect(id); };
   const openProject = (id: string | null) => { onViewChange("chat"); onSelectProject(id); };
   const taskRows = (items: Conversation[]) => <ul className="space-y-0.5 pb-2 pl-4">
     {items.map((conversation) => <li key={conversation.id}><div className={`group flex items-center rounded-lg text-[13px] ${activeId === conversation.id && view === "chat" ? "bg-zinc-200 text-zinc-950" : "text-zinc-600 hover:bg-zinc-100"}`}>
       <button type="button" onClick={() => openTask(conversation.id)} className="min-w-0 flex-1 truncate px-3 py-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-zinc-900">{conversation.title}</button>
+      {runIndicators[conversation.id] === "running" ? (
+        <span className="mr-1 grid size-5 shrink-0 place-items-center" aria-label="任务进行中" role="status" title="任务进行中">
+          <span className="size-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-950 motion-reduce:animate-none" aria-hidden="true" />
+        </span>
+      ) : runIndicators[conversation.id] === "completed" ? (
+        <span className="mr-1 grid size-5 shrink-0 place-items-center" aria-label="任务已完成" role="status" title="任务已完成">
+          <span className="size-2 rounded-full bg-zinc-950" aria-hidden="true" />
+        </span>
+      ) : null}
       <button type="button" onClick={() => onDelete(conversation.id)} className="mr-1 grid size-7 place-items-center rounded-md text-zinc-400 hover:bg-white hover:text-red-600 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100" aria-label={`删除任务：${conversation.title}`} title="删除任务">×</button>
     </div></li>)}
   </ul>;

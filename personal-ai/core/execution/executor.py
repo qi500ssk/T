@@ -15,6 +15,7 @@ import anyio
 
 from core.execution.permissions import create_approval, wait_for_approval
 from core.chat.checkpoints import create_checkpoint
+from core.chat.memory import normalize_memory_key
 from core.execution.tool_pipeline import ToolInvocation, run_post_tool_hooks, run_pre_tool_hooks
 from core.execution.tools import TOOLS, ToolValidationError, execute_tool, prepare_tool
 from infrastructure.config import settings
@@ -378,6 +379,18 @@ async def execute_model_loop(
                 cached = await _completed_tool_run(idempotency_key)
                 if cached is not None:
                     successes += 1
+                    reused_result = cached.result_summary or "工具已在中断前完成"
+                    if name == "memory_create":
+                        reused_result = json.dumps(
+                            {
+                                "result": "duplicate_create_skipped",
+                                "message": (
+                                    "本次运行已成功创建同一作用域、同一 key 的记忆，"
+                                    "重复 memory_create 已跳过；如需纠正内容，请先查询并调用 memory_update。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
                     yield ExecutorEvent(
                         "tool.reused",
                         {
@@ -386,7 +399,7 @@ async def execute_model_loop(
                                 step_index,
                                 name,
                                 summary,
-                                cached.result_summary or "",
+                                reused_result,
                                 "completed",
                             ),
                             "idempotency_key": idempotency_key,
@@ -397,7 +410,7 @@ async def execute_model_loop(
                         {
                             "role": "tool",
                             "tool_call_id": call["id"],
-                            "content": cached.result_summary or "工具已在中断前完成",
+                            "content": reused_result,
                         }
                     )
                     continue
@@ -578,6 +591,15 @@ def _tool_idempotency_key(
     tool: str,
     args: dict,
 ) -> str | None:
+    if tool == "memory_create":
+        scope_type = str(args.get("scope_type") or "conversation").strip().lower()
+        normalized_key = normalize_memory_key(
+            str(args.get("key") or ""),
+            str(args.get("content") or ""),
+        )
+        if normalized_key:
+            raw = f"{run_id}:memory_create:{scope_type}:{normalized_key}"
+            return hashlib.sha256(raw.encode("utf-8")).hexdigest()
     if plan_version is None or not plan_step_id:
         return None
     normalized = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

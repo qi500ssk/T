@@ -413,7 +413,24 @@ export interface Memory {
 }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init);
+  let resp: Response;
+  try {
+    resp = await fetch(url, init);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      let apiOrigin = API_URL;
+      try {
+        apiOrigin = new URL(API_URL).origin;
+      } catch {
+        // 相对地址或非标准地址直接显示原配置。
+      }
+      throw new Error(
+        `后端暂时不可用（${apiOrigin}），可能正在启动或自动重载。请稍后重试；若持续出现，再检查后端进程与 CORS_ORIGINS。`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   if (!resp.ok) {
     const text = await resp.text();
     let detail = text;

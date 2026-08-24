@@ -38,7 +38,15 @@ _MEMORY_UPDATE = re.compile(
     r"把.{0,60}(?:记忆|你记住的).{0,20}(?:改成|更正为))"
 )
 _MEMORY_SAVE = re.compile(r"(?:记住|记下|加入.{0,6}记忆|保存到.{0,6}记忆|以后(?:都)?记得)")
-_MEMORY_LIST = re.compile(r"(?:查看|列出|展示|告诉我).{0,12}(?:记忆|记住了什么)|有哪些.{0,8}记忆")
+_MEMORY_LIST = re.compile(
+    r"(?:查看|列出|展示|告诉我).{0,12}(?:记忆|记住了什么)|有哪些.{0,8}记忆|"
+    r"(?:你|系统|助手).{0,6}(?:记住了|保存了|记录了).{0,10}(?:什么|哪些|内容|信息)"
+)
+_MEMORY_EXPLANATION = re.compile(
+    r"(?:会|能|可以|通常|一般|默认).{0,6}(?:记住|记录|保存).{0,16}"
+    r"(?:哪些|什么|多久|怎么|如何|范围|信息|内容|吗|么|[?？])|"
+    r"(?:哪些|什么).{0,8}(?:信息|内容).{0,8}(?:会|能|可以).{0,6}(?:记住|记录|保存)"
+)
 _SETTINGS = re.compile(r"(?:设置|配置).{0,16}(?:模型|Agent|助手|人格|工作区|上下文|技能|MCP)", re.I)
 _KNOWLEDGE = re.compile(
     r"(?:知识库|我上传的|上传的(?:资料|文档|文件|附件)|(?:文档|资料|报告)(?:中|里|内)|"
@@ -159,6 +167,8 @@ def rule_intent(message: str) -> IntentResult | None:
             memory=True,
             tools=("memory_list",),
         )
+    if _MEMORY_EXPLANATION.search(text):
+        return _result("conversation", "explain_memory", memory=True)
     if _MEMORY_SAVE.search(text):
         return _result(
             "memory_management",

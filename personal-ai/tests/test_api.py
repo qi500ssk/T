@@ -19,6 +19,20 @@ def parse_sse(text: str) -> list[tuple[str, dict]]:
     return events
 
 
+def test_local_frontend_origins_allow_cors_preflight(client):
+    for origin in ("http://localhost:4321", "http://127.0.0.1:4321"):
+        response = client.options(
+            "/api/memories/test",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "PATCH",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_create_and_list_conversations(client):
     r = client.post("/api/conversations", json={"title": "测试会话"})
     assert r.status_code == 200
@@ -352,6 +366,27 @@ def test_memory_revision_history_scope_filters_and_expiry(client):
     assert client.get("/api/memories").json() == []
     all_rows = client.get("/api/memories", params={"status": "all"}).json()
     assert {row["status"] for row in all_rows} == {"superseded", "expired"}
+
+
+def test_memory_revision_accepts_long_local_embedding_model_path(client):
+    provider = client.app.state.embedding_provider
+    original_model_name = provider.model_name
+    provider.model_name = "C:/Users/test/.cache/modelscope/models/" + "local-model/" * 12
+    try:
+        original = client.post(
+            "/api/memories",
+            json={"content": "项目原先使用 SQLite", "kind": "semantic"},
+        )
+        assert original.status_code == 200
+
+        revised = client.patch(
+            f"/api/memories/{original.json()['id']}",
+            json={"content": "项目现在使用 PostgreSQL + pgvector"},
+        )
+        assert revised.status_code == 200
+        assert revised.json()["supersedes_id"] == original.json()["id"]
+    finally:
+        provider.model_name = original_model_name
 
 
 def test_explicit_remember_chat_writes_database_not_file(client):

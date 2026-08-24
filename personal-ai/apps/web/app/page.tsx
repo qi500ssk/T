@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import ChatView from "@/components/ChatView";
@@ -37,6 +37,12 @@ export default function Home() {
   const [view, setView] = useState<WorkspaceView | "settings">("chat");
   const [settingsView, setSettingsView] = useState<SettingsView>("general");
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [runIndicators, setRunIndicators] = useState<Record<string, "running" | "completed">>({});
+  const visibleConversationRef = useRef<{ id: string | null; isChat: boolean }>({ id: null, isChat: true });
+
+  useEffect(() => {
+    visibleConversationRef.current = { id: activeId, isChat: view === "chat" };
+  }, [activeId, view]);
 
   const refresh = useCallback(async () => {
     const [conversationRows, projectRows] = await Promise.all([fetchConversations(), fetchProjects()]);
@@ -74,6 +80,34 @@ export default function Home() {
     void refresh();
   }, [refresh]);
 
+  const handleRunStatusChange = useCallback(
+    (id: string, status: "running" | "completed" | "idle") => {
+      setRunIndicators((current) => {
+        const visible = visibleConversationRef.current;
+        const nextStatus = status === "completed" && visible.isChat && visible.id === id
+          ? "idle"
+          : status;
+        if (nextStatus === "idle") {
+          if (!(id in current)) return current;
+          const next = { ...current };
+          delete next[id];
+          return next;
+        }
+        return current[id] === nextStatus ? current : { ...current, [id]: nextStatus };
+      });
+    },
+    [],
+  );
+
+  const markConversationSeen = useCallback((id: string) => {
+    setRunIndicators((current) => {
+      if (current[id] !== "completed") return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   const handleStartNewConversation = useCallback(() => {
     // 在点击事件返回前完成 ChatView 重建，避免用户立即输入时又被稍后的重置覆盖。
     flushSync(() => {
@@ -86,9 +120,10 @@ export default function Home() {
 
   const handleSelectConversation = useCallback((id: string) => {
     const conversation = conversations.find((item) => item.id === id);
+    markConversationSeen(id);
     setActiveId(id);
     setActiveProjectId(conversation?.project_id ?? null);
-  }, [conversations]);
+  }, [conversations, markConversationSeen]);
 
   const handleSelectProject = useCallback(async (projectId: string | null) => {
     setActiveProjectId(projectId);
@@ -114,6 +149,12 @@ export default function Home() {
   const handleDelete = useCallback(
     async (id: string) => {
       await deleteConversation(id);
+      setRunIndicators((current) => {
+        if (!(id in current)) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       if (activeId === id) {
         flushSync(() => {
           setActiveId(null);
@@ -127,13 +168,14 @@ export default function Home() {
 
   const handleOpenActivityConversation = useCallback(
     async (id: string) => {
+      markConversationSeen(id);
       setActiveId(id);
       const conversation = conversations.find((item) => item.id === id);
       setActiveProjectId(conversation?.project_id ?? null);
       setView("chat");
       await refresh();
     },
-    [conversations, refresh],
+    [conversations, markConversationSeen, refresh],
   );
 
   const handleOpenWorkspace = useCallback((nextView: WorkspaceView) => {
@@ -164,6 +206,7 @@ export default function Home() {
           view={view}
           onViewChange={setView}
           onOpenSettings={() => setView("settings")}
+          runIndicators={runIndicators}
           agent={appSettings?.agent}
         />
       )}
@@ -178,6 +221,7 @@ export default function Home() {
           onAutoCreate={handleCreate}
           onStarted={handleConversationStarted}
           onFinished={() => void handleConversationFinished()}
+          onRunStatusChange={handleRunStatusChange}
           onOpenSettings={(target) => {
             setSettingsView(target);
             setView("settings");

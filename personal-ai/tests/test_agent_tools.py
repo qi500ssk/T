@@ -11,7 +11,7 @@ from core.chat.run_control import cancel_chat_run, register_chat_run, unregister
 from core.capabilities.skills import load_skills
 from core.execution.tool_pipeline import register_pre_tool_hook
 from infrastructure.config import settings
-from infrastructure.database import AgentRun, Conversation, Message, SessionLocal, ToolRun
+from infrastructure.database import AgentRun, Conversation, Memory, Message, SessionLocal, ToolRun
 
 
 def _conversation() -> str:
@@ -338,6 +338,115 @@ class RecordingProvider:
 
     async def complete(self, messages, temperature=0.0):
         return ""
+
+
+class SequencedMemoryCreateProvider:
+    def __init__(self, requests: list[dict]):
+        self.requests = requests
+        self.calls = 0
+        self.final_messages = []
+
+    async def stream(self, messages, temperature=0.7, tools=None):
+        if self.calls < len(self.requests):
+            request = self.requests[self.calls]
+            call_index = self.calls
+            self.calls += 1
+            assert any(item["function"]["name"] == "memory_create" for item in tools)
+            yield StreamChunk(
+                tool_calls_delta=[
+                    {
+                        "index": 0,
+                        "id": f"memory-create-{call_index}",
+                        "type": "function",
+                        "function": {
+                            "name": "memory_create",
+                            "arguments": json.dumps(request, ensure_ascii=False),
+                        },
+                    }
+                ],
+                finish_reason="tool_calls",
+            )
+            return
+        self.final_messages = messages
+        yield StreamChunk(text="记忆处理完成", finish_reason="stop")
+
+    async def complete(self, messages, temperature=0.0):
+        return ""
+
+
+def _memory_create_args(content: str, key: str) -> dict:
+    return {
+        "content": content,
+        "key": key,
+        "kind": "profile",
+        "scope_type": "global",
+        "importance": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_same_run_skips_duplicate_memory_create_for_same_scope_and_key():
+    provider = SequencedMemoryCreateProvider(
+        [
+            _memory_create_args("用户希望被称为骑士大人。", "user.preferred_address"),
+            _memory_create_args("用户希望被称为雷姆永远的骑士大人。", "user.preferred_address"),
+        ]
+    )
+    events = []
+    async for event in run_chat(
+        provider,
+        _conversation(),
+        "请记住以后称呼我为骑士大人",
+        embedding_provider=None,
+        skills=load_skills(),
+    ):
+        events.append(event)
+
+    memory_events = [
+        event for event in events
+        if event.type in {"tool.completed", "tool.reused"}
+        and event.data.get("tool") == "memory_create"
+    ]
+    assert [event.type for event in memory_events] == ["tool.completed", "tool.reused"]
+    assert "duplicate_create_skipped" in memory_events[1].data["result_summary"]
+    assert "memory_update" in provider.final_messages[-1]["content"]
+    with SessionLocal() as session:
+        memories = session.query(Memory).all()
+        tool_runs = session.query(ToolRun).filter(ToolRun.tool == "memory_create").all()
+        assert len(memories) == 1
+        assert memories[0].content == "用户希望被称为骑士大人。"
+        assert memories[0].status == "active"
+        assert len(tool_runs) == 1
+        assert tool_runs[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_same_run_allows_memory_create_for_different_keys():
+    provider = SequencedMemoryCreateProvider(
+        [
+            _memory_create_args("用户希望被称为骑士大人。", "user.preferred_address"),
+            _memory_create_args("用户偏好简洁回答。", "user.response_style"),
+        ]
+    )
+    events = []
+    async for event in run_chat(
+        provider,
+        _conversation(),
+        "请记住我的称呼和回答风格",
+        embedding_provider=None,
+        skills=load_skills(),
+    ):
+        events.append(event)
+
+    completed = [
+        event for event in events
+        if event.type == "tool.completed" and event.data.get("tool") == "memory_create"
+    ]
+    assert len(completed) == 2
+    assert not any(event.type == "tool.reused" for event in events)
+    with SessionLocal() as session:
+        assert session.query(Memory).count() == 2
+        assert session.query(ToolRun).filter(ToolRun.tool == "memory_create").count() == 2
 
 
 class SkillLoadingProvider:

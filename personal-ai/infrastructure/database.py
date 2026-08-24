@@ -297,7 +297,7 @@ class Memory(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     extraction_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    embedding_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
         VECTOR(settings.embedding_dim), nullable=True
     )

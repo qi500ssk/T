@@ -124,7 +124,10 @@ class Settings(BaseSettings):
     # ---- API ----
     api_host: str = "0.0.0.0"
     api_port: int = 8787
-    cors_origins: str = "http://localhost:4321"
+    cors_origins: str = (
+        "http://localhost:4321,http://127.0.0.1:4321,"
+        "http://localhost:4322,http://127.0.0.1:4322"
+    )
 
     # ---- Character / Prompts ----
     character_file: str = "core/chat/character.yaml"

@@ -1,6 +1,7 @@
 """FastAPI 应用装配：会话 / 记忆 CRUD + Chat SSE（P0）。"""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -61,6 +62,9 @@ from infrastructure.database import (
     ToolRun,
     init_db,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -407,7 +411,11 @@ def create_memory(body: MemoryCreate, request: Request):
             raise HTTPException(404, "project not found")
         if body.scope_type == "conversation" and session.get(Conversation, body.scope_key) is None:
             raise HTTPException(404, "conversation not found")
-        embedding = provider.embed_documents([content])[0]
+        embedding = None
+        try:
+            embedding = provider.embed_documents([content])[0]
+        except Exception:
+            logger.exception("手工记忆向量生成失败，保留文本记忆")
         mem = Memory(
             kind=body.kind,
             content=content,
@@ -418,10 +426,10 @@ def create_memory(body: MemoryCreate, request: Request):
             scope_key=body.scope_key or "global",
             content_hash=sha256(content.encode("utf-8")).hexdigest(),
             embedding=embedding,
-            embedding_model=provider.model_name,
-            embedding_dim=provider.dimension,
-            embedded_at=datetime.now(timezone.utc),
-            embedding_version=provider.model_name,
+            embedding_model=provider.model_name if embedding is not None else None,
+            embedding_dim=provider.dimension if embedding is not None else None,
+            embedded_at=datetime.now(timezone.utc) if embedding is not None else None,
+            embedding_version=provider.model_name if embedding is not None else None,
         )
         session.add(mem)
         try:

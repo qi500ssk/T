@@ -128,8 +128,24 @@ def test_explicit_memory_operations_have_deterministic_routes(message, action, t
     ) == tools
 
 
-def test_memory_explanation_does_not_mutate_memory():
-    result = rule_intent("语义记忆和长期记忆有什么区别")
+@pytest.mark.parametrize(
+    "message",
+    [
+        "语义记忆和长期记忆有什么区别",
+        "我想知道你会记住哪些信息",
+        "你通常会保存什么内容？",
+        "你能记住我吗？",
+    ],
+)
+def test_memory_explanation_does_not_mutate_memory(message):
+    result = rule_intent(message)
     assert result is not None
     assert result.intent == "conversation"
-    assert result.action == "explain_memory"
+    assert result.action in {"explain_memory", "explain_capability"}
+
+
+def test_asking_what_was_remembered_still_lists_memory():
+    result = rule_intent("我想知道你记住了哪些信息")
+    assert result is not None
+    assert result.intent == "memory_management"
+    assert result.action == "list_memories"

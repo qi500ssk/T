@@ -36,6 +36,8 @@ interface ChatViewProps {
   onStarted: (conversationId: string) => void;
   /** 一次 Run 结束后刷新会话列表（标题可能变化） */
   onFinished: (conversationId: string) => void;
+  /** 同步每个会话的侧栏运行状态；完成状态用于提示后台任务已经结束。 */
+  onRunStatusChange: (conversationId: string, status: "running" | "completed" | "idle") => void;
   onOpenSettings?: (view: "workspace" | "model") => void;
   projects: Project[];
   activeProjectId: string | null;
@@ -511,11 +513,12 @@ function ChatComposer({
 }
 
 function ToolActivityList({ items }: { items: ToolActivity[] }) {
-  if (items.length === 0) return null;
+  const visibleItems = items.filter((item) => item.tool !== "memory_list");
+  if (visibleItems.length === 0) return null;
   return (
     <div className="flex justify-start" aria-live="polite" aria-label="工具执行状态">
       <div className="w-full max-w-[80%] space-y-1.5 border-l-2 border-gray-200 pl-3 text-xs text-gray-600">
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           let artifact: { filename: string; download_url: string } | null = null;
           if (item.result.startsWith("ARTIFACT_JSON:")) {
             try {
@@ -829,6 +832,7 @@ export default function ChatView({
   onAutoCreate,
   onStarted,
   onFinished,
+  onRunStatusChange,
   onOpenSettings,
   projects,
   activeProjectId,
@@ -957,6 +961,7 @@ export default function ChatView({
           return;
         }
         if (run?.status === "running") {
+          onRunStatusChange(conversationId, "running");
           publishLiveRunSession(conversationId, {
             runId: run.id,
             controller: null,
@@ -993,7 +998,7 @@ export default function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [applyLiveSession, conversationId]);
+  }, [applyLiveSession, conversationId, onRunStatusChange]);
 
   useEffect(() => {
     if (!conversationId || !isStreaming) return;
@@ -1126,6 +1131,7 @@ export default function ChatView({
         running: true,
       };
       publishLiveRunSession(convId, initialSession);
+      onRunStatusChange(convId, "running");
       // 自动创建会话时父组件尚未完成重渲染，立即显示本次 Run。
       applyLiveSession(initialSession);
       setMessages((ms) => [
@@ -1244,6 +1250,7 @@ export default function ChatView({
                 ),
               }));
             } else if (ev.event === "run.failed") {
+              onRunStatusChange(convId, "idle");
               updateLiveRunSession(convId, (session) => ({
                 ...session,
                 currentRun: null,
@@ -1253,6 +1260,7 @@ export default function ChatView({
               }));
               updateTrace(convId, "finished", "结束运行", "failed", String(ev.data.error ?? "运行失败"));
             } else if (ev.event === "run.cancelled") {
+              onRunStatusChange(convId, "idle");
               const reason = String(ev.data.reason ?? "运行已停止");
               updateLiveRunSession(convId, (session) => ({
                 ...session,
@@ -1262,6 +1270,7 @@ export default function ChatView({
               }));
               updateTrace(convId, "finished", "停止运行", "cancelled", reason);
             } else if (ev.event === "run.completed") {
+              onRunStatusChange(convId, "completed");
               const usage = (ev.data.token_usage ?? {}) as Record<string, unknown>;
               const rawCacheHitRate = usage.average_cache_hit_rate;
               updateLiveRunSession(convId, (session) => ({ ...session, currentRun: null, traceOpen: false }));
@@ -1303,6 +1312,7 @@ export default function ChatView({
       } catch (e) {
         const session = getLiveRunSession(convId);
         if ((e as Error).name !== "AbortError" && !session?.isStopping) {
+          onRunStatusChange(convId, "idle");
           updateLiveRunSession(convId, (current) => ({
             ...current,
             error: String(e),
@@ -1325,7 +1335,7 @@ export default function ChatView({
         }).catch(() => undefined);
       }
     },
-    [applyLiveSession, conversationId, conversationTokens, executionMode, onAutoCreate, onFinished, onStarted, selectedModelId, updateToolActivity, updateTrace],
+    [applyLiveSession, conversationId, conversationTokens, executionMode, onAutoCreate, onFinished, onRunStatusChange, onStarted, selectedModelId, updateToolActivity, updateTrace],
   );
 
   const stop = async () => {
@@ -1372,6 +1382,7 @@ export default function ChatView({
     } catch {
       updateTrace(conversationId, "finished", "停止运行", "cancelled", "连接已中断；运行可能已经结束，系统不会继续接收结果");
     } finally {
+      onRunStatusChange(conversationId, "idle");
       session.controller?.abort();
       window.setTimeout(() => {
         void Promise.all([

@@ -45,6 +45,10 @@ function displayTime(value: string | null) {
   return value ? new Date(value).toLocaleString("zh-CN") : "尚未使用";
 }
 
+function errorMessage(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
 export default function MemoryView() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -63,6 +67,7 @@ export default function MemoryView() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const refresh = useCallback(async () => {
     const rows = await fetchMemories({ status: includeHistory ? "all" : "active" });
@@ -84,7 +89,7 @@ export default function MemoryView() {
         setProjectId((current) => current || projectRows[0]?.id || "");
         setError("");
       })
-      .catch((reason) => { if (!cancelled) setError(String(reason)); })
+      .catch((reason) => { if (!cancelled) setError(errorMessage(reason)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [includeHistory]);
@@ -127,14 +132,20 @@ export default function MemoryView() {
     (memory) => memory.status === "active" && memory.is_active,
   ).length;
 
-  async function runMutation(action: () => Promise<unknown>) {
+  async function runMutation(
+    action: () => Promise<unknown>,
+    successMessage = "",
+    failureHint = "",
+  ) {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       await action();
       await refresh();
+      setNotice(successMessage);
     } catch (reason) {
-      setError(String(reason));
+      setError(`${errorMessage(reason)}${failureHint ? ` ${failureHint}` : ""}`);
     } finally {
       setBusy(false);
     }
@@ -168,7 +179,7 @@ export default function MemoryView() {
         scope_key: editing.scopeType === "global" ? "global" : editing.scopeKey,
       });
       setEditing(null);
-    });
+    }, "纠正已保存。旧版本仍保留在替换历史中，后续召回只使用新版本。", "你编辑的内容仍保留在纠正表单中，没有丢失，可以稍后再次保存。");
   }
 
   async function toggleHistory(memory: Memory) {
@@ -182,7 +193,7 @@ export default function MemoryView() {
         const rows = await fetchMemoryHistory(memory.id);
         setHistory((current) => ({ ...current, [memory.id]: rows }));
       } catch (reason) {
-        setError(String(reason));
+        setError(errorMessage(reason));
       }
     }
   }
@@ -256,7 +267,8 @@ export default function MemoryView() {
           </div>
         </form>
 
-        {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+        {notice && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
+        {error && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
         {loading ? (
           <p className="py-16 text-center text-sm text-zinc-400">正在读取记忆…</p>
         ) : groups.length === 0 ? (
