@@ -64,8 +64,8 @@ export default function Home() {
     return conv.id;
   }, [activeProjectId]);
 
-  const handleConversationFinished = useCallback(async (id: string) => {
-    setActiveId(id);
+  const handleConversationFinished = useCallback(async () => {
+    // 后台 Run 结束只刷新侧栏标题；用户已经切到别的会话时不能被强行拉回。
     await refresh();
   }, [refresh]);
 
@@ -177,7 +177,7 @@ export default function Home() {
           conversationId={activeId}
           onAutoCreate={handleCreate}
           onStarted={handleConversationStarted}
-          onFinished={(id) => void handleConversationFinished(id)}
+          onFinished={() => void handleConversationFinished()}
           onOpenSettings={(target) => {
             setSettingsView(target);
             setView("settings");
