@@ -1,68 +1,74 @@
-# Personal AI Agent（P12：个性化基础设置）
+# Personal AI
 
-Chat-first Personal AI：支持流式聊天、长期记忆、个人资料知识库、经过权限控制的本地与 MCP 工具执行、持久化 Activity、显式 Planner，以及可动态刷新和开关的 Skill、MCP Server 与声明式插件。主数据库使用 PostgreSQL，长期记忆与 RAG 向量由 pgvector 保存和检索。
+一个面向个人长期使用的本地 AI Agent。项目提供流式对话、分层记忆、知识库检索、工具调用、任务规划和活动调度，并通过权限确认控制写文件、运行命令及 MCP 工具等操作。
 
-最新交付说明见 [P12 阶段开发报告](docs/P12.md)，简单编码能力见 [P11 阶段开发报告](docs/P11.md)。
+## 主要能力
 
-## 已完成功能
+- SSE 流式对话、会话管理和上下文预算控制
+- 全局、项目、会话作用域的长期记忆，支持纠正、替换、停用和过期
+- PDF、DOCX、TXT、Markdown 知识库与混合检索
+- 自主模式与规划模式，支持中断、恢复和执行记录
+- 本地工具、Skill、声明式插件和 MCP Server
+- 高风险操作审批、工具白名单、超时和审计记录
+- 定时或一次性活动任务
+- Agent 人格、模型、上下文窗口和编码工作区设置
 
-- FastAPI + SSE 流式聊天，会话、消息与 Agent Run 持久化
-- 会话增量摘要、长期记忆提取/召回/启停和敏感信息过滤
-- PDF、DOCX、TXT、Markdown 安全上传与 UUID 原文件存储
-- 文档解析、结构化分块、tokenizer/字符/页数/解压大小/超时限制
-- 本地 `bge-small-zh-v1.5`、OpenAI-compatible 和 Mock Embedding Provider
-- 向量相似度 + BM25 + RRF 混合检索
-- 轻量查询门控跳过计算、问候和当前信息等非资料问题，仅展示回答实际使用的引用
-- Memory、RAG、Summary、Recent Messages 独立预算与总 token 硬上限
-- `rag.retrieved` SSE 事件、引用白名单、消息引用持久化
-- 工作区提供对话、记忆、知识库和活动；设置工作区独立管理技能、MCP 服务器和插件
-- 固定 20 条中文检索评测，输出 Recall@1/3/5、MRR、章节与关键词命中率
-- OpenAI 兼容 Tool Calling，多回合执行后由模型基于工具结果回答
-- `get_time`、安全计算、沙箱文件读取和审批后写入
-- `skills/*/SKILL.md` 动态扫描、格式/依赖状态、持久化开关与请求级工具白名单
-- 目录加入 Skill 后无需修改 Python 业务代码，点击刷新即可出现在设置页
-- 设置页可直接导入普通 Skill 文件夹、新建 Skill，并将本地 Skill 可恢复地移入回收目录
-- System Prompt 只注入 Skill 轻量目录，完整正文通过 `skill_load` 按当前 Run 快照渐进加载
-- Skill Provider Registry 支持优先级、可撤销注册、失败回退和稳定目录版本
-- 每个 Agent Run 持久化能力版本、Skill 摘要哈希和最终工具白名单
-- Tool 前置安全 Hook 采用 fail-closed，后置 Hook 可扩展审计和结果规范化
-- 6 个普通用户内置 Skill：时间、计算、笔记、润色、总结和翻译
-- 工具状态、写入审批卡片、`tool_runs` 执行记录和结构化日志
-- 官方 MCP SDK stdio / Streamable HTTP 客户端，支持连接测试、状态、配置持久化和热启停
-- 声明式插件普通文件夹可组合多个 Skill 与 MCP Server，默认关闭并拒绝可执行代码
-- 插件可声明本地私密设置；凭据不写入插件目录且不回显，缺少必填配置时禁止启用
-- 默认关闭的 `Web Search` 插件通过 Tavily 提供搜索/网页读取，并要求回答附带网页链接且不自动写入个人 RAG
-- `mcp_demo_echo` 和需要审批的 `mcp_demo_random_number` 全链路示例
-- 默认关闭的 `Document Skills` 插件，按需提供 DOCX、PDF、PPTX 和 XLSX 生成能力
-- 文档 MCP 使用一次性 Worker 隔离生成库，关闭插件后立即撤销 4 个 Skill 和 5 个工具
-- UUID Artifact 安全存储、大小限制、下载 API 与聊天工具卡片下载入口
-- 默认关闭的 `Developer Tools` 插件，在独立编码工作区中提供读取、搜索、精确编辑、Git diff 和预定义检查
-- 编码写入与检查需要审批；拒绝越界、敏感文件、符号链接、任意 Shell、依赖安装和 Git 修改操作
-- 设置页可编辑 Agent 名称、角色、语言、性格维度和自定义 System Prompt，并立即应用到 Chat 与 Activity
-- 支持 Mock、DeepSeek、Ollama 和其他 OpenAI 兼容模型的脱敏配置、连接测试与安全热切换
-- 内置本机文件夹浏览器选择编码工作区，路径热更新且不自动扩大 Developer Tools 权限
-- 一次性和固定分钟间隔 Activity，支持暂停、恢复、立即运行和删除
-- FastAPI lifespan 内单协程 Worker，计划、状态、结果和重启恢复均持久化
-- Activity 复用现有 Agent / Skill / Tool / MCP 链路，后台高风险工具直接拒绝
-- 每个 Activity 使用专属会话保存历史结果，可从活动页面直接跳转查看
-- Chat 与 Activity 可显式选择 `direct` 或 `planned`，默认保持 `direct`
-- 严格 JSON Planner、2..6 个顺序步骤、一次有界 Replan 和无工具最终汇总
-- Plan / PlanStep 状态、版本、结果与错误持久化，并通过 SSE 实时展示
-- direct / planned 共用 Executor、工具白名单、审批、ToolRun 与总工具预算
-- 只读 Capability Registry 汇总当前 Native Tool、Skill 与 MCP 能力
-- 同会话单 running Run 数据库约束、安全会话删除和 P5 旧库兼容迁移
+## 技术栈
+
+| 部分 | 技术 |
+|---|---|
+| 后端 | Python 3.11+、FastAPI、SQLAlchemy、Alembic |
+| 数据库 | PostgreSQL 16、pgvector |
+| 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS 4 |
+| 检索 | pgvector、BM25、RRF、可配置 Embedding Provider |
+| 协议 | HTTP、SSE、MCP |
+
+## 环境要求
+
+- Python 3.11 或更高版本
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 20 或更高版本
+- Docker Desktop 或兼容的 Docker 环境
 
 ## 快速开始
 
+### 1. 准备配置
+
 ```powershell
 cd E:\Pycharm\JQ\personal-ai
+Copy-Item .env.example .env
+```
+
+已有 `.env` 时不要覆盖。`.env` 包含本机配置和密钥，不会提交到 Git。
+
+默认 Embedding Provider 为本地 BGE 模型。如果本机没有示例路径中的模型，可先在 `.env` 中设置：
+
+```dotenv
+EMBEDDING_PROVIDER=mock
+```
+
+`mock` 适合界面和流程联调，不适合评估真实检索效果。
+
+### 2. 启动 PostgreSQL
+
+```powershell
 docker compose up -d postgres
+```
+
+正式开发数据库监听 `localhost:5432`，数据保存在 Docker volume 中。
+
+### 3. 启动后端
+
+```powershell
 uv sync
-Copy-Item .env.example .env   # 首次运行；已有 .env 不要覆盖
 uv run uvicorn apps.api.main:app --port 8787 --reload
 ```
 
-另开终端：
+应用启动时会检查并应用尚未执行的 Alembic 数据库迁移。
+
+### 4. 启动前端
+
+另开一个终端：
 
 ```powershell
 cd E:\Pycharm\JQ\personal-ai\apps\web
@@ -70,129 +76,104 @@ npm install
 npm run dev
 ```
 
-- 前端：`http://localhost:4321`
-- 后端：`http://localhost:8787`
-- API 文档：`http://localhost:8787/docs`
+启动完成后访问：
 
-默认使用本地 BGE 路径。若只需轻量联调，可在 `.env` 设置 `EMBEDDING_PROVIDER=mock`。通常请在应用的“模型设置”中保存模型配置与凭据；如果 `.env` 中提供了一套完整的 `LLM_*` 配置，系统会进入环境模型锁定模式，并强制覆盖所有前端模型选择。
+- 前端：<http://localhost:4321>
+- 后端：<http://localhost:8787>
+- API 文档：<http://localhost:8787/docs>
 
-应用启动时会自动执行尚未应用的 Alembic migration。生产部署必须更换 `compose.yaml` 中的本地开发密码，并同步更新 `DATABASE_URL`。项目只支持 PostgreSQL；自动化测试使用端口 5433 上完全隔离的 `personal_ai_test` 数据库。
+首次使用时，在前端“设置与技能 → 模型设置”中填写并测试模型配置。
 
-## 目录
+## 常用配置
+
+主要配置位于 `.env`，完整示例见 `.env.example`。
+
+| 配置 | 作用 |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 连接地址 |
+| `LLM_*` | 可选的部署级模型锁定配置 |
+| `EMBEDDING_PROVIDER` | `local`、`openai-compatible` 或 `mock` |
+| `CONTEXT_MAX_TOKENS` | 上下文装配预算 |
+| `MEMORY_*` | 长期记忆提取与召回参数 |
+| `RAG_*` | 知识库检索与分块参数 |
+| `AGENT_TIMEOUT_SECONDS` | 单次 Agent 运行总超时 |
+| `TOOL_TIMEOUT_SECONDS` | 单个工具调用超时 |
+| `CORS_ORIGINS` | 允许访问后端的前端地址 |
+
+通常应在前端保存模型配置。只有部署者需要强制锁定模型时，才在 `.env` 中配置完整的 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。
+
+## 项目结构
 
 ```text
 personal-ai/
-├── apps/api/             FastAPI 装配、聊天 SSE、知识库、Activity、Plan、能力管理 API
-├── apps/web/             Next.js UI（工作区与 Skill/MCP/Plugin 设置中心）
+├── apps/
+│   ├── api/                 FastAPI 应用、HTTP API 与 SSE 装配
+│   └── web/                 Next.js 前端
 ├── core/
-│   ├── chat/             Agent、Model Gateway、Context、角色、记忆和摘要
-│   ├── execution/        Tool 注册、统一执行循环、审批、安全 Hook 与受限编码工具
-│   ├── capabilities/     Skill、MCP Client、Plugin 与能力快照
-│   ├── automation/       Activity、Planner、Replan 与状态操作
-│   ├── rag/              解析、分块、Embedding、入库和混合检索
-│   └── files/            Artifact UUID 存储、元数据与安全下载定位
-├── skills/               内置与用户加入的本地 Skill 指令包
-├── plugins/              已安装的声明式插件普通文件夹
-├── mcp_servers/           内置可信 MCP 实现（与声明式插件清单分离）
-├── config/               MCP Server 配置
-├── scripts/              开发与迁移脚本、本地 MCP Demo
-├── infrastructure/       配置、PostgreSQL/pgvector 模型与 Alembic 启动迁移
-├── prompts/              System、Memory、Summary、RAG、Planning 提示词
-├── evaluation/           离线检索与 Planner 评测入口
-├── tests/eval/           固定文档与 20 条检索用例
-├── tests/                单元与 API 集成测试
-└── data/uploads/         UUID 命名的上传原文件
+│   ├── automation/          Planner、活动任务和运行状态
+│   ├── capabilities/        Skill、插件与 MCP 能力
+│   ├── chat/                对话、上下文、记忆、摘要和模型网关
+│   ├── execution/           工具执行、审批与安全策略
+│   ├── files/               生成文件和安全存储
+│   └── rag/                 文档解析、分块、向量化和检索
+├── infrastructure/          配置、数据库模型和初始化
+├── migrations/              Alembic 数据库迁移
+├── prompts/                 系统、记忆、检索和规划提示词
+├── skills/                  本地 Skill
+├── plugins/                 声明式插件
+├── mcp_servers/             内置 MCP Server
+├── evaluation/              离线评测脚本
+├── tests/                   后端测试
+├── data/                    本地运行数据，不提交 Git
+└── compose.yaml             PostgreSQL 开发与测试服务
 ```
 
-依赖方向：`apps/api → core → infrastructure`；前端只消费 HTTP/SSE，不决定检索结果或引用来源。
+后端依赖方向为 `apps/api → core → infrastructure`。前端负责展示状态和提交操作，不负责决定记忆召回、资料引用或工具权限。
 
-### 能力文件夹约定
+## 数据存储
 
-| 目录 | 放什么 | 最小入口 |
-|---|---|---|
-| `skills/` | 独立 Skill 指令 | `<skill-id>/SKILL.md` |
-| `plugins/` | 可统一开关的 Skill/MCP 组合清单 | `<plugin-id>/plugin.yaml` |
-| `mcp_servers/` | 项目内置、经过审查的 MCP 实现 | `<server-id>/server.py` |
-| `config/` | 用户手工添加的 MCP 连接配置 | `mcp_servers.yaml` |
-| `data/artifacts/` | Agent 生成的 DOCX/PDF/PPTX/XLSX 成品 | UUID 目录，由程序管理 |
+- 会话、消息、运行记录、计划、记忆和知识库元数据：PostgreSQL
+- 记忆与文档向量：PostgreSQL + pgvector
+- 上传文件、生成文件和运行时设置：`data/`
+- 数据库结构版本：`migrations/`
 
-第三方 Skill、插件和 MCP 不要混放：纯 Skill 放 `skills/`，组合包放 `plugins/`，可信本地 MCP 实现才放 `mcp_servers/`。各目录内的 `README.md` 给出了具体格式。
+删除本地 `data/` 不会删除 PostgreSQL 中的数据；删除 Docker volume 会删除正式数据库数据，操作前请先备份。
 
-## API
+## 测试与检查
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/chat` | SSE 流式聊天 |
-| GET/POST | `/api/conversations` | 会话列表 / 创建 |
-| GET | `/api/conversations/{id}/messages` | 消息与持久化引用 |
-| GET/POST | `/api/memories` | 记忆列表 / 添加 |
-| POST | `/api/files` | 上传并在请求线程池内完成索引 |
-| GET | `/api/documents` | 文档列表与状态 |
-| GET | `/api/documents/{id}` | 文档信息与前 20 个 chunk |
-| GET | `/api/documents/{id}/content` | 查看或下载原文件 |
-| DELETE | `/api/documents/{id}` | 删除文档、chunk 和原文件 |
-| GET | `/api/search?q=&limit=` | 混合检索预览 |
-| POST | `/api/approval` | 批准或拒绝待执行的高风险工具 |
-| GET | `/api/tools` | 已注册工具及固定风险等级 |
-| GET/POST | `/api/activities` | Activity 列表 / 创建 |
-| GET | `/api/activities/{id}/runs` | Activity 的 Agent Run 历史 |
-| POST | `/api/activities/{id}/pause` | 暂停计划 |
-| POST | `/api/activities/{id}/resume` | 恢复计划 |
-| POST | `/api/activities/{id}/run-now` | 立即排队执行 |
-| DELETE | `/api/activities/{id}` | 删除非运行中的 Activity |
-| GET | `/api/conversations/{id}/plans` | 会话最近 20 个 Plan 与步骤 |
-| GET | `/api/activities/{id}/plans` | Activity 的 Plan 历史 |
-| GET | `/api/plans/{id}` | Plan 与所有版本步骤详情 |
-| GET | `/api/capabilities` | 当前启动快照中的只读能力列表 |
-| GET | `/api/skills` | 全部 Skill 及启用、依赖和格式状态 |
-| GET | `/api/skills/catalog` | Skill 目录版本、完整性和数量 |
-| POST | `/api/skills/refresh` | 不重启服务重新扫描 Skill 目录 |
-| POST | `/api/skills/import-folder` | 校验并导入浏览器选择的普通 Skill 文件夹 |
-| POST | `/api/skills` | 创建标准本地 Skill 文件夹 |
-| PATCH | `/api/skills/{id}` | 启用或关闭 Skill |
-| DELETE | `/api/skills/{id}` | 将本地 Skill 移入可恢复回收目录 |
-| GET/POST | `/api/mcp-servers` | MCP Server 列表 / 保存配置 |
-| POST | `/api/mcp-servers/test` | 保存前测试 MCP 连接和工具发现 |
-| POST | `/api/mcp-servers/refresh` | 热刷新用户 MCP 配置 |
-| PATCH/DELETE | `/api/mcp-servers/{name}` | 启停 / 删除用户 MCP Server |
-| GET | `/api/plugins` | 已安装声明式插件列表 |
-| POST | `/api/plugins/import-folder` | 导入包含 plugin.yaml 的普通文件夹 |
-| POST | `/api/plugins/refresh` | 热刷新插件目录 |
-| PATCH/DELETE | `/api/plugins/{id}` | 启停 / 可恢复删除插件 |
-| PATCH | `/api/plugins/{id}/settings` | 保存或清除插件私密设置（响应不回显原值） |
-| GET | `/api/artifacts` | 最近生成文件列表 |
-| GET | `/api/artifacts/{id}` | 下载生成文件 |
-| GET | `/api/settings` | 读取脱敏后的 Agent、模型与工作区配置 |
-| PATCH | `/api/settings/{agent|model|workspace}` | 分项保存并应用运行时设置 |
-| POST | `/api/settings/model/test` | 测试模型连接但不保存 |
-| GET | `/api/settings/directories` | 本机编码工作区文件夹浏览 |
-
-除 `rag.retrieved` 外，工具系统使用以下 SSE 事件：
-
-```text
-agent.status / tool.started / tool.completed
-approval.required / approval.completed
-plan.created / plan.step.started / plan.step.completed / plan.step.blocked
-plan.replanned / plan.completed / plan.failed
-```
-
-无工具调用时，既有聊天事件和消息保存行为保持兼容。
-
-## 验证
+启动隔离测试数据库：
 
 ```powershell
 docker compose up -d postgres-test
 uv run pytest -q
-uv run python -m evaluation.rag
-uv run python -m evaluation.planner
+```
 
+测试数据库监听 `localhost:5433`，使用 `personal_ai_test`，与正式数据库隔离。
+
+前端检查：
+
+```powershell
 cd apps\web
 npm run lint
 npm run build
 ```
 
-当前验收结果：`130 passed, 1 skipped`；跳过项仅为当前 Windows 环境无权创建符号链接。RAG 与 Planner 固定评测保持通过；前端 Lint、TypeScript 和生产构建均通过。
+离线评测：
 
-## 当前边界
+```powershell
+uv run python -m evaluation.rag
+uv run python -m evaluation.memory
+uv run python -m evaluation.intent
+uv run python -m evaluation.planner
+```
 
-P12 仍面向本机单用户、单个默认 Agent、单 API 进程和单 Activity Worker。正式 PostgreSQL 与测试 PostgreSQL 由本地 Docker Compose 隔离管理。运行时设置保存在本地忽略目录；文件夹浏览 API 不应暴露到公网。模型统一使用 OpenAI Chat Completions 兼容层；尚未提供多 Agent 预设、厂商专属参数、Git/URL 自动拉取和在线市场。
+## 安全说明
+
+- 不要提交 `.env`、API Key、数据库密码或 `data/` 中的运行数据。
+- 工具是否需要确认由后端风险等级和审批策略决定，MCP 配置中的风险等级是其中一部分。
+- 编码工具只能访问配置的工作区，并拒绝越界路径、敏感文件和符号链接。
+- 项目目前定位为本机单用户应用；对公网开放前必须增加认证、访问控制和生产级密钥管理。
+
+## License
+
+当前仓库尚未声明开源许可证。未经许可，请勿将代码视为可自由再分发的软件。

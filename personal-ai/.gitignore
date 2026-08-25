@@ -25,6 +25,7 @@ apps/web/.env.local
 apps/web/.env.*.local
 
 # Editors and local agent state
+AGENTS.md
 .idea/
 .vscode/
 .zcode/
