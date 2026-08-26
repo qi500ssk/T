@@ -3,7 +3,7 @@
 import type { WorkspaceView } from "@/components/Sidebar";
 import type { AgentSettings } from "@/lib/api";
 
-export type SettingsView = "general" | "model" | "workspace" | "skills" | "mcp" | "plugins";
+export type SettingsView = "general" | "model" | "appearance" | "skills" | "mcp" | "plugins";
 
 interface SettingsSidebarProps {
   onBack: () => void;
@@ -40,9 +40,9 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
           <span aria-hidden="true">◉</span>
           模型设置
         </button>
-        <button type="button" onClick={() => onViewChange("workspace")} className={`${itemClass(view === "workspace")} mt-1`} aria-current={view === "workspace" ? "page" : undefined}>
-          <span aria-hidden="true">▱</span>
-          工作区
+        <button type="button" onClick={() => onViewChange("appearance")} className={`${itemClass(view === "appearance")} mt-1`} aria-current={view === "appearance" ? "page" : undefined}>
+          <span aria-hidden="true">◐</span>
+          外观设置
         </button>
 
         <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">Agent 能力</p>

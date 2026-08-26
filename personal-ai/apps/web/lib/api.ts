@@ -19,6 +19,11 @@ export interface Project {
   updated_at: string;
 }
 
+export const projectFolderName = (project: Pick<Project, "name" | "workspace_dir">) => {
+  const path = project.workspace_dir?.replace(/[\\/]+$/, "");
+  return path?.split(/[\\/]/).at(-1) || path || project.name;
+};
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -464,6 +469,12 @@ export const createProject = (body: { name: string; workspace_dir?: string | nul
     body: JSON.stringify(body),
   });
 
+export const deleteProject = (id: string, deleteConversations = false) =>
+  req<{ ok: boolean }>(
+    `${API_URL}/projects/${encodeURIComponent(id)}${deleteConversations ? "?delete_conversations=true" : ""}`,
+    { method: "DELETE" },
+  );
+
 export const deleteConversation = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/conversations/${id}`, { method: "DELETE" });
 
@@ -790,13 +801,6 @@ export const testModelSettings = (body: ModelSettingsInput) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
-
-export const updateWorkspaceSettings = (codingWorkspaceDir: string) =>
-  req<{ coding_workspace_dir: string }>(`${API_URL}/settings/workspace`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ coding_workspace_dir: codingWorkspaceDir }),
   });
 
 export const fetchDirectories = (path?: string | null) =>

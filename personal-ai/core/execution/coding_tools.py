@@ -14,6 +14,7 @@ from pathlib import Path
 import anyio
 
 from infrastructure.config import settings
+from core.execution.workspace import current_coding_workspace
 
 
 MAX_READ_BYTES = 256 * 1024
@@ -49,7 +50,9 @@ class CodingToolError(ValueError):
 
 
 def _workspace_root() -> Path:
-    root = Path(settings.coding_workspace_dir).resolve()
+    root = current_coding_workspace()
+    if root is None:
+        raise CodingToolError("当前对话未选择文件夹，编码工具不可用")
     root.mkdir(parents=True, exist_ok=True)
     return root
 

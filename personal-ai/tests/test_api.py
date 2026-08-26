@@ -107,6 +107,27 @@ def test_projects_group_tasks_and_protect_non_empty_project(client, tmp_path):
     assert client.delete(f"/api/projects/{project['id']}").status_code == 200
 
 
+def test_remove_project_deletes_its_conversations(client, tmp_path):
+    project = client.post(
+        "/api/projects",
+        json={"name": "小说", "workspace_dir": str(tmp_path)},
+    ).json()
+    conversation = client.post(
+        "/api/conversations",
+        json={"title": "继续写第一章", "project_id": project["id"]},
+    ).json()
+
+    removed = client.delete(
+        f"/api/projects/{project['id']}",
+        params={"delete_conversations": True},
+    )
+
+    assert removed.status_code == 200
+    assert client.get("/api/projects").json() == []
+    rows = client.get("/api/conversations").json()
+    assert all(row["id"] != conversation["id"] for row in rows)
+
+
 def test_conversation_rejects_unknown_project(client):
     response = client.post("/api/conversations", json={"project_id": "missing"})
     assert response.status_code == 404

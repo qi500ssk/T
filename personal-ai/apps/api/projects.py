@@ -2,10 +2,23 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from infrastructure.database import Conversation, Project, SessionLocal
+from core.chat.images import resolve_image
+from infrastructure.database import (
+    Activity,
+    AgentRun,
+    ChatImage,
+    Conversation,
+    Memory,
+    Message,
+    Plan,
+    PlanStep,
+    Project,
+    SessionLocal,
+    ToolRun,
+)
 
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -76,13 +89,101 @@ def update_project(project_id: str, body: ProjectUpdate):
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: str):
+def delete_project(
+    project_id: str,
+    delete_conversations: bool = Query(
+        default=False,
+        description="同时永久删除文件夹下的全部对话及关联记录",
+    ),
+):
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "project not found")
-        if session.query(Conversation).filter(Conversation.project_id == project_id).first():
-            raise HTTPException(409, "请先删除或移走项目中的任务")
+        conversation_ids = [
+            row.id
+            for row in session.query(Conversation.id).filter(Conversation.project_id == project_id)
+        ]
+        stored_images: list[str] = []
+        if conversation_ids:
+            if not delete_conversations:
+                raise HTTPException(409, "请先删除或移走项目中的任务")
+            if (
+                session.query(AgentRun)
+                .filter(
+                    AgentRun.conversation_id.in_(conversation_ids),
+                    AgentRun.status == "running",
+                )
+                .first()
+            ):
+                raise HTTPException(409, "文件夹中有正在运行的对话，暂时不能删除")
+
+            run_ids = [
+                row.id
+                for row in session.query(AgentRun.id).filter(
+                    AgentRun.conversation_id.in_(conversation_ids)
+                )
+            ]
+            plan_ids = [
+                row.id
+                for row in session.query(Plan.id).filter(Plan.conversation_id.in_(conversation_ids))
+            ]
+            message_ids = [
+                row.id
+                for row in session.query(Message.id).filter(
+                    Message.conversation_id.in_(conversation_ids)
+                )
+            ]
+            if message_ids:
+                stored_images = [
+                    row.stored_filename
+                    for row in session.query(ChatImage.stored_filename).filter(
+                        ChatImage.message_id.in_(message_ids)
+                    )
+                ]
+                session.query(ChatImage).filter(ChatImage.message_id.in_(message_ids)).delete(
+                    synchronize_session=False
+                )
+            if run_ids:
+                session.query(ToolRun).filter(ToolRun.run_id.in_(run_ids)).delete(
+                    synchronize_session=False
+                )
+            if plan_ids:
+                session.query(PlanStep).filter(PlanStep.plan_id.in_(plan_ids)).delete(
+                    synchronize_session=False
+                )
+                session.query(Plan).filter(Plan.id.in_(plan_ids)).delete(
+                    synchronize_session=False
+                )
+            if run_ids:
+                session.query(AgentRun).filter(AgentRun.id.in_(run_ids)).delete(
+                    synchronize_session=False
+                )
+            session.query(Activity).filter(Activity.conversation_id.in_(conversation_ids)).delete(
+                synchronize_session=False
+            )
+            if message_ids:
+                session.query(Message).filter(Message.id.in_(message_ids)).delete(
+                    synchronize_session=False
+                )
+            session.query(Memory).filter(
+                (
+                    (Memory.scope_type == "project")
+                    & (Memory.scope_key == project_id)
+                )
+                | (
+                    (Memory.scope_type == "conversation")
+                    & (Memory.scope_key.in_(conversation_ids))
+                )
+            ).delete(synchronize_session=False)
+            session.query(Conversation).filter(Conversation.id.in_(conversation_ids)).delete(
+                synchronize_session=False
+            )
         session.delete(project)
         session.commit()
+        for stored_filename in stored_images:
+            try:
+                resolve_image(stored_filename).unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
         return {"ok": True}

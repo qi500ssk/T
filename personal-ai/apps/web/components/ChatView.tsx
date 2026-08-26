@@ -26,6 +26,7 @@ import {
   type CitationSource,
   type Project,
   type KnowledgeDocument,
+  projectFolderName,
 } from "@/lib/api";
 
 interface ChatViewProps {
@@ -38,11 +39,11 @@ interface ChatViewProps {
   onFinished: (conversationId: string) => void;
   /** 同步每个会话的侧栏运行状态；完成状态用于提示后台任务已经结束。 */
   onRunStatusChange: (conversationId: string, status: "running" | "completed" | "idle") => void;
-  onOpenSettings?: (view: "workspace" | "model") => void;
+  onOpenSettings?: (view: "model") => void;
   projects: Project[];
   activeProjectId: string | null;
   onSelectProject: (id: string | null) => void;
-  onCreateProject: () => void;
+  onOpenFolder: () => void;
 }
 
 type ToolStatus = "running" | "completed" | "rejected" | "failed" | "timeout";
@@ -359,7 +360,7 @@ function ChatComposer({
   projects,
   activeProjectId,
   onSelectProject,
-  onCreateProject,
+  onOpenFolder,
   attachments,
   onRemoveAttachment,
   images,
@@ -384,11 +385,11 @@ function ChatComposer({
   onStop: () => void;
   isStopping: boolean;
   onUpload: (file: File) => void;
-  onOpenSettings?: (view: "workspace" | "model") => void;
+  onOpenSettings?: (view: "model") => void;
   projects: Project[];
   activeProjectId: string | null;
   onSelectProject: (id: string | null) => void;
-  onCreateProject: () => void;
+  onOpenFolder: () => void;
   attachments: KnowledgeDocument[];
   onRemoveAttachment: (id: string) => void;
   images: ChatImage[];
@@ -396,7 +397,24 @@ function ChatComposer({
   onRemoveImage: (id: string) => void;
 }) {
   const [projectOpen, setProjectOpen] = useState(false);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
   const activeProject = projects.find((project) => project.id === activeProjectId);
+
+  useEffect(() => {
+    if (!projectOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!projectMenuRef.current?.contains(event.target as Node)) setProjectOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProjectOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [projectOpen]);
   const modelProfiles = settings?.models.items ?? [];
   const environmentLocked = Boolean(settings?.model_control.locked);
   const selectedProfile = modelProfiles.find((profile) => profile.id === selectedModelId);
@@ -433,15 +451,19 @@ function ChatComposer({
       }}
       className={`w-full overflow-visible rounded-[1.5rem] border border-zinc-200 bg-white shadow-[0_18px_55px_-28px_rgba(0,0,0,0.35)] ${hero ? "max-w-4xl" : "mx-auto max-w-4xl"}`}
     >
-      <div className="relative flex min-h-12 items-center gap-2 border-b border-zinc-100 px-3 sm:px-4">
-        <button type="button" onClick={() => setProjectOpen((value) => !value)} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-xl px-2.5 text-left text-sm font-medium text-zinc-700 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-expanded={projectOpen}>
+      <div className="relative flex min-h-12 items-center gap-2 border-b border-zinc-100 px-3 sm:px-4" ref={projectMenuRef}>
+        <button type="button" disabled={isStreaming} onClick={() => setProjectOpen((value) => !value)} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-xl px-2.5 text-left text-sm font-medium text-zinc-700 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-50" aria-expanded={projectOpen} aria-haspopup="menu" aria-controls="folder-menu">
           <span className="text-zinc-400" aria-hidden="true">▱</span>
-          <span className="max-w-40 truncate sm:max-w-64">{activeProject?.name || "未分组"}</span>
-          <span className="text-xs text-zinc-400" aria-hidden="true">⌄</span>
+          <span className="max-w-40 truncate sm:max-w-64">{activeProject ? projectFolderName(activeProject) : "不在项目中工作"}</span>
+          <span className="text-xs text-zinc-400" aria-hidden="true">⌃</span>
         </button>
-        {projectOpen && <div className="absolute left-3 top-11 z-30 w-64 rounded-2xl border border-zinc-200 bg-white p-2 shadow-xl" role="menu">
-          {projects.map((project) => <button key={project.id} type="button" onClick={() => { onSelectProject(project.id); setProjectOpen(false); }} className={`flex min-h-10 w-full items-center gap-2 rounded-xl px-3 text-left text-sm ${project.id === activeProjectId ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}><span aria-hidden="true">▱</span><span className="min-w-0 flex-1 truncate">{project.name}</span>{project.id === activeProjectId && <span aria-hidden="true">✓</span>}</button>)}
-          <button type="button" onClick={() => { setProjectOpen(false); onCreateProject(); }} className="mt-1 flex min-h-10 w-full items-center gap-2 rounded-xl border-t border-zinc-100 px-3 text-left text-sm font-medium hover:bg-zinc-50">＋ 新建项目</button>
+        {projectOpen && <div id="folder-menu" className="absolute bottom-11 left-3 z-30 max-h-[min(24rem,calc(100dvh-6rem))] w-[min(20rem,calc(100vw-3rem))] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-xl" role="menu" aria-label="选择文件夹">
+          <p className="px-3 pb-2 pt-1 text-xs font-medium text-zinc-400">已打开的文件夹</p>
+          {projects.map((project) => <button key={project.id} type="button" role="menuitemradio" aria-checked={project.id === activeProjectId} onClick={() => { onSelectProject(project.id); setProjectOpen(false); }} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm ${project.id === activeProjectId ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}><span className="text-zinc-400" aria-hidden="true">▱</span><span className="min-w-0 flex-1 truncate">{projectFolderName(project)}</span>{project.id === activeProjectId && <span aria-hidden="true">✓</span>}</button>)}
+          {projects.length === 0 && <p className="px-3 py-4 text-sm text-zinc-400">还没有打开过文件夹</p>}
+          <div className="my-1 border-t border-zinc-100" />
+          <button type="button" role="menuitem" onClick={() => { setProjectOpen(false); onOpenFolder(); }} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium hover:bg-zinc-50"><span aria-hidden="true">⊞</span>打开文件夹</button>
+          <button type="button" role="menuitemradio" aria-checked={activeProjectId === null} onClick={() => { onSelectProject(null); setProjectOpen(false); }} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm ${activeProjectId === null ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}><span aria-hidden="true">◯</span><span className="min-w-0 flex-1">不在项目中工作</span>{activeProjectId === null && <span aria-hidden="true">✓</span>}</button>
         </div>}
         <span className="ml-auto hidden text-xs text-zinc-400 sm:block">当前对话上下文</span>
       </div>
@@ -837,7 +859,7 @@ export default function ChatView({
   projects,
   activeProjectId,
   onSelectProject,
-  onCreateProject,
+  onOpenFolder,
 }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState("");
@@ -1478,7 +1500,7 @@ export default function ChatView({
   };
 
   const empty = messages.length === 0 && !streaming && toolActivities.length === 0 && approvals.length === 0 && !currentRun;
-  const composerProps = { projects, activeProjectId, onSelectProject, onCreateProject, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage, onStop: () => void stop(), isStopping };
+  const composerProps = { projects, activeProjectId, onSelectProject, onOpenFolder, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage, onStop: () => void stop(), isStopping };
   const completedRunMessage = runTrace.length > 0 && !isStreaming && messages.at(-1)?.role === "assistant" && messages.at(-1)?.status === "completed" ? messages.at(-1)! : null;
   const visibleMessages = completedRunMessage ? messages.slice(0, -1) : messages;
   const composerLocked = isStreaming || currentRun?.status === "running";

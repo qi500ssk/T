@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ from core.capabilities.registry import build_capability_registry
 from core.capabilities.skills import parse_skill_document
 from core.chat.gateway import MockProvider
 from core.execution.coding_tools import CHECKS
+from core.execution.workspace import bind_coding_workspace, reset_coding_workspace
 from core.execution.tools import TOOLS, execute_tool
 from infrastructure.config import settings
 
@@ -185,3 +187,37 @@ def test_mock_provider_can_drive_basic_coding_tools():
     assert MockProvider._select_tool("运行代码检查：pytest", available) == (
         "code_run_check", {"check": "pytest"}
     )
+
+
+@pytest.mark.asyncio
+async def test_coding_workspace_is_isolated_per_run(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "only-first.txt").write_text("first", encoding="utf-8")
+    (second / "only-second.txt").write_text("second", encoding="utf-8")
+
+    async def listing(root: Path) -> str:
+        token = bind_coding_workspace(str(root))
+        try:
+            result = await execute_tool("code_list_files", {"path": "."}, READ_TOOLS)
+            assert result.status == "completed"
+            return result.content
+        finally:
+            reset_coding_workspace(token)
+
+    first_result, second_result = await asyncio.gather(listing(first), listing(second))
+    assert "only-first.txt" in first_result and "only-second.txt" not in first_result
+    assert "only-second.txt" in second_result and "only-first.txt" not in second_result
+
+
+@pytest.mark.asyncio
+async def test_coding_tools_require_a_folder_inside_run_context():
+    token = bind_coding_workspace(None)
+    try:
+        result = await execute_tool("code_list_files", {"path": "."}, READ_TOOLS)
+    finally:
+        reset_coding_workspace(token)
+    assert result.status == "failed"
+    assert "未选择文件夹" in result.content

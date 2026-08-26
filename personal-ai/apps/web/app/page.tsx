@@ -13,15 +13,16 @@ import SkillView from "@/components/SkillView";
 import McpView from "@/components/McpView";
 import PluginView from "@/components/PluginView";
 import GeneralSettingsView from "@/components/GeneralSettingsView";
-import ProjectDialog from "@/components/ProjectDialog";
+import AppearanceSettingsView from "@/components/AppearanceSettingsView";
+import FolderPickerDialog from "@/components/FolderPickerDialog";
 import {
   createConversation,
   createProject,
   deleteConversation,
+  deleteProject,
   fetchAppSettings,
   fetchConversations,
   fetchProjects,
-  updateWorkspaceSettings,
   type AppSettings,
   type Conversation,
   type Project,
@@ -33,7 +34,7 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [newConversationKey, setNewConversationKey] = useState(0);
-  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [view, setView] = useState<WorkspaceView | "settings">("chat");
   const [settingsView, setSettingsView] = useState<SettingsView>("general");
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
@@ -111,7 +112,6 @@ export default function Home() {
   const handleStartNewConversation = useCallback(() => {
     // 在点击事件返回前完成 ChatView 重建，避免用户立即输入时又被稍后的重置覆盖。
     flushSync(() => {
-      setActiveProjectId(null);
       setActiveId(null);
       setView("chat");
       setNewConversationKey((value) => value + 1);
@@ -125,26 +125,22 @@ export default function Home() {
     setActiveProjectId(conversation?.project_id ?? null);
   }, [conversations, markConversationSeen]);
 
-  const handleSelectProject = useCallback(async (projectId: string | null) => {
+  const handleSelectProject = useCallback((projectId: string | null) => {
     setActiveProjectId(projectId);
     setActiveId(null);
-    const project = projects.find((item) => item.id === projectId);
-    if (project?.workspace_dir) {
-      await updateWorkspaceSettings(project.workspace_dir);
-      setAppSettings((current) => current ? { ...current, workspace: { coding_workspace_dir: project.workspace_dir! } } : current);
-    }
-  }, [projects]);
+  }, []);
 
-  const handleCreateProject = useCallback(async (name: string, workspaceDir: string | null) => {
-    const project = await createProject({ name, workspace_dir: workspaceDir });
+  const handleOpenFolder = useCallback(async (workspaceDir: string) => {
+    const normalized = workspaceDir.replace(/[\\/]+$/, "").toLocaleLowerCase();
+    const existing = projects.find((item) => item.workspace_dir?.replace(/[\\/]+$/, "").toLocaleLowerCase() === normalized);
+    const folderName = workspaceDir.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || workspaceDir;
+    const project = existing ?? await createProject({ name: folderName, workspace_dir: workspaceDir });
     await refresh();
     setActiveProjectId(project.id);
     setActiveId(null);
-    if (project.workspace_dir) {
-      await updateWorkspaceSettings(project.workspace_dir);
-      setAppSettings((current) => current ? { ...current, workspace: { coding_workspace_dir: project.workspace_dir! } } : current);
-    }
-  }, [refresh]);
+    setView("chat");
+    setFolderDialogOpen(false);
+  }, [projects, refresh]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -165,6 +161,28 @@ export default function Home() {
     },
     [activeId, refresh],
   );
+
+  const handleDeleteProject = useCallback(async (project: Project) => {
+    const folderName = project.workspace_dir?.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || project.name;
+    const conversationCount = conversations.filter((item) => item.project_id === project.id).length;
+    const confirmed = window.confirm(
+      `删除文件夹“${folderName}”及其 ${conversationCount} 个对话？\n\n聊天记录将永久删除且无法恢复。电脑上的文件夹和其中的文件不会被删除。`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteProject(project.id, true);
+      if (activeProjectId === project.id) {
+        flushSync(() => {
+          setActiveProjectId(null);
+          setActiveId(null);
+          setNewConversationKey((value) => value + 1);
+        });
+      }
+      await refresh();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "删除文件夹失败");
+    }
+  }, [activeProjectId, conversations, refresh]);
 
   const handleOpenActivityConversation = useCallback(
     async (id: string) => {
@@ -199,9 +217,10 @@ export default function Home() {
           activeId={activeId}
           activeProjectId={activeProjectId}
           onSelect={handleSelectConversation}
-          onSelectProject={(id) => void handleSelectProject(id)}
+          onSelectProject={handleSelectProject}
           onCreate={handleStartNewConversation}
-          onCreateProject={() => setProjectDialogOpen(true)}
+          onOpenFolder={() => setFolderDialogOpen(true)}
+          onDeleteProject={(project) => void handleDeleteProject(project)}
           onDelete={(id) => void handleDelete(id)}
           view={view}
           onViewChange={setView}
@@ -211,9 +230,9 @@ export default function Home() {
         />
       )}
       {view === "settings" ? (
-        settingsView === "general" || settingsView === "model" || settingsView === "workspace" ? (
+        settingsView === "general" || settingsView === "model" ? (
           <GeneralSettingsView section={settingsView} onUpdated={setAppSettings} />
-        ) : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />
+        ) : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />
       ) : view === "chat" ? (
         <ChatView
           key={`chat-${newConversationKey}`}
@@ -228,8 +247,8 @@ export default function Home() {
           }}
           projects={projects}
           activeProjectId={activeProjectId}
-          onSelectProject={(id) => void handleSelectProject(id)}
-          onCreateProject={() => setProjectDialogOpen(true)}
+          onSelectProject={handleSelectProject}
+          onOpenFolder={() => setFolderDialogOpen(true)}
         />
       ) : view === "memories" ? (
         <MemoryView />
@@ -238,7 +257,7 @@ export default function Home() {
       ) : view === "activities" ? (
         <ActivityView onOpenConversation={(id) => void handleOpenActivityConversation(id)} />
       ) : null}
-      <ProjectDialog open={projectDialogOpen} initialWorkspace={appSettings?.workspace.coding_workspace_dir ?? ""} onClose={() => setProjectDialogOpen(false)} onCreate={handleCreateProject} />
+      <FolderPickerDialog open={folderDialogOpen} initialPath={projects.find((item) => item.id === activeProjectId)?.workspace_dir ?? ""} onClose={() => setFolderDialogOpen(false)} onSelect={(path) => void handleOpenFolder(path)} />
     </div>
   );
 }

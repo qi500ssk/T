@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import {
   createAgentProfile,
@@ -8,101 +8,25 @@ import {
   deleteAgentProfile,
   deleteModelProfile,
   fetchAppSettings,
-  fetchDirectories,
   setActiveAgentProfile,
   setDefaultModelProfile,
   testModelSettings,
   updateAgentProfile,
   updateModelProfile,
-  updateWorkspaceSettings,
   type AgentSettings,
   type AgentProfile,
   type AgentProfileInput,
   type AppSettings,
-  type DirectoryListing,
   type ModelProfile,
   type ModelProfileInput,
   type ModelSettingsInput,
 } from "@/lib/api";
 
 
-export type GeneralSettingsSection = "general" | "model" | "workspace";
+export type GeneralSettingsSection = "general" | "model";
 
 const inputClass = "h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm outline-none transition focus:border-zinc-500 focus:ring-4 focus:ring-zinc-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500";
 const textareaClass = "w-full resize-y rounded-xl border border-zinc-300 bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-zinc-500 focus:ring-4 focus:ring-zinc-100";
-
-export function FolderDialog({ open, initialPath, onClose, onSelect }: { open: boolean; initialPath: string; onClose: () => void; onSelect: (path: string) => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const [listing, setListing] = useState<DirectoryListing | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const load = async (path?: string | null) => {
-    setLoading(true);
-    setError("");
-    try {
-      setListing(await fetchDirectories(path));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "文件夹读取失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      dialog.showModal();
-      void load(initialPath);
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open, initialPath]);
-
-  return (
-    <dialog ref={ref} onCancel={(event) => { event.preventDefault(); onClose(); }} onClose={onClose} className="m-auto h-[min(80vh,42rem)] w-[min(94vw,46rem)] rounded-3xl bg-white p-0 text-zinc-950 shadow-2xl backdrop:bg-zinc-950/35" aria-labelledby="folder-dialog-title">
-      <div className="flex h-full flex-col">
-        <div className="flex items-start justify-between border-b border-zinc-200 px-6 py-5">
-          <div>
-            <h2 id="folder-dialog-title" className="text-xl font-bold">选择编码工作区</h2>
-            <p className="mt-1 text-sm text-zinc-500">Agent 的编码工具只能访问你选中的文件夹。</p>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-zinc-500 hover:bg-zinc-100" aria-label="关闭">×</button>
-        </div>
-        <div className="flex items-center gap-2 border-b border-zinc-200 px-6 py-3">
-          <button type="button" onClick={() => void load()} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50">磁盘</button>
-          <button type="button" disabled={!listing?.parent_path || loading} onClick={() => void load(listing?.parent_path)} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40">↑ 上一级</button>
-          <p className="min-w-0 flex-1 truncate rounded-xl bg-zinc-100 px-3 py-2.5 font-mono text-xs text-zinc-600" title={listing?.current_path ?? "选择磁盘"}>{listing?.current_path ?? "选择一个磁盘"}</p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {error && <p role="alert" className="m-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-          {loading ? <div className="grid gap-2 p-3"><div className="h-12 animate-pulse rounded-xl bg-zinc-100" /><div className="h-12 animate-pulse rounded-xl bg-zinc-100" /></div> : (
-            <ul className="space-y-1">
-              {listing?.directories.map((directory) => (
-                <li key={directory.path}>
-                  <button type="button" onClick={() => void load(directory.path)} className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
-                    <span className="text-amber-500" aria-hidden="true">▰</span>
-                    <span className="min-w-0 flex-1 truncate">{directory.name}</span>
-                    <span className="text-xs text-zinc-400">打开 ›</span>
-                  </button>
-                </li>
-              ))}
-              {!loading && listing && listing.directories.length === 0 && <li className="px-4 py-10 text-center text-sm text-zinc-400">这个文件夹中没有子文件夹</li>}
-            </ul>
-          )}
-        </div>
-        <div className="flex items-center justify-between gap-4 border-t border-zinc-200 px-6 py-4">
-          <p className="hidden text-xs text-zinc-500 sm:block">不会上传或读取文件内容</p>
-          <div className="ml-auto flex gap-3">
-            <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm font-medium hover:bg-zinc-50">取消</button>
-            <button type="button" disabled={!listing?.current_path} onClick={() => listing?.current_path && onSelect(listing.current_path)} className="min-h-11 rounded-xl bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40">选择当前文件夹</button>
-          </div>
-        </div>
-      </div>
-    </dialog>
-  );
-}
 
 export default function GeneralSettingsView({ section, onUpdated }: { section: GeneralSettingsSection; onUpdated?: (settings: AppSettings) => void }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -114,8 +38,6 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [clearApiKey, setClearApiKey] = useState(false);
-  const [workspace, setWorkspace] = useState("");
-  const [folderOpen, setFolderOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -139,7 +61,6 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
       } else {
         setModel({ name: "DeepSeek V4 Flash", provider: "openai-compatible", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", timeout_seconds: 60, context_window_tokens: 12_096, max_output_tokens: 4_096 });
       }
-      setWorkspace(value.workspace.coding_workspace_dir);
     }).catch((err) => setError(err instanceof Error ? err.message : "设置加载失败"));
     return () => { cancelled = true; };
   }, []);
@@ -334,15 +255,6 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                 <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" disabled={busy !== "" || modelBudgetInvalid} onClick={() => void run("test", async () => setNotice(`${(await testModelSettings(modelPayload())).message}；本次只测试，不会保存修改`))} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50 disabled:opacity-50">{busy === "test" ? "测试中…" : "仅测试（不保存）"}</button><button type="button" disabled={busy !== "" || !model.name.trim() || modelBudgetInvalid} onClick={saveModel} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "model" ? "保存中…" : selectedModelId ? "保存修改" : "保存配置"}</button></div>
               </section>
             </div>
-          </div>
-        )}
-
-        {section === "workspace" && (
-          <div>
-            <p className="text-sm font-medium text-zinc-500">基础设置</p><h1 className="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">工作区</h1><p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-600">选择 Developer Tools 可以查看和修改的唯一项目文件夹。更换后立即生效，不需要重启。</p>
-            <section className="mt-9 rounded-3xl bg-zinc-100 p-5 ring-1 ring-zinc-200 sm:p-7"><label className="grid gap-2 text-sm font-medium">编码工作区<div className="flex flex-col gap-3 sm:flex-row"><input value={workspace} onChange={(e) => setWorkspace(e.target.value)} className={`${inputClass} font-mono`} placeholder="E:\\Projects\\my-project" /><button type="button" onClick={() => setFolderOpen(true)} className="min-h-11 shrink-0 rounded-xl border border-zinc-300 bg-white px-5 text-sm font-medium hover:bg-zinc-50">浏览文件夹…</button></div><span className="text-xs font-normal leading-5 text-zinc-500">只有开启 Developer Tools 插件后，Agent 才能使用此目录中的编码工具。</span></label><div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900"><strong>权限边界：</strong>敏感文件、依赖目录、符号链接和工作区外路径仍会被拒绝；切换目录不会自动开启编码插件。</div></section>
-            <div className="mt-6 flex justify-end"><button type="button" disabled={busy === "workspace"} onClick={() => void run("workspace", async () => { const saved = await updateWorkspaceSettings(workspace); setWorkspace(saved.coding_workspace_dir); finish({ ...settings, workspace: saved }, "编码工作区已保存并立即生效"); })} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "workspace" ? "保存中…" : "保存工作区"}</button></div>
-            <FolderDialog open={folderOpen} initialPath={workspace} onClose={() => setFolderOpen(false)} onSelect={(path) => { setWorkspace(path); setFolderOpen(false); }} />
           </div>
         )}
 

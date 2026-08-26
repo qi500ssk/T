@@ -31,6 +31,7 @@ from core.execution.memory_tools import (
     bind_memory_tool_context,
     reset_memory_tool_context,
 )
+from core.execution.workspace import bind_coding_workspace, reset_coding_workspace
 from core.automation.planner import (
     PROMPT_ROOT,
     apply_replan,
@@ -64,6 +65,7 @@ from infrastructure.database import (
     Message,
     Plan,
     PlanStep,
+    Project,
     SessionLocal,
     ToolRun,
 )
@@ -327,6 +329,15 @@ async def run_chat(
     memory_tool_token = bind_memory_tool_context(
         user_id, conversation_id, embedding_provider
     )
+    with SessionLocal() as session:
+        conversation = session.get(Conversation, conversation_id)
+        project = (
+            session.get(Project, conversation.project_id)
+            if conversation and conversation.project_id
+            else None
+        )
+        run_workspace = project.workspace_dir if project else None
+    coding_workspace_token = bind_coding_workspace(run_workspace)
     try:
         async with asyncio.timeout(settings.agent_timeout_seconds):
             character = await anyio.to_thread.run_sync(load_character, settings.character_file)
@@ -967,6 +978,7 @@ async def run_chat(
         yield AgentEvent("run.failed", {"run_id": run_id, "error": str(exc)})
         return
     finally:
+        reset_coding_workspace(coding_workspace_token)
         reset_memory_tool_context(memory_tool_token)
         reset_active_skills(skill_token)
 

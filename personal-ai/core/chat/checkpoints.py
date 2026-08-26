@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from infrastructure.config import settings
+from core.execution.workspace import current_coding_workspace
 from infrastructure.database import (
     AgentRun,
     Checkpoint,
@@ -46,7 +46,15 @@ def _git_head(root: Path) -> str | None:
 
 def capture_workspace_snapshot(relevant_files: list[str] | None = None) -> dict:
     """只保存路径和哈希，不读取到数据库中的文件正文。"""
-    root = Path(settings.coding_workspace_dir).resolve()
+    root = current_coding_workspace()
+    if root is None:
+        return {
+            "files": [],
+            "git_head": None,
+            "worktree_status": None,
+            "artifact_refs": [],
+            "diff_refs": [],
+        }
     files: list[dict] = []
     for raw in list(dict.fromkeys(relevant_files or []))[:MAX_SNAPSHOT_FILES]:
         candidate = (root / raw).resolve()

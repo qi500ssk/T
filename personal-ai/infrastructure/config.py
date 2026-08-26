@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     )
 
     # ---- API ----
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
     api_port: int = 8787
     cors_origins: str = (
         "http://localhost:4321,http://127.0.0.1:4321,"
