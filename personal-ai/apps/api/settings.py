@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import string
 import uuid
 from pathlib import Path
@@ -10,11 +11,13 @@ from types import SimpleNamespace
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from core.automation.activity import activity_worker
 from core.chat.gateway import build_provider
+from core.chat.images import InvalidChatImageError, inspect_image
 from infrastructure.config import settings
 from infrastructure.database import AgentRun, SessionLocal
 
@@ -73,6 +76,47 @@ def _store(request: Request):
     return store
 
 
+_AVATAR_MEDIA_TYPES = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+
+def _avatar_root() -> Path:
+    root = Path(settings.agent_avatar_storage_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _validate_agent_id(agent_id: str) -> None:
+    allowed = string.ascii_letters + string.digits + "-_"
+    if not agent_id or any(character not in allowed for character in agent_id):
+        raise HTTPException(404, "角色不存在")
+
+
+def _avatar_path(agent_id: str) -> Path | None:
+    _validate_agent_id(agent_id)
+    root = _avatar_root()
+    for extension in _AVATAR_MEDIA_TYPES:
+        candidate = root / f"{agent_id}{extension}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _avatar_url(agent_id: str) -> str | None:
+    path = _avatar_path(agent_id)
+    if path is None:
+        return None
+    return f"/api/settings/agents/{agent_id}/avatar?v={path.stat().st_mtime_ns}"
+
+
+def _delete_avatar(agent_id: str, *, keep: Path | None = None) -> None:
+    _validate_agent_id(agent_id)
+    root = _avatar_root()
+    for extension in _AVATAR_MEDIA_TYPES:
+        candidate = root / f"{agent_id}{extension}"
+        if keep is None or candidate != keep:
+            candidate.unlink(missing_ok=True)
+
+
 def _serialize(request: Request) -> dict:
     snapshot = _store(request).snapshot()
     locked = bool(getattr(request.app.state, "environment_model_locked", False))
@@ -105,10 +149,12 @@ def _serialize(request: Request) -> dict:
     public_agents = [
         {
             **item,
+            "avatar_url": _avatar_url(item["id"]),
             "is_active": item["id"] == agents["active_agent_id"],
         }
         for item in agents["items"]
     ]
+    active_agent_id = agents["active_agent_id"]
     return {
         "model": {
             "provider": model["llm_provider"],
@@ -136,7 +182,7 @@ def _serialize(request: Request) -> dict:
                 Path(snapshot["workspace"]["coding_workspace_dir"]).expanduser().resolve()
             )
         },
-        "agent": snapshot["agent"],
+        "agent": {**snapshot["agent"], "avatar_url": _avatar_url(active_agent_id)},
         "agents": {
             "active_agent_id": agents["active_agent_id"],
             "items": public_agents,
@@ -364,7 +410,50 @@ def delete_agent_profile(agent_id: str, request: Request):
         raise HTTPException(409, "请先使用另一个角色，再删除此预设")
     agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
     _store(request).update("agents", agents)
+    _delete_avatar(agent_id)
     return {"ok": True}
+
+
+@router.post("/agents/{agent_id}/avatar")
+async def upload_agent_avatar(agent_id: str, request: Request, file: UploadFile = File(...)):
+    _find_agent_profile(request, agent_id)
+    data = await file.read(settings.chat_image_max_bytes + 1)
+    if len(data) > settings.chat_image_max_bytes:
+        raise HTTPException(413, f"图片大小超过限制：{settings.chat_image_max_bytes} 字节")
+    if not data:
+        raise HTTPException(415, "图片内容为空")
+    original_filename = Path(file.filename or "avatar").name
+    try:
+        _, extension, _, _ = inspect_image(data, original_filename)
+    except InvalidChatImageError as exc:
+        raise HTTPException(415, str(exc)) from exc
+
+    root = _avatar_root()
+    target = root / f"{agent_id}{extension}"
+    temporary = root / f".{agent_id}-{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    _delete_avatar(agent_id, keep=target)
+    return next(
+        item for item in _serialize(request)["agents"]["items"] if item["id"] == agent_id
+    )
+
+
+@router.get("/agents/{agent_id}/avatar")
+def get_agent_avatar(agent_id: str, request: Request):
+    _find_agent_profile(request, agent_id)
+    path = _avatar_path(agent_id)
+    if path is None:
+        raise HTTPException(404, "角色头像不存在")
+    return FileResponse(
+        path,
+        media_type=_AVATAR_MEDIA_TYPES[path.suffix.lower()],
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.patch("/workspace")

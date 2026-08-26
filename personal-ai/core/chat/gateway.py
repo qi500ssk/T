@@ -24,6 +24,20 @@ class StreamChunk:
     tool_calls_delta: list[dict] | None = None
 
 
+# 只登记网关当前实际会发送的可选生成参数；新增参数时再显式扩展。
+MODEL_PARAMETER_CAPABILITIES: dict[str, dict[str, bool]] = {
+    "kimi-k3": {"temperature": False},
+}
+
+
+def _supports_parameter(model: str, parameter: str) -> bool:
+    normalized = model.strip().lower()
+    for model_family, capabilities in MODEL_PARAMETER_CAPABILITIES.items():
+        if normalized == model_family or normalized.startswith(f"{model_family}-"):
+            return capabilities.get(parameter, True)
+    return True
+
+
 class OpenAICompatibleProvider:
     """OpenAI 兼容 chat/completions 流式调用。"""
 
@@ -56,10 +70,11 @@ class OpenAICompatibleProvider:
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "temperature": temperature,
             "max_tokens": self.max_output_tokens,
             "stream_options": {"include_usage": True},
         }
+        if _supports_parameter(self.model, "temperature"):
+            payload["temperature"] = temperature
         if tools:
             payload["tools"] = tools
         async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
@@ -92,9 +107,10 @@ class OpenAICompatibleProvider:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "temperature": temperature,
             "max_tokens": self.max_output_tokens,
         }
+        if _supports_parameter(self.model, "temperature"):
+            payload["temperature"] = temperature
         response = await self._client.post("/chat/completions", json=payload)
         if response.status_code != 200:
             body = response.text[:300]

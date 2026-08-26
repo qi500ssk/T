@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import Avatar, { DEFAULT_USER_AVATAR, agentAvatarUrl } from "@/components/Avatar";
 import {
   chatImageContentUrl,
   cancelChatRun,
@@ -19,6 +20,7 @@ import {
   uploadFile,
   uploadChatImage,
   type AppSettings,
+  type AgentSettings,
   type AgentRunHistory,
   type AgentRunState,
   type ChatMessage,
@@ -781,6 +783,7 @@ function MessageBubble({
   status = "completed",
   citations = [],
   images = [],
+  agent,
 }: {
   role: string;
   content: string;
@@ -788,16 +791,22 @@ function MessageBubble({
   status?: ChatMessage["status"];
   citations?: CitationSource[];
   images?: ChatImage[];
+  agent?: AgentSettings;
 }) {
   const isUser = role === "user";
   const usedCitations = citations.filter((source) =>
     content.toLowerCase().includes(`[${source.citation_id.toLowerCase()}]`),
   );
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex items-start gap-3 ${isUser ? "flex-row-reverse justify-start" : "justify-start"}`}>
+      <Avatar
+        src={isUser ? DEFAULT_USER_AVATAR : agentAvatarUrl(agent)}
+        alt={isUser ? "用户头像" : `${agent?.name || "AI"}的头像`}
+        className="mt-0.5 size-10 rounded-xl ring-1 ring-zinc-200"
+      />
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
-          isUser ? "bg-blue-600 text-white" : "border bg-white"
+        className={`max-w-[calc(100%-3.25rem)] rounded-2xl px-4 py-2.5 sm:max-w-[80%] ${
+          isUser ? "bg-blue-600 text-white" : "border border-zinc-300 bg-white"
         }`}
       >
         {images.length > 0 && <div className={`mb-2 grid gap-2 ${images.length > 1 ? "grid-cols-2" : "grid-cols-1"}`} aria-label="消息图片">
@@ -888,8 +897,10 @@ export default function ChatView({
   const [traceOpen, setTraceOpen] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const locallyCreatedConversationRef = useRef<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const messageScrollRef = useRef<HTMLDivElement>(null);
   const activeConversationRef = useRef(conversationId);
+  const messagesConversationRef = useRef(conversationId);
+  const initialRunHistoryConversationRef = useRef<string | null>(null);
   const lastPositionedConversationRef = useRef<string | null>(null);
 
   const applyLiveSession = useCallback((session: LiveRunSession | null) => {
@@ -932,6 +943,8 @@ export default function ChatView({
     let cancelled = false;
     const resetConversationState = () => {
       if (cancelled) return;
+      messagesConversationRef.current = null;
+      initialRunHistoryConversationRef.current = null;
       setMessages([]);
       setStreaming("");
       setStreamingSources([]);
@@ -964,6 +977,7 @@ export default function ChatView({
     fetchMessages(conversationId)
       .then((rows) => {
         if (!cancelled) {
+          messagesConversationRef.current = conversationId;
           setMessages(rows);
           setConversationTokens(rows.reduce((total, row) => total + Number(row.token_estimate || 0), 0));
         }
@@ -1014,7 +1028,10 @@ export default function ChatView({
       .catch(() => { if (!cancelled) setCacheHitRate(null); });
     fetchConversationRunHistory(conversationId)
       .then((rows) => {
-        if (!cancelled) setRunHistory(Object.fromEntries(rows.map((run) => [run.id, run])));
+        if (!cancelled) {
+          initialRunHistoryConversationRef.current = conversationId;
+          setRunHistory(Object.fromEntries(rows.map((run) => [run.id, run])));
+        }
       })
       .catch(() => { if (!cancelled) setRunHistory({}); });
     return () => {
@@ -1040,11 +1057,22 @@ export default function ChatView({
   useLayoutEffect(() => {
     const activeConversationId = activeConversationRef.current;
     const hasVisibleContent = messages.length > 0 || streaming !== "" || toolActivities.length > 0 || approvals.length > 0;
-    if (!activeConversationId || !hasVisibleContent) return;
+    if (!activeConversationId || messagesConversationRef.current !== activeConversationId || !hasVisibleContent) return;
     const isInitialPosition = lastPositionedConversationRef.current !== activeConversationId;
-    bottomRef.current?.scrollIntoView({ behavior: isInitialPosition ? "auto" : "smooth", block: "end" });
     lastPositionedConversationRef.current = activeConversationId;
+    if (isInitialPosition) {
+      messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "auto" });
+      return;
+    }
+    messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming, toolActivities, approvals]);
+
+  useLayoutEffect(() => {
+    const activeConversationId = activeConversationRef.current;
+    if (!activeConversationId || initialRunHistoryConversationRef.current !== activeConversationId) return;
+    initialRunHistoryConversationRef.current = null;
+    messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "auto" });
+  }, [runHistory]);
 
   const updateToolActivity = useCallback(
     (ownerConversationId: string, key: string, tool: string, status: ToolStatus, result = "") => {
@@ -1115,6 +1143,7 @@ export default function ChatView({
         try {
           convId = await onAutoCreate();
           locallyCreatedConversationRef.current = convId;
+          messagesConversationRef.current = convId;
           onStarted(convId);
         } catch (e) {
           setError(String(e));
@@ -1515,13 +1544,13 @@ export default function ChatView({
           </section>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-          <div className="mx-auto w-full max-w-4xl space-y-5">
-            {visibleMessages.map((message) => <div key={message.id} className="contents">
+        <div ref={messageScrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+          <div className="mx-auto w-full max-w-4xl space-y-8">
+            {visibleMessages.map((message) => <div key={message.id} className="space-y-3">
               {message.role === "assistant" && message.run_id && runHistory[message.run_id] && (
                 <HistoricalRunTrace run={runHistory[message.run_id]} />
               )}
-              <MessageBubble role={message.role} content={message.content} status={message.status} citations={message.citations} images={message.images} />
+              <MessageBubble role={message.role} content={message.content} status={message.status} citations={message.citations} images={message.images} agent={appSettings?.agent} />
             </div>)}
             <RunTracePanel
               items={runTrace}
@@ -1538,10 +1567,10 @@ export default function ChatView({
             />
             <ToolActivityList items={toolActivities} />
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
-            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} status={completedRunMessage.status} citations={completedRunMessage.citations} images={completedRunMessage.images} />}
-            {(streaming !== "" || (loading && conversationId)) && <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== ""} />}
+            {completedRunMessage && <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} status={completedRunMessage.status} citations={completedRunMessage.citations} images={completedRunMessage.images} agent={appSettings?.agent} />}
+            {(streaming !== "" || (loading && conversationId)) && <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== ""} agent={appSettings?.agent} />}
             {error && <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>}
-            <div ref={bottomRef} />
+            <div />
           </div>
         </div>
       )}

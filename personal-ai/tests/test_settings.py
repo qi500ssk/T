@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,6 +7,11 @@ from core.chat.character import apply_agent_profile, load_character, render_syst
 from core.settings.runtime import RuntimeSettingsStore
 from infrastructure.config import Settings, settings
 from apps.api.main import app
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_settings_defaults_hide_api_key(client):
@@ -34,7 +40,7 @@ def test_agent_settings_persist_and_render_prompt(client):
     }
     response = client.patch("/api/settings/agent", json=body)
     assert response.status_code == 200
-    assert response.json() == body
+    assert response.json() == {**body, "avatar_url": None}
     assert client.get("/api/settings").json()["agent"]["name"] == "小派"
 
     character = apply_agent_profile(load_character(settings.character_file), body)
@@ -119,6 +125,56 @@ def test_agent_profiles_can_be_named_selected_updated_and_deleted(client):
     ).status_code == 200
     assert client.delete(f"/api/settings/agents/{created_id}").status_code == 200
     assert len(client.get("/api/settings").json()["agents"]["items"]) == 1
+
+
+def test_agent_avatar_upload_validation_and_profile_cleanup(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "agent_avatar_storage_dir", str(tmp_path / "agent-avatars"))
+    initial = client.get("/api/settings").json()
+    original_id = initial["agents"]["active_agent_id"]
+    assert initial["agent"]["avatar_url"] is None
+
+    uploaded = client.post(
+        f"/api/settings/agents/{original_id}/avatar",
+        files={"file": ("avatar.png", PNG_1X1, "image/png")},
+    )
+    assert uploaded.status_code == 200
+    avatar_url = uploaded.json()["avatar_url"]
+    assert avatar_url.startswith(f"/api/settings/agents/{original_id}/avatar?v=")
+    image = client.get(avatar_url)
+    assert image.status_code == 200
+    assert image.content == PNG_1X1
+    assert image.headers["content-type"].startswith("image/png")
+    assert image.headers["cache-control"] == "no-store"
+
+    rejected = client.post(
+        f"/api/settings/agents/{original_id}/avatar",
+        files={"file": ("avatar.png", b"not an image", "image/png")},
+    )
+    assert rejected.status_code == 415
+
+    body = {
+        "profile_name": "临时角色",
+        "name": "临时助手",
+        "role": "测试头像清理",
+        "language": "zh-CN",
+        "tone": "自然",
+        "verbosity": "适中",
+        "humor": "少量",
+        "formality": "轻松",
+        "proactivity": "低",
+        "custom_instructions": "",
+    }
+    created = client.post("/api/settings/agents", json=body)
+    assert created.status_code == 200
+    created_id = created.json()["id"]
+    assert client.post(
+        f"/api/settings/agents/{created_id}/avatar",
+        files={"file": ("avatar.png", PNG_1X1, "image/png")},
+    ).status_code == 200
+    stored_path = tmp_path / "agent-avatars" / f"{created_id}.png"
+    assert stored_path.is_file()
+    assert client.delete(f"/api/settings/agents/{created_id}").status_code == 200
+    assert not stored_path.exists()
 
 
 def test_workspace_picker_and_runtime_update(client, tmp_path):

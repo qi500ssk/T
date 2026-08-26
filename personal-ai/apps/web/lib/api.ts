@@ -326,6 +326,7 @@ export interface AgentSettings {
   formality: string;
   proactivity: string;
   custom_instructions: string;
+  avatar_url?: string | null;
 }
 
 export interface AgentProfile extends AgentSettings {
@@ -334,9 +335,9 @@ export interface AgentProfile extends AgentSettings {
   is_active: boolean;
 }
 
-export interface AgentProfileInput extends AgentSettings {
+export type AgentProfileInput = Omit<AgentSettings, "avatar_url"> & {
   profile_name: string;
-}
+};
 
 export interface ModelSettings {
   provider: "unconfigured" | "mock" | "openai-compatible";
@@ -762,6 +763,15 @@ export const deleteAgentProfile = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/settings/agents/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+
+export const uploadAgentAvatar = (id: string, file: File) => {
+  const body = new FormData();
+  body.append("file", file);
+  return req<AgentProfile>(`${API_URL}/settings/agents/${encodeURIComponent(id)}/avatar`, {
+    method: "POST",
+    body,
+  });
+};
 
 export const updateModelSettings = (body: ModelSettingsInput) =>
   req<ModelSettings>(`${API_URL}/settings/model`, {

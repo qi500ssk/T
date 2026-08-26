@@ -1,5 +1,6 @@
 "use client";
 
+import Avatar, { agentAvatarUrl } from "@/components/Avatar";
 import { projectFolderName, type AgentSettings, type Conversation, type Project } from "@/lib/api";
 
 export type WorkspaceView = "chat" | "memories" | "knowledge" | "activities";
@@ -51,7 +52,7 @@ export default function Sidebar(props: SidebarProps) {
   </ul>;
 
   return <aside className="flex max-h-72 min-w-0 w-full shrink-0 flex-col overflow-hidden border-b border-zinc-200 bg-zinc-50 md:max-h-none md:w-72 md:border-b-0 md:border-r">
-    <div className="flex h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-5"><div className="grid size-8 place-items-center rounded-xl bg-zinc-950 text-sm font-bold text-white">{agent?.name.slice(0, 1).toUpperCase() || "P"}</div><div><p className="text-sm font-semibold text-zinc-950">Personal AI</p><p className="max-w-40 truncate text-xs text-zinc-500">{agent?.name || "默认助手"}</p></div></div>
+    <div className="flex h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-5"><Avatar src={agentAvatarUrl(agent)} alt={`${agent?.name || "AI"}的头像`} className="size-9 rounded-xl ring-1 ring-zinc-200" /><div><p className="text-sm font-semibold text-zinc-950">Personal AI</p><p className="max-w-40 truncate text-xs text-zinc-500">{agent?.name || "默认助手"}</p></div></div>
     <nav className="grid shrink-0 grid-cols-4 gap-1 p-3 md:grid-cols-1" aria-label="工作区导航">{navigation.map((item) => <button key={item.id} type="button" onClick={() => { if (item.id === "chat") { onViewChange("chat"); onCreate(); } else { onViewChange(item.id); } }} className={`flex min-h-10 items-center justify-center gap-3 rounded-xl px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 md:justify-start ${view === item.id ? "bg-white font-medium text-zinc-950 shadow-sm ring-1 ring-zinc-200" : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950"}`}><span className="text-base text-zinc-500" aria-hidden="true">{item.icon}</span>{item.label}</button>)}</nav>
     <button type="button" onClick={onOpenSettings} className="mx-3 mb-3 min-h-10 rounded-xl border border-zinc-200 bg-white text-sm font-medium text-zinc-700 md:hidden">⚙ 设置与技能</button>
     <div className="hidden min-h-0 flex-1 flex-col md:flex">

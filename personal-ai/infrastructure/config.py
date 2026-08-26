@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     chat_image_max_pixels: int = Field(default=16_777_216, ge=65_536, le=100_000_000)
     chat_image_recent_turns: int = Field(default=2, ge=0, le=10)
 
+    # ---- Agent Avatars ----
+    agent_avatar_storage_dir: str = "./data/agent-avatars"
+
     # ---- Embedding ----
     embedding_provider: str = "local"  # local | openai-compatible | mock
     embedding_model_path: str = (

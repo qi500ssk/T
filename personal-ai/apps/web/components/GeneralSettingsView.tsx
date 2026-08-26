@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+
+import Avatar, { agentAvatarUrl } from "@/components/Avatar";
 
 import {
   createAgentProfile,
@@ -13,6 +15,7 @@ import {
   testModelSettings,
   updateAgentProfile,
   updateModelProfile,
+  uploadAgentAvatar,
   type AgentSettings,
   type AgentProfile,
   type AgentProfileInput,
@@ -41,6 +44,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +90,18 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
 
   if (!settings || !agent || !model) return <main className="min-w-0 flex-1 overflow-y-auto bg-white"><div className="mx-auto max-w-5xl p-8 lg:p-14"><div className="h-10 w-48 animate-pulse rounded-xl bg-zinc-100" /><div className="mt-8 h-72 animate-pulse rounded-3xl bg-zinc-100" />{error && <p className="mt-4 text-sm text-red-700">{error}</p>}</div></main>;
 
-  const agentPayload = (): AgentProfileInput => ({ ...agent, profile_name: agentProfileName.trim() });
+  const agentPayload = (): AgentProfileInput => ({
+    profile_name: agentProfileName.trim(),
+    name: agent.name,
+    role: agent.role,
+    language: agent.language,
+    tone: agent.tone,
+    verbosity: agent.verbosity,
+    humor: agent.humor,
+    formality: agent.formality,
+    proactivity: agent.proactivity,
+    custom_instructions: agent.custom_instructions,
+  });
   const selectAgentProfile = (profile: AgentProfile) => {
     setSelectedAgentId(profile.id);
     setAgentProfileName(profile.profile_name);
@@ -100,6 +115,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
       formality: profile.formality,
       proactivity: profile.proactivity,
       custom_instructions: profile.custom_instructions,
+      avatar_url: profile.avatar_url,
     });
     setNotice(""); setError("");
   };
@@ -122,8 +138,17 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   const newAgentProfile = () => {
     setSelectedAgentId(null);
     setAgentProfileName("");
-    setAgent({ ...settings.agent, name: "Assistant", role: "Personal AI Assistant", custom_instructions: "" });
+    setAgent({ ...settings.agent, name: "Assistant", role: "Personal AI Assistant", custom_instructions: "", avatar_url: null });
     setNotice(""); setError("");
+  };
+  const changeAgentAvatar = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !selectedAgentId) return;
+    void run("agent-avatar", async () => {
+      await uploadAgentAvatar(selectedAgentId, file);
+      await refreshAgentSettings("角色头像已更新", selectedAgentId);
+    });
   };
 
   const modelPayload = (): ModelSettingsInput => ({ model_id: selectedModelId || undefined, provider: model.provider, base_url: model.base_url, model: model.model, timeout_seconds: model.timeout_seconds, context_window_tokens: model.context_window_tokens, max_output_tokens: model.max_output_tokens, api_key: apiKey || undefined, clear_api_key: clearApiKey });
@@ -179,9 +204,10 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                 <div className="mt-2 space-y-2">
                   {settings.agents.items.map((profile) => (
                     <div key={profile.id} className={`rounded-2xl border p-2 ${profile.id === selectedAgentId ? "border-zinc-900 bg-zinc-50" : "border-zinc-200"}`}>
-                      <button type="button" onClick={() => selectAgentProfile(profile)} className="w-full rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
-                        <span className="flex items-center gap-2"><strong className="min-w-0 flex-1 truncate text-sm">{profile.profile_name}</strong>{profile.is_active && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">使用中</span>}</span>
-                        <span className="mt-1 block truncate text-xs text-zinc-500">{profile.custom_instructions.trim() ? "完全自定义提示词" : `${profile.name} · 基础设定`}</span>
+                      <button type="button" onClick={() => selectAgentProfile(profile)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
+                        <Avatar src={agentAvatarUrl(profile)} alt={`${profile.name}的头像`} className="size-10 rounded-xl ring-1 ring-zinc-200" />
+                        <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><strong className="min-w-0 flex-1 truncate text-sm">{profile.profile_name}</strong>{profile.is_active && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">使用中</span>}</span>
+                        <span className="mt-1 block truncate text-xs text-zinc-500">{profile.custom_instructions.trim() ? "完全自定义提示词" : `${profile.name} · 基础设定`}</span></span>
                       </button>
                       <div className="flex gap-1 px-1 pb-1">
                         {!profile.is_active && <button type="button" disabled={busy !== ""} onClick={() => void run("agent-select", async () => { await setActiveAgentProfile(profile.id); await refreshAgentSettings(`已切换为“${profile.profile_name}”`, profile.id); })} className="min-h-9 rounded-lg px-2 text-xs font-medium text-zinc-600 hover:bg-white disabled:opacity-40">使用此角色</button>}
@@ -194,7 +220,11 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
 
               <section className="rounded-3xl bg-zinc-100 p-5 ring-1 ring-zinc-200 sm:p-7" aria-label={selectedAgentId ? "编辑角色预设" : "新建角色预设"}>
                 <div className="flex items-center gap-4 rounded-2xl bg-white p-4">
-                  <div className="grid size-12 place-items-center rounded-2xl bg-zinc-950 text-lg font-bold text-white">{agent.name.slice(0, 1).toUpperCase()}</div>
+                  <button type="button" disabled={!selectedAgentId || busy !== ""} onClick={() => avatarInputRef.current?.click()} className="group relative size-14 shrink-0 overflow-hidden rounded-2xl ring-1 ring-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed" aria-label={selectedAgentId ? "选择新的角色头像" : "请先保存角色，再选择头像"} title={selectedAgentId ? "点击更换头像" : "保存角色后可更换头像"}>
+                    <Avatar src={agentAvatarUrl(agent)} alt={`${agent.name}的头像`} className="size-full transition group-hover:brightness-75" />
+                    {selectedAgentId && <span className="absolute inset-x-0 bottom-0 bg-black/65 py-1 text-[10px] font-medium text-white opacity-0 transition group-hover:opacity-100">更换</span>}
+                  </button>
+                  <input ref={avatarInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={changeAgentAvatar} className="hidden" />
                   <div className="min-w-0"><h2 className="truncate font-semibold">{agentProfileName || "未命名角色"}</h2><p className="truncate text-sm text-zinc-500">{agent.name} · {agent.role}</p></div>
                   <span className={`ml-auto hidden rounded-full px-3 py-1 text-xs font-medium sm:block ${customPromptActive ? "bg-violet-100 text-violet-700" : "bg-blue-100 text-blue-700"}`}>{customPromptActive ? "完全自定义" : "基础设定"}</span>
                 </div>

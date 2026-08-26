@@ -1,5 +1,6 @@
 "use client";
 
+import Avatar, { agentAvatarUrl } from "@/components/Avatar";
 import type { WorkspaceView } from "@/components/Sidebar";
 import type { AgentSettings } from "@/lib/api";
 
@@ -18,7 +19,7 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
   return (
     <aside className="flex max-h-72 w-full shrink-0 flex-col overflow-y-auto border-b border-zinc-200 bg-zinc-100 md:max-h-none md:w-80 md:border-b-0 md:border-r">
       <div className="flex h-16 shrink-0 items-center gap-3 px-5">
-        <div className="grid size-8 place-items-center rounded-xl bg-zinc-950 text-sm font-bold text-white">P</div>
+        <Avatar src={agentAvatarUrl(agent)} alt={`${agent?.name || "AI"}的头像`} className="size-9 rounded-xl ring-1 ring-zinc-200" />
         <span className="text-sm font-semibold text-zinc-950">Personal AI</span>
       </div>
       <button
@@ -85,7 +86,7 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
 
       <div className="mt-auto hidden border-t border-zinc-200 p-4 md:block">
         <div className="flex items-center gap-3 rounded-2xl bg-white p-3">
-          <div className="grid size-9 place-items-center rounded-full bg-blue-600 text-sm font-semibold text-white">{agent?.name.slice(0, 1).toUpperCase() || "AI"}</div>
+          <Avatar src={agentAvatarUrl(agent)} alt={`${agent?.name || "AI"}的头像`} className="size-10 rounded-full ring-1 ring-zinc-200" />
           <div>
             <p className="text-sm font-medium text-zinc-950">{agent?.name || "默认助手"}</p>
             <p className="max-w-48 truncate text-xs text-zinc-500">{agent?.role || "当前配置"}</p>

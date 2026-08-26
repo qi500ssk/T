@@ -102,6 +102,7 @@ async def lifespan(app: FastAPI):
     Path(settings.artifacts_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.coding_workspace_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.chat_image_storage_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.agent_avatar_storage_dir).mkdir(parents=True, exist_ok=True)
     app.state.provider = build_provider(settings)
     app.state.embedding_provider = build_embedding_provider(settings)
     app.state.mcp_manager = McpManager(
