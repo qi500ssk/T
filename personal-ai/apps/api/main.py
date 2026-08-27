@@ -11,6 +11,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from apps.api.chat import router as chat_router
@@ -21,7 +22,7 @@ from apps.api.skills import refresh_skill_runtime, router as skills_router
 from apps.api.mcp_servers import router as mcp_servers_router
 from apps.api.plugins import router as plugins_router
 from apps.api.artifacts import router as artifacts_router
-from apps.api.settings import router as settings_router
+from apps.api.settings import agent_avatar_url, router as settings_router
 from apps.api.projects import router as projects_router
 from apps.api.images import image_dict, router as images_router
 from core.chat.images import resolve_image
@@ -58,6 +59,7 @@ from infrastructure.database import (
     Plan,
     PlanStep,
     Project,
+    ProjectAgentAccess,
     SessionLocal,
     ToolRun,
     init_db,
@@ -65,6 +67,58 @@ from infrastructure.database import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _backfill_conversation_agents(runtime_snapshot: dict) -> None:
+    """把迁移前会话一次性绑定到当时的默认角色，之后不再跟随全局切换。"""
+    agents = runtime_snapshot["agents"]
+    valid_ids = {item["id"] for item in agents["items"]}
+    fallback_id = agents["active_agent_id"]
+    with SessionLocal() as session:
+        rows = session.query(Conversation).all()
+        changed = False
+        for row in rows:
+            if row.agent_id not in valid_ids:
+                row.agent_id = fallback_id
+                changed = True
+        if changed:
+            session.commit()
+
+
+def _backfill_project_agents(runtime_snapshot: dict) -> None:
+    """把迁移占位授权修正为当前存在的角色，避免旧项目成为无主项目。"""
+    agents = runtime_snapshot["agents"]
+    valid_ids = {item["id"] for item in agents["items"]}
+    fallback_id = agents["active_agent_id"]
+    with SessionLocal() as session:
+        rows = session.query(ProjectAgentAccess).all()
+        changed = False
+        for row in rows:
+            if row.agent_id in valid_ids:
+                continue
+            replacement = session.get(
+                ProjectAgentAccess,
+                {"project_id": row.project_id, "agent_id": fallback_id},
+            )
+            if replacement is None:
+                session.add(
+                    ProjectAgentAccess(
+                        project_id=row.project_id,
+                        agent_id=fallback_id,
+                    )
+                )
+            session.delete(row)
+            changed = True
+        if changed:
+            session.commit()
+
+
+def _resolve_agent_for_activity(agent_id: str | None) -> dict:
+    from core.settings.runtime import resolve_agent_profile
+
+    return resolve_agent_profile(
+        app.state.runtime_settings_store.snapshot(), agent_id
+    )
 
 
 @asynccontextmanager
@@ -79,6 +133,8 @@ async def lifespan(app: FastAPI):
         load_character(settings.character_file),
     )
     runtime_snapshot = app.state.runtime_settings_store.snapshot()
+    _backfill_conversation_agents(runtime_snapshot)
+    _backfill_project_agents(runtime_snapshot)
     app.state.environment_model_locked = settings.environment_model_configured
     app.state.environment_model_error = settings.environment_model_error
     if app.state.environment_model_locked:
@@ -137,6 +193,7 @@ async def lifespan(app: FastAPI):
                 app.state.skills,
                 app.state.agent_profile,
                 app.state.mcp_manager,
+                _resolve_agent_for_activity,
             ),
             name="activity-worker",
         )
@@ -194,11 +251,31 @@ def get_tools():
     return registered_tools()
 
 
-def _conv_dict(c: Conversation) -> dict:
+def _agent_summary(request: Request, agent_id: str) -> dict:
+    agents = request.app.state.runtime_settings_store.snapshot()["agents"]
+    profile = next((item for item in agents["items"] if item["id"] == agent_id), None)
+    if profile is None:
+        profile = next(
+            (item for item in agents["items"] if item["id"] == agents["active_agent_id"]),
+            agents["items"][0],
+        )
+    return {
+        "id": profile["id"],
+        "profile_name": profile["profile_name"],
+        "name": profile["name"],
+        "role": profile["role"],
+        "avatar_url": agent_avatar_url(profile["id"]),
+    }
+
+
+def _conv_dict(c: Conversation, request: Request) -> dict:
     return {
         "id": c.id,
         "title": c.title,
         "project_id": c.project_id,
+        "agent_id": c.agent_id,
+        "conversation_kind": c.conversation_kind,
+        "agent": _agent_summary(request, c.agent_id),
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),
         "summary": c.summary,
@@ -250,6 +327,8 @@ def _memory_dict(m: Memory) -> dict:
 class ConversationCreate(BaseModel):
     title: str = "新对话"
     project_id: str | None = None
+    agent_id: str | None = Field(default=None, max_length=100)
+    conversation_kind: Literal["friend", "normal", "project"] = "normal"
 
 
 class ConversationRename(BaseModel):
@@ -257,32 +336,50 @@ class ConversationRename(BaseModel):
 
 
 @app.get("/api/conversations")
-def list_conversations():
+def list_conversations(request: Request):
     with SessionLocal() as session:
         rows = session.query(Conversation).order_by(Conversation.updated_at.desc()).all()
-        return [_conv_dict(c) for c in rows]
+        return [_conv_dict(c, request) for c in rows]
 
 
 @app.post("/api/conversations")
-def create_conversation(body: ConversationCreate):
+def create_conversation(body: ConversationCreate, request: Request):
+    snapshot = request.app.state.runtime_settings_store.snapshot()
+    requested_agent_id = body.agent_id or snapshot["agents"]["active_agent_id"]
+    if not any(item["id"] == requested_agent_id for item in snapshot["agents"]["items"]):
+        raise HTTPException(404, "角色不存在")
+    if body.conversation_kind == "friend" and not body.agent_id:
+        raise HTTPException(422, "好友对话必须指定角色")
+    conversation_kind = "project" if body.project_id else body.conversation_kind
     with SessionLocal() as session:
-        if body.project_id is not None and session.get(Project, body.project_id) is None:
-            raise HTTPException(404, "project not found")
-        conv = Conversation(title=body.title, project_id=body.project_id)
+        if body.project_id is not None:
+            if session.get(Project, body.project_id) is None:
+                raise HTTPException(404, "project not found")
+            if session.get(
+                ProjectAgentAccess,
+                {"project_id": body.project_id, "agent_id": requested_agent_id},
+            ) is None:
+                raise HTTPException(403, "当前 AI 好友无权访问此项目文件夹")
+        conv = Conversation(
+            title=body.title,
+            project_id=body.project_id,
+            agent_id=requested_agent_id,
+            conversation_kind=conversation_kind,
+        )
         session.add(conv)
         session.commit()
-        return _conv_dict(conv)
+        return _conv_dict(conv, request)
 
 
 @app.patch("/api/conversations/{conv_id}")
-def rename_conversation(conv_id: str, body: ConversationRename):
+def rename_conversation(conv_id: str, body: ConversationRename, request: Request):
     with SessionLocal() as session:
         conv = session.get(Conversation, conv_id)
         if conv is None:
             raise HTTPException(404, "conversation not found")
         conv.title = body.title
         session.commit()
-        return _conv_dict(conv)
+        return _conv_dict(conv, request)
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -365,8 +462,8 @@ class MemoryCreate(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
     kind: Literal["episodic", "semantic", "profile"] = "semantic"
     importance: int = Field(default=3, ge=1, le=5)
-    scope_type: Literal["global", "project", "conversation"] = "global"
-    scope_key: str | None = Field(default=None, min_length=1, max_length=64)
+    scope_type: Literal["global", "agent", "project", "conversation"] = "global"
+    scope_key: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class MemoryUpdate(BaseModel):
@@ -374,19 +471,44 @@ class MemoryUpdate(BaseModel):
     kind: Literal["episodic", "semantic", "profile"] | None = None
     importance: int | None = Field(default=None, ge=1, le=5)
     is_active: bool | None = None
-    scope_type: Literal["global", "project", "conversation"] | None = None
-    scope_key: str | None = Field(default=None, min_length=1, max_length=64)
+    scope_type: Literal["global", "agent", "project", "conversation"] | None = None
+    scope_key: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 @app.get("/api/memories")
 def list_memories(
-    scope_type: Literal["global", "project", "conversation"] | None = None,
+    request: Request,
+    scope_type: Literal["global", "agent", "project", "conversation"] | None = None,
     scope_key: str | None = None,
     kind: Literal["episodic", "semantic", "profile"] | None = None,
     status: Literal["active", "superseded", "expired", "all"] = "active",
+    agent_id: str | None = None,
 ):
     with SessionLocal() as session:
         query = session.query(Memory)
+        if agent_id:
+            agents = request.app.state.runtime_settings_store.snapshot()["agents"]
+            if not any(item["id"] == agent_id for item in agents["items"]):
+                raise HTTPException(404, "角色不存在")
+            conversation_ids = session.query(Conversation.id).filter(
+                Conversation.agent_id == agent_id
+            )
+            project_ids = session.query(ProjectAgentAccess.project_id).filter(
+                ProjectAgentAccess.agent_id == agent_id
+            )
+            query = query.filter(
+                or_(
+                    and_(Memory.scope_type == "agent", Memory.scope_key == agent_id),
+                    and_(
+                        Memory.scope_type == "conversation",
+                        Memory.scope_key.in_(conversation_ids),
+                    ),
+                    and_(
+                        Memory.scope_type == "project",
+                        Memory.scope_key.in_(project_ids),
+                    ),
+                )
+            )
         if scope_type:
             query = query.filter(Memory.scope_type == scope_type)
         if scope_key:
@@ -404,10 +526,14 @@ def create_memory(body: MemoryCreate, request: Request):
     content = body.content.strip()
     if contains_sensitive_information(content):
         raise HTTPException(422, "记忆内容包含敏感信息，已拒绝保存")
-    if body.scope_type in {"project", "conversation"} and not body.scope_key:
+    if body.scope_type in {"agent", "project", "conversation"} and not body.scope_key:
         raise HTTPException(422, f"{body.scope_type} 作用域必须提供 scope_key")
     provider = request.app.state.embedding_provider
     with SessionLocal() as session:
+        if body.scope_type == "agent":
+            agents = request.app.state.runtime_settings_store.snapshot()["agents"]
+            if not any(item["id"] == body.scope_key for item in agents["items"]):
+                raise HTTPException(404, "角色不存在")
         if body.scope_type == "project" and session.get(Project, body.scope_key) is None:
             raise HTTPException(404, "project not found")
         if body.scope_type == "conversation" and session.get(Conversation, body.scope_key) is None:
@@ -454,6 +580,12 @@ def update_memory(mem_id: str, body: MemoryUpdate, request: Request):
             next_scope_key = "global"
         elif next_scope_key is None:
             next_scope_key = mem.scope_key if next_scope_type == mem.scope_type else None
+        if next_scope_type == "agent":
+            if not next_scope_key:
+                raise HTTPException(422, "agent 作用域必须提供 scope_key")
+            agents = request.app.state.runtime_settings_store.snapshot()["agents"]
+            if not any(item["id"] == next_scope_key for item in agents["items"]):
+                raise HTTPException(404, "角色不存在")
         if next_scope_type == "project":
             if not next_scope_key:
                 raise HTTPException(422, "project 作用域必须提供 scope_key")

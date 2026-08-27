@@ -60,6 +60,7 @@ def create_activity(
     interval_minutes: int | None = None,
     execution_mode: str = "direct",
     user_id: str = "default",
+    agent_id: str = "default",
 ) -> Activity:
     """在一个事务中创建 Activity 及其专属会话。"""
     title = title.strip()
@@ -83,7 +84,12 @@ def create_activity(
         count = session.query(Activity).filter(Activity.user_id == user_id).count()
         if count >= MAX_ACTIVITIES:
             raise ActivityLimitError("最多只能创建 100 个活动")
-        conversation = Conversation(user_id=user_id, title=f"活动：{title}"[:200])
+        conversation = Conversation(
+            user_id=user_id,
+            title=f"活动：{title}"[:200],
+            agent_id=agent_id,
+            conversation_kind="activity",
+        )
         session.add(conversation)
         session.flush()
         activity = Activity(
@@ -338,6 +344,7 @@ async def activity_worker(
     skills: list[Skill],
     agent_profile: dict | None = None,
     mcp_manager=None,
+    agent_profile_resolver=None,
 ) -> None:
     """串行领取并执行 Activity；单个任务或数据库失败不会终止 Worker。"""
     while not stop_event.is_set():
@@ -354,12 +361,18 @@ async def activity_worker(
             await _wait_for_poll(stop_event)
             continue
         try:
+            effective_agent_profile = agent_profile
+            if agent_profile_resolver is not None:
+                with SessionLocal() as session:
+                    conversation = session.get(Conversation, activity.conversation_id)
+                    agent_id = conversation.agent_id if conversation is not None else None
+                effective_agent_profile = agent_profile_resolver(agent_id)
             await _run_activity(
                 activity,
                 provider,
                 embedding_provider,
                 skills,
-                agent_profile,
+                effective_agent_profile,
                 mcp_manager.clients if mcp_manager is not None else None,
             )
         except asyncio.CancelledError:

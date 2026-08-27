@@ -7,6 +7,9 @@ export interface Conversation {
   id: string;
   title: string;
   project_id: string | null;
+  agent_id: string;
+  conversation_kind: "friend" | "normal" | "project" | "activity";
+  agent: Pick<AgentProfile, "id" | "profile_name" | "name" | "role" | "avatar_url">;
   created_at: string;
   updated_at: string;
 }
@@ -15,6 +18,7 @@ export interface Project {
   id: string;
   name: string;
   workspace_dir: string | null;
+  agent_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -190,6 +194,14 @@ export interface AgentRunState {
   error: string | null;
   has_checkpoint: boolean;
   created_at: string;
+}
+
+export interface RunPostprocessStatus {
+  status: "idle" | "pending" | "running" | "completed" | "failed";
+  memory_count: number;
+  summary_updated: boolean;
+  error: string;
+  updated_at: string | null;
 }
 
 export interface ConversationRunStats {
@@ -406,7 +418,7 @@ export interface Memory {
   importance: number;
   confidence: number;
   is_active: boolean;
-  scope_type: "global" | "project" | "conversation";
+  scope_type: "global" | "agent" | "project" | "conversation";
   scope_key: string;
   status: "active" | "superseded" | "expired";
   supersedes_id: string | null;
@@ -454,21 +466,45 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 export const fetchConversations = () =>
   req<Conversation[]>(`${API_URL}/conversations`);
 
-export const createConversation = (projectId: string | null = null) =>
+export const createConversation = (options: {
+  projectId?: string | null;
+  agentId?: string | null;
+  kind?: "friend" | "normal" | "project";
+} = {}) =>
   req<Conversation>(`${API_URL}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
+    body: JSON.stringify({
+      project_id: options.projectId ?? null,
+      agent_id: options.agentId ?? null,
+      conversation_kind: options.kind ?? "normal",
+    }),
   });
 
 export const fetchProjects = () => req<Project[]>(`${API_URL}/projects`);
 
-export const createProject = (body: { name: string; workspace_dir?: string | null }) =>
+export const createProject = (body: { name: string; workspace_dir?: string | null; agent_id?: string }) =>
   req<Project>(`${API_URL}/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+export const grantProjectAccess = (projectId: string, agentId: string) =>
+  req<Project>(
+    `${API_URL}/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}`,
+    { method: "POST" },
+  );
+
+export const revokeProjectAccess = (
+  projectId: string,
+  agentId: string,
+  deleteConversations = false,
+) =>
+  req<{ ok: boolean; project_deleted: boolean }>(
+    `${API_URL}/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}${deleteConversations ? "?delete_conversations=true" : ""}`,
+    { method: "DELETE" },
+  );
 
 export const deleteProject = (id: string, deleteConversations = false) =>
   req<{ ok: boolean }>(
@@ -521,12 +557,14 @@ export const fetchMemories = (filters?: {
   scope_key?: string;
   kind?: MemoryKind;
   status?: Memory["status"] | "all";
+  agent_id?: string;
 }) => {
   const query = new URLSearchParams();
   if (filters?.scope_type) query.set("scope_type", filters.scope_type);
   if (filters?.scope_key) query.set("scope_key", filters.scope_key);
   if (filters?.kind) query.set("kind", filters.kind);
   if (filters?.status) query.set("status", filters.status);
+  if (filters?.agent_id) query.set("agent_id", filters.agent_id);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return req<Memory[]>(`${API_URL}/memories${suffix}`);
 };
@@ -535,7 +573,7 @@ export const createMemory = (body: {
   content: string;
   kind: MemoryKind;
   importance: number;
-  scope_type: "global" | "project" | "conversation";
+  scope_type: "global" | "agent" | "project" | "conversation";
   scope_key?: string;
 }) =>
   req<Memory>(`${API_URL}/memories`, {
@@ -585,6 +623,7 @@ export const createActivity = (body: {
   interval_minutes: number | null;
   next_run_at: string;
   execution_mode: "direct" | "planned";
+  agent_id?: string | null;
 }) =>
   req<Activity>(`${API_URL}/activities`, {
     method: "POST",
@@ -618,6 +657,9 @@ export const fetchConversationRunStats = (conversationId: string) =>
 
 export const fetchConversationRunHistory = (conversationId: string) =>
   req<AgentRunHistory[]>(`${API_URL}/conversations/${conversationId}/runs/history`);
+
+export const fetchRunPostprocessStatus = (runId: string) =>
+  req<RunPostprocessStatus>(`${API_URL}/runs/${encodeURIComponent(runId)}/postprocess`);
 
 export const fetchCapabilities = () => req<Capability[]>(`${API_URL}/capabilities`);
 

@@ -132,6 +132,26 @@ def default_agent_profile(character: dict) -> dict:
     }
 
 
+def resolve_agent_profile(snapshot: dict, agent_id: str | None = None) -> dict:
+    """按稳定 ID 解析角色；旧数据缺少 ID 时回退到当前默认角色。"""
+    agents = snapshot["agents"]
+    requested_id = str(agent_id or agents["active_agent_id"])
+    selected = next(
+        (item for item in agents["items"] if item["id"] == requested_id),
+        None,
+    )
+    if selected is None:
+        selected = next(
+            (
+                item
+                for item in agents["items"]
+                if item["id"] == agents["active_agent_id"]
+            ),
+            agents["items"][0],
+        )
+    return {field: copy.deepcopy(selected[field]) for field in AGENT_FIELDS}
+
+
 def capture_runtime_config(config) -> dict:
     model_defaults = {
         "llm_context_window_tokens": 12_096,

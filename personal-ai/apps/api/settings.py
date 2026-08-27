@@ -18,8 +18,15 @@ from pydantic import BaseModel, Field
 from core.automation.activity import activity_worker
 from core.chat.gateway import build_provider
 from core.chat.images import InvalidChatImageError, inspect_image
+from core.settings.runtime import resolve_agent_profile
 from infrastructure.config import settings
-from infrastructure.database import AgentRun, SessionLocal
+from infrastructure.database import (
+    AgentRun,
+    Conversation,
+    Memory,
+    ProjectAgentAccess,
+    SessionLocal,
+)
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -106,6 +113,11 @@ def _avatar_url(agent_id: str) -> str | None:
     if path is None:
         return None
     return f"/api/settings/agents/{agent_id}/avatar?v={path.stat().st_mtime_ns}"
+
+
+def agent_avatar_url(agent_id: str) -> str | None:
+    """供其他 API 序列化角色摘要时复用头像地址。"""
+    return _avatar_url(agent_id)
 
 
 def _delete_avatar(agent_id: str, *, keep: Path | None = None) -> None:
@@ -323,6 +335,9 @@ async def _replace_provider(request: Request, provider) -> None:
                 app.state.skills,
                 app.state.agent_profile,
                 app.state.mcp_manager,
+                lambda agent_id: resolve_agent_profile(
+                    app.state.runtime_settings_store.snapshot(), agent_id
+                ),
             ),
             name="activity-worker",
         )
@@ -408,6 +423,21 @@ def delete_agent_profile(agent_id: str, request: Request):
         raise HTTPException(409, "至少保留一个角色预设")
     if agents["active_agent_id"] == agent_id:
         raise HTTPException(409, "请先使用另一个角色，再删除此预设")
+    with SessionLocal() as session:
+        if session.query(Conversation.id).filter(Conversation.agent_id == agent_id).first():
+            raise HTTPException(409, "此角色仍有对话记录，请先删除这些对话")
+        if (
+            session.query(ProjectAgentAccess.project_id)
+            .filter(ProjectAgentAccess.agent_id == agent_id)
+            .first()
+        ):
+            raise HTTPException(409, "此角色仍有项目文件夹权限，请先从这些项目中移除")
+        if (
+            session.query(Memory.id)
+            .filter(Memory.scope_type == "agent", Memory.scope_key == agent_id)
+            .first()
+        ):
+            raise HTTPException(409, "此角色仍有独立记忆，请先删除这些记忆")
     agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
     _store(request).update("agents", agents)
     _delete_avatar(agent_id)

@@ -326,7 +326,8 @@ TOOLS: dict[str, Tool] = {
                 },
                 "scope_type": {
                     "type": "string",
-                    "enum": ["global", "project", "conversation"],
+                    "enum": ["agent", "global", "project", "conversation"],
+                    "description": "agent 为当前好友；global 仅作旧请求兼容，也会归到当前好友",
                 },
                 "importance": {"type": "integer", "minimum": 1, "maximum": 5},
             },
@@ -349,7 +350,8 @@ TOOLS: dict[str, Tool] = {
                 },
                 "scope_type": {
                     "type": "string",
-                    "enum": ["global", "project", "conversation"],
+                    "enum": ["agent", "global", "project", "conversation"],
+                    "description": "agent 为当前好友；global 仅作旧请求兼容，也会归到当前好友",
                 },
                 "importance": {"type": "integer", "minimum": 1, "maximum": 5},
             },

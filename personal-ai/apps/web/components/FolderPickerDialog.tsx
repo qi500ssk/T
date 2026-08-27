@@ -56,7 +56,7 @@ export default function FolderPickerDialog({
         <div className="flex items-start justify-between border-b border-zinc-200 px-5 py-5 sm:px-6">
           <div>
             <h2 id="folder-dialog-title" className="text-xl font-bold">打开文件夹</h2>
-            <p className="mt-1 text-sm text-zinc-500">选择后会出现在文件夹列表中，新对话会绑定到这个目录。</p>
+            <p className="mt-1 text-sm text-zinc-500">选择后会授权给当前 AI 好友；再次选择同一目录可共享给其他好友。</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-zinc-500 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-label="关闭文件夹选择">×</button>
         </div>

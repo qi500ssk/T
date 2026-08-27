@@ -66,6 +66,7 @@ from infrastructure.database import (
     Plan,
     PlanStep,
     Project,
+    ProjectAgentAccess,
     SessionLocal,
     ToolRun,
 )
@@ -117,6 +118,151 @@ def _reason_counts(items: list[dict]) -> dict[str, int]:
     return counts
 
 
+def _set_postprocess_status(
+    run_id: str,
+    status: Literal["pending", "running", "completed", "failed"],
+    *,
+    memory_count: int = 0,
+    summary_updated: bool = False,
+    error: str = "",
+) -> None:
+    """把回答后的轻量任务状态并入 Run 统计，供前端非阻塞轮询。"""
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            return
+        context_stats = dict(run.context_stats or {})
+        context_stats["postprocess"] = {
+            "status": status,
+            "memory_count": max(0, int(memory_count)),
+            "summary_updated": bool(summary_updated),
+            "error": error[:MAX_SUMMARY_CHARS],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        run.context_stats = context_stats
+        session.commit()
+
+
+async def _postprocess_turn(
+    provider,
+    conversation_id: str,
+    message: str,
+    reply: str,
+    *,
+    user_id: str,
+    embedding_provider,
+    memory_operation: bool,
+    activity_id: str | None,
+    run_status: str,
+) -> tuple[int, bool, list[str]]:
+    """提取长期记忆并按阈值增量摘要；失败不影响已经保存的回答。"""
+    memory_count = 0
+    summary_updated = False
+    errors: list[str] = []
+    if (
+        settings.memory_enabled
+        and activity_id is None
+        and run_status == "completed"
+        and not memory_operation
+    ):
+        try:
+            candidates = await extract_memories(provider, message, reply)
+
+            def _save_extracted():
+                with SessionLocal() as session:
+                    conv = session.get(Conversation, conversation_id)
+                    return save_memories(
+                        session,
+                        candidates,
+                        user_id,
+                        conversation_id,
+                        settings.memory_min_importance,
+                        settings.memory_min_confidence,
+                        embedding_provider,
+                        project_id=conv.project_id if conv else None,
+                        agent_id=conv.agent_id if conv else None,
+                    )
+
+            memory_count = await anyio.to_thread.run_sync(_save_extracted)
+        except Exception as exc:
+            logger.exception("记忆提取失败，聊天结果已正常保存")
+            errors.append(f"记忆提取失败：{exc}")
+    if settings.memory_enabled:
+        try:
+            summary_updated = await update_conversation_summary(
+                provider,
+                conversation_id,
+                settings.summary_trigger_messages,
+                settings.summary_keep_recent_messages,
+            )
+        except Exception as exc:
+            logger.exception("会话摘要失败，聊天结果已正常保存")
+            errors.append(f"会话摘要失败：{exc}")
+    return memory_count, summary_updated, errors
+
+
+async def postprocess_completed_run(
+    provider,
+    run_id: str,
+    *,
+    embedding_provider=None,
+) -> dict:
+    """在聊天响应结束后处理记忆与摘要，并把状态持久化到对应 Run。"""
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            return {"status": "failed", "memory_count": 0, "summary_updated": False}
+        user_message = session.get(Message, run.input_message_id) if run.input_message_id else None
+        assistant_message = (
+            session.query(Message)
+            .filter(
+                Message.run_id == run_id,
+                Message.role == "assistant",
+                Message.status == "completed",
+            )
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if run.status != "completed" or user_message is None or assistant_message is None:
+            _set_postprocess_status(run_id, "failed", error="找不到可整理的完整回答")
+            return {"status": "failed", "memory_count": 0, "summary_updated": False}
+        conversation_id = run.conversation_id
+        user_id = run.user_id
+        activity_id = run.activity_id
+        memory_operation = str((run.intent_json or {}).get("intent") or "") == "memory_management"
+        message = user_message.content
+        reply = assistant_message.content
+
+    await anyio.to_thread.run_sync(_set_postprocess_status, run_id, "running")
+    memory_count, summary_updated, errors = await _postprocess_turn(
+        provider,
+        conversation_id,
+        message,
+        reply,
+        user_id=user_id,
+        embedding_provider=embedding_provider,
+        memory_operation=memory_operation,
+        activity_id=activity_id,
+        run_status="completed",
+    )
+    final_status: Literal["completed", "failed"] = "failed" if errors else "completed"
+    await anyio.to_thread.run_sync(
+        lambda: _set_postprocess_status(
+            run_id,
+            final_status,
+            memory_count=memory_count,
+            summary_updated=summary_updated,
+            error="；".join(errors),
+        )
+    )
+    return {
+        "status": final_status,
+        "memory_count": memory_count,
+        "summary_updated": summary_updated,
+        "error": "；".join(errors),
+    }
+
+
 async def run_chat(
     provider,
     conversation_id: str,
@@ -136,6 +282,7 @@ async def run_chat(
     run_id: str | None = None,
     require_plan_approval: bool = False,
     resume: bool = False,
+    defer_postprocessing: bool = False,
 ) -> AsyncIterator[AgentEvent]:
     """执行一次 Agent Run，产出 SSE Agent Event Protocol 事件。"""
     run_id = run_id or uuid.uuid4().hex
@@ -336,7 +483,20 @@ async def run_chat(
             if conversation and conversation.project_id
             else None
         )
-        run_workspace = project.workspace_dir if project else None
+        access = (
+            session.get(
+                ProjectAgentAccess,
+                {
+                    "project_id": conversation.project_id,
+                    "agent_id": conversation.agent_id,
+                },
+            )
+            if conversation and conversation.project_id
+            else None
+        )
+        if conversation and conversation.project_id and access is None:
+            raise PermissionError("当前 AI 好友无权访问此项目文件夹")
+        run_workspace = project.workspace_dir if project and access else None
     coding_workspace_token = bind_coding_workspace(run_workspace)
     try:
         async with asyncio.timeout(settings.agent_timeout_seconds):
@@ -385,7 +545,7 @@ async def run_chat(
                     "这是用户明确发起的记忆治理操作。只能使用 memory_* 工具操作统一 memories 表，"
                     "禁止使用文件、代码、Skill 或 MCP 工具代替长期记忆。\n"
                     "新增时把复合内容拆成独立事实，并为每条事实调用 memory_create；"
-                    "稳定偏好/身份用 global，当前项目事实/约定用 project，临时会话事实用 conversation。\n"
+                    "稳定偏好、身份和好友关系用 agent，当前项目事实/约定用 project，临时会话事实用 conversation；不得创建公共记忆。\n"
                     "修改或忘记时，如果不知道 memory_id，必须先调用 memory_list，再调用对应工具。\n"
                     "只有工具返回成功后才能声称已经记住、修改或忘记；最终回答列出实际发生的变更。"
                     if memory_operation
@@ -985,42 +1145,21 @@ async def run_chat(
     if used_sources:
         yield AgentEvent("rag.retrieved", {"sources": used_sources})
     yield AgentEvent("message.completed", {})
-    if (
-        settings.memory_enabled
-        and activity_id is None
-        and run_status == "completed"
-        and not memory_operation
-    ):
-        try:
-            candidates = await extract_memories(provider, message, reply)
-
-            def _save_extracted():
-                with SessionLocal() as session:
-                    conv = session.get(Conversation, conversation_id)
-                    return save_memories(
-                        session,
-                        candidates,
-                        user_id,
-                        conversation_id,
-                        settings.memory_min_importance,
-                        settings.memory_min_confidence,
-                        embedding_provider,
-                        project_id=conv.project_id if conv else None,
-                    )
-
-            await anyio.to_thread.run_sync(_save_extracted)
-        except Exception:
-            logger.exception("记忆提取失败，聊天结果已正常保存")
-    if settings.memory_enabled:
-        try:
-            await update_conversation_summary(
-                provider,
-                conversation_id,
-                settings.summary_trigger_messages,
-                settings.summary_keep_recent_messages,
-            )
-        except Exception:
-            logger.exception("会话摘要失败，聊天结果已正常保存")
+    if defer_postprocessing and settings.memory_enabled and run_status == "completed":
+        await anyio.to_thread.run_sync(_set_postprocess_status, run_id, "pending")
+        yield AgentEvent("postprocess.started", {"run_id": run_id})
+    else:
+        await _postprocess_turn(
+            provider,
+            conversation_id,
+            message,
+            reply,
+            user_id=user_id,
+            embedding_provider=embedding_provider,
+            memory_operation=memory_operation,
+            activity_id=activity_id,
+            run_status=run_status,
+        )
     if run_status == "failed":
         yield AgentEvent("run.failed", {"run_id": run_id, "error": run_error})
     else:

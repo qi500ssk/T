@@ -9,17 +9,45 @@ import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from core.chat.agent import run_chat, sse_packet
+from core.chat.agent import postprocess_completed_run, run_chat, sse_packet
 from core.chat.checkpoints import interrupt_run
 from core.chat.continuation import is_continuation_request
 from core.chat.gateway import build_provider
 from core.chat.images import model_supports_images
 from core.chat.run_control import cancel_chat_run, register_chat_run, unregister_chat_run
 from infrastructure.config import settings
-from infrastructure.database import AgentRun, ChatImage, Checkpoint, Conversation, Message, SessionLocal
+from infrastructure.database import (
+    AgentRun,
+    ChatImage,
+    Checkpoint,
+    Conversation,
+    Message,
+    ProjectAgentAccess,
+    SessionLocal,
+)
+from core.settings.runtime import resolve_agent_profile
 
 router = APIRouter(prefix="/api")
+
+
+async def _postprocess_and_close_provider(
+    provider,
+    run_id: str,
+    embedding_provider,
+    close_provider: bool,
+) -> None:
+    try:
+        if settings.memory_enabled:
+            await postprocess_completed_run(
+                provider,
+                run_id,
+                embedding_provider=embedding_provider,
+            )
+    finally:
+        if close_provider:
+            await provider.close()
 
 
 class ChatRequest(BaseModel):
@@ -35,6 +63,16 @@ class ChatRequest(BaseModel):
 
 def _valid_run_id(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{32}", value))
+
+
+def _require_project_access(session, conversation: Conversation | None) -> None:
+    if conversation is None or conversation.project_id is None:
+        return
+    if session.get(
+        ProjectAgentAccess,
+        {"project_id": conversation.project_id, "agent_id": conversation.agent_id},
+    ) is None:
+        raise HTTPException(403, "当前 AI 好友无权访问此项目文件夹")
 
 
 @router.post("/chat/{run_id}/cancel")
@@ -76,7 +114,13 @@ async def resume_chat(run_id: str, request: Request):
         if message is None:
             raise HTTPException(409, "找不到原始用户消息")
         conversation_id = run.conversation_id
+        conversation = session.get(Conversation, conversation_id)
+        _require_project_access(session, conversation)
+        agent_id = conversation.agent_id if conversation is not None else None
         original_message = message.content
+    agent_profile = resolve_agent_profile(
+        request.app.state.runtime_settings_store.snapshot(), agent_id
+    )
 
     async def event_stream():
         register_chat_run(run_id, conversation_id)
@@ -88,12 +132,13 @@ async def resume_chat(run_id: str, request: Request):
                 embedding_provider=request.app.state.embedding_provider,
                 skills=request.app.state.skills,
                 execution_mode="planned",
-                agent_profile=request.app.state.agent_profile,
+                agent_profile=agent_profile,
                 mcp_clients=request.app.state.mcp_clients,
                 context_window_tokens=settings.llm_context_window_tokens,
                 max_output_tokens=settings.llm_max_output_tokens,
                 run_id=run_id,
                 resume=True,
+                defer_postprocessing=True,
             ):
                 yield sse_packet(event.type, event.data)
         finally:
@@ -103,6 +148,13 @@ async def resume_chat(run_id: str, request: Request):
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(
+            _postprocess_and_close_provider,
+            request.app.state.provider,
+            run_id,
+            request.app.state.embedding_provider,
+            False,
+        ),
     )
 
 
@@ -113,8 +165,11 @@ async def chat(req: ChatRequest, request: Request):
         raise HTTPException(422, "run_id 格式无效")
     resume_run_id: str | None = None
     with SessionLocal() as session:
-        if session.get(Conversation, req.conversation_id) is None:
+        conversation = session.get(Conversation, req.conversation_id)
+        if conversation is None:
             raise HTTPException(404, "conversation not found")
+        _require_project_access(session, conversation)
+        agent_id = conversation.agent_id
         if (
             session.query(AgentRun)
             .filter(
@@ -146,6 +201,9 @@ async def chat(req: ChatRequest, request: Request):
                 resume_run_id = latest_run.id
     effective_run_id = resume_run_id or run_id
     effective_execution_mode = "planned" if resume_run_id else req.execution_mode
+    agent_profile = resolve_agent_profile(
+        request.app.state.runtime_settings_store.snapshot(), agent_id
+    )
     # 新聊天的规划模式只生成 Markdown 文档，不依赖步骤 Planner。
     # 只有恢复旧的可执行计划才需要 Planner 开关。
     if resume_run_id and not settings.planner_enabled:
@@ -197,7 +255,7 @@ async def chat(req: ChatRequest, request: Request):
                 embedding_provider=request.app.state.embedding_provider,
                 skills=request.app.state.skills,
                 execution_mode=effective_execution_mode,
-                agent_profile=request.app.state.agent_profile,
+                agent_profile=agent_profile,
                 document_ids=req.document_ids,
                 image_ids=req.image_ids,
                 mcp_clients=request.app.state.mcp_clients,
@@ -206,15 +264,21 @@ async def chat(req: ChatRequest, request: Request):
                 run_id=effective_run_id,
                 require_plan_approval=req.require_plan_approval,
                 resume=resume_run_id is not None,
+                defer_postprocessing=True,
             ):
                 yield sse_packet(event.type, event.data)
         finally:
             unregister_chat_run(effective_run_id)
-            if owns_provider:
-                await provider.close()
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(
+            _postprocess_and_close_provider,
+            provider,
+            effective_run_id,
+            request.app.state.embedding_provider,
+            owns_provider,
+        ),
     )

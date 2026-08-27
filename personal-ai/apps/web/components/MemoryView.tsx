@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import SelectMenu from "@/components/SelectMenu";
+
 import {
   createMemory,
   deleteMemory,
@@ -31,6 +33,7 @@ const statusLabels: Record<Memory["status"], string> = {
 
 type KindFilter = "all" | MemoryKind;
 type ScopeFilter = "all" | Memory["scope_type"];
+type OwnerView = "agent" | "shared";
 
 interface EditDraft {
   id: string;
@@ -49,18 +52,26 @@ function errorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-export default function MemoryView() {
+export default function MemoryView({
+  agentId,
+  agentName,
+}: {
+  agentId: string | null;
+  agentName: string;
+}) {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
+  const [ownerView, setOwnerView] = useState<OwnerView>("agent");
   const [includeHistory, setIncludeHistory] = useState(false);
   const [content, setContent] = useState("");
   const [kind, setKind] = useState<MemoryKind>("semantic");
   const [importance, setImportance] = useState(3);
-  const [scopeType, setScopeType] = useState<"global" | "project">("global");
+  const [scopeType, setScopeType] = useState<"global" | "agent" | "project" | "conversation">("agent");
   const [projectId, setProjectId] = useState("");
+  const [conversationId, setConversationId] = useState("");
   const [editing, setEditing] = useState<EditDraft | null>(null);
   const [history, setHistory] = useState<Record<string, Memory[]>>({});
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
@@ -70,14 +81,22 @@ export default function MemoryView() {
   const [notice, setNotice] = useState("");
 
   const refresh = useCallback(async () => {
-    const rows = await fetchMemories({ status: includeHistory ? "all" : "active" });
+    const rows = ownerView === "shared"
+      ? await fetchMemories({ scope_type: "global", status: includeHistory ? "all" : "active" })
+      : agentId
+        ? await fetchMemories({ agent_id: agentId, status: includeHistory ? "all" : "active" })
+        : [];
     setMemories(rows);
-  }, [includeHistory]);
+  }, [agentId, includeHistory, ownerView]);
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetchMemories({ status: includeHistory ? "all" : "active" }),
+      ownerView === "shared"
+        ? fetchMemories({ scope_type: "global", status: includeHistory ? "all" : "active" })
+        : agentId
+          ? fetchMemories({ agent_id: agentId, status: includeHistory ? "all" : "active" })
+          : Promise.resolve([]),
       fetchProjects(),
       fetchConversations(),
     ])
@@ -86,13 +105,49 @@ export default function MemoryView() {
         setMemories(rows);
         setProjects(projectRows);
         setConversations(conversationRows);
-        setProjectId((current) => current || projectRows[0]?.id || "");
+        const allowedProjects = projectRows.filter(
+          (project) => agentId !== null && project.agent_ids.includes(agentId),
+        );
+        setProjectId((current) => (
+          allowedProjects.some((project) => project.id === current)
+            ? current
+            : allowedProjects[0]?.id ?? ""
+        ));
+        const allowedConversations = conversationRows.filter(
+          (conversation) => agentId !== null && conversation.agent_id === agentId,
+        );
+        setConversationId((current) => (
+          allowedConversations.some((conversation) => conversation.id === current)
+            ? current
+            : allowedConversations[0]?.id ?? ""
+        ));
         setError("");
       })
       .catch((reason) => { if (!cancelled) setError(errorMessage(reason)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [includeHistory]);
+  }, [agentId, includeHistory, ownerView]);
+
+  const availableProjects = useMemo(
+    () => projects.filter((project) => agentId !== null && project.agent_ids.includes(agentId)),
+    [agentId, projects],
+  );
+  const availableConversations = useMemo(
+    () => conversations.filter(
+      (conversation) => agentId !== null && conversation.agent_id === agentId,
+    ),
+    [agentId, conversations],
+  );
+
+  function selectOwnerView(value: OwnerView) {
+    setOwnerView(value);
+    setScopeType(value === "shared" ? "global" : "agent");
+    setScopeFilter("all");
+    setEditing(null);
+    setHistoryOpen(null);
+    setNotice("");
+    setError("");
+  }
 
   const projectNames = useMemo(
     () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
@@ -104,10 +159,11 @@ export default function MemoryView() {
   );
 
   const scopeLabel = useCallback((memory: Memory) => {
-    if (memory.scope_type === "global") return "全局记忆";
+    if (memory.scope_type === "global") return "公共记忆";
+    if (memory.scope_type === "agent") return `${agentName}的好友记忆`;
     if (memory.scope_type === "project") return `项目 · ${projectNames[memory.scope_key] ?? "未知项目"}`;
     return `会话 · ${conversationNames[memory.scope_key] ?? memory.scope_key.slice(0, 8)}`;
-  }, [conversationNames, projectNames]);
+  }, [agentName, conversationNames, projectNames]);
 
   const visible = useMemo(
     () => memories.filter((memory) => (
@@ -154,14 +210,26 @@ export default function MemoryView() {
   async function addMemory(event: React.FormEvent) {
     event.preventDefault();
     const value = content.trim();
-    if (!value || busy || (scopeType === "project" && !projectId)) return;
+    if (
+      !value
+      || busy
+      || (scopeType === "agent" && !agentId)
+      || (scopeType === "project" && !projectId)
+      || (scopeType === "conversation" && !conversationId)
+    ) return;
     await runMutation(async () => {
       await createMemory({
         content: value,
         kind,
         importance,
         scope_type: scopeType,
-        scope_key: scopeType === "project" ? projectId : undefined,
+        scope_key: scopeType === "agent"
+          ? agentId ?? undefined
+          : scopeType === "project"
+            ? projectId
+            : scopeType === "conversation"
+              ? conversationId
+              : undefined,
       });
       setContent("");
     });
@@ -207,7 +275,7 @@ export default function MemoryView() {
               <p className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-400">Memory governance</p>
               <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-950">长期记忆</h1>
               <p className="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-500">
-                这里管理统一 memories 表。类型表示“记住什么”，作用域决定“在哪里能想起来”。
+                好友记忆彼此隔离，项目记忆由获准访问项目的好友共享，公共记忆对所有好友生效。
               </p>
             </div>
             <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-right shadow-sm">
@@ -216,13 +284,17 @@ export default function MemoryView() {
             </div>
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-2" aria-label="记忆筛选">
-            <select value={scopeFilter} onChange={(event) => setScopeFilter(event.target.value as ScopeFilter)} className="h-9 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-700 focus:border-zinc-900 focus:outline-none" aria-label="按作用域筛选">
-              <option value="all">全部作用域</option>
-              <option value="global">全局记忆</option>
-              <option value="project">项目记忆</option>
-              <option value="conversation">会话记忆</option>
-            </select>
+          <div className="mt-5 inline-flex max-w-full gap-1 overflow-x-auto rounded-xl border border-zinc-200 bg-zinc-100 p-1" role="tablist" aria-label="记忆归属">
+            <button type="button" role="tab" aria-selected={ownerView === "agent"} onClick={() => selectOwnerView("agent")} className={`min-h-10 shrink-0 rounded-lg px-4 text-sm transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 ${ownerView === "agent" ? "bg-white font-medium text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-800"}`}>
+              {agentName}的记忆
+            </button>
+            <button type="button" role="tab" aria-selected={ownerView === "shared"} onClick={() => selectOwnerView("shared")} className={`min-h-10 shrink-0 rounded-lg px-4 text-sm transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 ${ownerView === "shared" ? "bg-white font-medium text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-800"}`}>
+              公共记忆
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2" aria-label="记忆筛选">
+            <SelectMenu value={scopeFilter} onChange={(value) => setScopeFilter(value as ScopeFilter)} options={ownerView === "shared" ? [{ value: "all", label: "全部作用域" }, { value: "global", label: "公共记忆" }] : [{ value: "all", label: "全部作用域" }, { value: "agent", label: "好友记忆" }, { value: "project", label: "项目共享记忆" }, { value: "conversation", label: "会话记忆" }]} ariaLabel="按作用域筛选" className="h-9 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-700" />
             <label className="flex min-h-9 items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 text-sm text-zinc-600">
               <input type="checkbox" checked={includeHistory} onChange={(event) => setIncludeHistory(event.target.checked)} className="size-4 accent-zinc-900" />
               显示替换与过期历史
@@ -241,29 +313,26 @@ export default function MemoryView() {
         <form onSubmit={addMemory} className="my-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="mb-4">
             <h2 className="text-sm font-semibold text-zinc-900">手动添加</h2>
-            <p className="mt-1 text-xs text-zinc-500">项目约定请选择对应项目；跨项目稳定偏好才使用全局作用域。</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {ownerView === "shared"
+                ? "公共记忆会被所有 AI 好友读取，只适合共同使用的用户资料和约定。"
+                : `默认保存给${agentName}；临时信息可限定到一条会话，需要协作的约定可选择项目。`}
+            </p>
           </div>
           <div className="grid gap-3 lg:grid-cols-[minmax(16rem,1fr)_12rem_10rem_8rem]">
-            <input value={content} onChange={(event) => setContent(event.target.value)} maxLength={2000} placeholder="例如：派蒙项目使用 Milvus 作为向量数据库" className="h-11 min-w-0 rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-100" aria-label="记忆内容" />
-            <select value={kind} onChange={(event) => setKind(event.target.value as MemoryKind)} className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" aria-label="记忆类型">
-              {Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-            <select value={scopeType} onChange={(event) => setScopeType(event.target.value as "global" | "project")} className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" aria-label="记忆作用域">
-              <option value="global">全局</option>
-              <option value="project">指定项目</option>
-            </select>
-            <select value={importance} onChange={(event) => setImportance(Number(event.target.value))} className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" aria-label="重要度">
-              {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>重要度 {value}</option>)}
-            </select>
+            <input value={content} onChange={(event) => setContent(event.target.value)} maxLength={2000} placeholder={ownerView === "shared" ? "例如：用户希望所有好友都称呼他为昴大人" : `例如：用户希望${agentName}称呼他为昴大人`} className="h-11 min-w-0 rounded-lg border border-zinc-300 px-3 text-sm outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-100" aria-label="记忆内容" />
+            <SelectMenu value={kind} onChange={(value) => setKind(value as MemoryKind)} options={Object.entries(kindLabels).map(([value, label]) => ({ value, label }))} ariaLabel="记忆类型" className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" />
+            <SelectMenu value={scopeType} onChange={(value) => setScopeType(value as "global" | "agent" | "project" | "conversation")} options={ownerView === "shared" ? [{ value: "global", label: "所有好友共享" }] : [{ value: "agent", label: `仅 ${agentName}` }, { value: "conversation", label: "指定会话" }, { value: "project", label: "指定项目共享" }]} ariaLabel="记忆作用域" className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" />
+            <SelectMenu value={String(importance)} onChange={(value) => setImportance(Number(value))} options={[1, 2, 3, 4, 5].map((value) => ({ value: String(value), label: `重要度 ${value}` }))} ariaLabel="重要度" className="h-11 rounded-lg border border-zinc-300 bg-white px-3 text-sm" />
           </div>
           {scopeType === "project" && (
-            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-3 h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm sm:max-w-sm" aria-label="选择项目">
-              {projects.length === 0 && <option value="">暂无项目</option>}
-              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-            </select>
+            <SelectMenu value={projectId} onChange={setProjectId} options={availableProjects.length === 0 ? [{ value: "", label: "当前好友暂无项目", disabled: true }] : availableProjects.map((project) => ({ value: project.id, label: project.name }))} ariaLabel="选择项目" className="mt-3 h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm sm:max-w-sm" />
+          )}
+          {scopeType === "conversation" && (
+            <SelectMenu value={conversationId} onChange={setConversationId} options={availableConversations.length === 0 ? [{ value: "", label: "当前好友暂无可选会话", disabled: true }] : availableConversations.map((conversation) => ({ value: conversation.id, label: conversation.title }))} ariaLabel="选择会话" className="mt-3 h-11 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm sm:max-w-sm" />
           )}
           <div className="mt-4 flex justify-end">
-            <button disabled={!content.trim() || busy || (scopeType === "project" && !projectId)} className="min-h-10 rounded-lg bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-35">添加到长期记忆</button>
+            <button disabled={!content.trim() || busy || (scopeType === "agent" && !agentId) || (scopeType === "project" && !projectId) || (scopeType === "conversation" && !conversationId)} className="min-h-10 rounded-lg bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-35">添加到长期记忆</button>
           </div>
         </form>
 
@@ -309,16 +378,13 @@ export default function MemoryView() {
                           <form onSubmit={saveEdit} className="mt-4 space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
                             <textarea autoFocus value={draft.content} onChange={(event) => setEditing({ ...draft, content: event.target.value })} rows={3} className="w-full resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-zinc-900" aria-label="修改记忆内容" />
                             <div className="grid gap-2 sm:grid-cols-3">
-                              <select value={draft.kind} onChange={(event) => setEditing({ ...draft, kind: event.target.value as MemoryKind })} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" aria-label="修改记忆类型">{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-                              <select value={draft.scopeType} onChange={(event) => { const value = event.target.value as Memory["scope_type"]; setEditing({ ...draft, scopeType: value, scopeKey: value === "global" ? "global" : value === "project" ? (projects[0]?.id ?? "") : memory.scope_key }); }} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" aria-label="修改记忆作用域">
-                                <option value="global">全局记忆</option>
-                                <option value="project">项目记忆</option>
-                                {memory.scope_type === "conversation" && <option value="conversation">当前来源会话</option>}
-                              </select>
-                              <select value={draft.importance} onChange={(event) => setEditing({ ...draft, importance: Number(event.target.value) })} className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" aria-label="修改重要度">{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>重要度 {value}</option>)}</select>
+                              <SelectMenu value={draft.kind} onChange={(value) => setEditing({ ...draft, kind: value as MemoryKind })} options={Object.entries(kindLabels).map(([value, label]) => ({ value, label }))} ariaLabel="修改记忆类型" className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" />
+                              <SelectMenu value={draft.scopeType} onChange={(nextValue) => { const value = nextValue as Memory["scope_type"]; setEditing({ ...draft, scopeType: value, scopeKey: value === "global" ? "global" : value === "agent" ? (agentId ?? "") : value === "project" ? (availableProjects[0]?.id ?? "") : value === "conversation" ? (availableConversations[0]?.id ?? "") : memory.scope_key }); }} options={ownerView === "shared" ? [{ value: "global", label: "公共记忆" }] : [{ value: "agent", label: `仅 ${agentName}` }, { value: "conversation", label: "指定会话" }, { value: "project", label: "项目共享记忆" }]} ariaLabel="修改记忆作用域" className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" />
+                              <SelectMenu value={String(draft.importance)} onChange={(value) => setEditing({ ...draft, importance: Number(value) })} options={[1, 2, 3, 4, 5].map((value) => ({ value: String(value), label: `重要度 ${value}` }))} ariaLabel="修改重要度" className="h-10 rounded-lg border border-zinc-300 bg-white px-2 text-sm" />
                             </div>
-                            {draft.scopeType === "project" && <select value={draft.scopeKey} onChange={(event) => setEditing({ ...draft, scopeKey: event.target.value })} className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-2 text-sm sm:max-w-sm" aria-label="修改所属项目">{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
-                            <div className="flex justify-end gap-2"><button type="button" onClick={() => setEditing(null)} className="min-h-9 rounded-lg border border-zinc-300 px-3 text-sm">取消</button><button disabled={busy || !draft.content.trim() || (draft.scopeType === "project" && !draft.scopeKey)} className="min-h-9 rounded-lg bg-zinc-950 px-4 text-sm text-white disabled:opacity-35">保存并保留旧版本</button></div>
+                            {draft.scopeType === "project" && <SelectMenu value={draft.scopeKey} onChange={(value) => setEditing({ ...draft, scopeKey: value })} options={availableProjects.map((project) => ({ value: project.id, label: project.name }))} ariaLabel="修改所属项目" className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-2 text-sm sm:max-w-sm" />}
+                            {draft.scopeType === "conversation" && <SelectMenu value={draft.scopeKey} onChange={(value) => setEditing({ ...draft, scopeKey: value })} options={availableConversations.length === 0 ? [{ value: "", label: "当前好友暂无可选会话", disabled: true }] : availableConversations.map((conversation) => ({ value: conversation.id, label: conversation.title }))} ariaLabel="修改所属会话" className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-2 text-sm sm:max-w-sm" />}
+                            <div className="flex justify-end gap-2"><button type="button" onClick={() => setEditing(null)} className="min-h-9 rounded-lg border border-zinc-300 px-3 text-sm">取消</button><button disabled={busy || !draft.content.trim() || (draft.scopeType === "agent" && !draft.scopeKey) || (draft.scopeType === "project" && !draft.scopeKey) || (draft.scopeType === "conversation" && !draft.scopeKey)} className="min-h-9 rounded-lg bg-zinc-950 px-4 text-sm text-white disabled:opacity-35">保存并保留旧版本</button></div>
                           </form>
                         ) : (
                           <p className={`mt-4 break-words text-[15px] leading-7 ${effective ? "text-zinc-800" : "text-zinc-500"}`}>{memory.content}</p>

@@ -1,6 +1,14 @@
 import json
 
-from infrastructure.database import AgentRun, Message, SessionLocal, ToolRun
+from apps.api.main import app
+from core.chat.gateway import MockProvider
+from infrastructure.database import (
+    AgentRun,
+    Message,
+    ProjectAgentAccess,
+    SessionLocal,
+    ToolRun,
+)
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
     """把 SSE 响应文本解析为 [(event, data), ...]。"""
@@ -38,8 +46,74 @@ def test_create_and_list_conversations(client):
     assert r.status_code == 200
     conv = r.json()
     assert conv["title"] == "测试会话"
+    assert conv["conversation_kind"] == "normal"
+    assert conv["agent_id"] == conv["agent"]["id"]
     rows = client.get("/api/conversations").json()
     assert any(c["id"] == conv["id"] for c in rows)
+
+
+def test_friend_conversation_stays_bound_to_its_agent(client):
+    original_id = client.get("/api/settings").json()["agents"]["active_agent_id"]
+    role = client.post(
+        "/api/settings/agents",
+        json={
+            "profile_name": "固定好友",
+            "name": "阿澄",
+            "role": "只属于本对话的好友",
+            "language": "zh-CN",
+            "tone": "自然",
+            "verbosity": "适中",
+            "humor": "少量",
+            "formality": "轻松",
+            "proactivity": "低",
+            "custom_instructions": "BOUND_AGENT_PROMPT_ACHENG",
+        },
+    ).json()
+    conversation = client.post(
+        "/api/conversations",
+        json={"agent_id": role["id"], "conversation_kind": "friend"},
+    )
+    assert conversation.status_code == 200
+    assert conversation.json()["agent"]["name"] == "阿澄"
+    assert client.get("/api/settings").json()["agents"]["active_agent_id"] == original_id
+
+    class CapturingProvider(MockProvider):
+        messages: list[dict] = []
+
+        async def stream(self, messages, temperature=0.7, tools=None):
+            self.messages = messages
+            async for chunk in super().stream(messages, temperature, tools):
+                yield chunk
+
+    previous = app.state.provider
+    provider = CapturingProvider(delay=0)
+    app.state.provider = provider
+    try:
+        response = client.post(
+            "/api/chat",
+            json={"conversation_id": conversation.json()["id"], "message": "你好"},
+        )
+        assert response.status_code == 200
+    finally:
+        app.state.provider = previous
+    system_prompt = "\n".join(
+        str(item["content"]) for item in provider.messages if item["role"] == "system"
+    )
+    assert "BOUND_AGENT_PROMPT_ACHENG" in system_prompt
+
+    assert client.delete(f"/api/settings/agents/{role['id']}").status_code == 409
+    assert client.delete(f"/api/conversations/{conversation.json()['id']}").status_code == 200
+    assert client.delete(f"/api/settings/agents/{role['id']}").status_code == 200
+
+
+def test_friend_conversation_rejects_missing_or_unknown_agent(client):
+    assert client.post(
+        "/api/conversations", json={"conversation_kind": "friend"}
+    ).status_code == 422
+    assert client.post(
+        "/api/conversations",
+        json={"conversation_kind": "friend", "agent_id": "missing"},
+    ).status_code == 404
 
 
 def test_conversation_cache_stats_are_token_weighted_and_persisted(client):
@@ -93,6 +167,8 @@ def test_projects_group_tasks_and_protect_non_empty_project(client, tmp_path):
     )
     assert project.status_code == 200
     project = project.json()
+    default_agent_id = client.get("/api/settings").json()["agents"]["active_agent_id"]
+    assert project["agent_ids"] == [default_agent_id]
 
     conversation = client.post(
         "/api/conversations",
@@ -133,6 +209,100 @@ def test_conversation_rejects_unknown_project(client):
     assert response.status_code == 404
 
 
+def test_project_access_is_shared_and_revoked_per_agent(client, tmp_path):
+    settings_payload = client.get("/api/settings").json()
+    default_agent_id = settings_payload["agents"]["active_agent_id"]
+    second_agent = client.post(
+        "/api/settings/agents",
+        json={
+            "profile_name": "协作好友",
+            "name": "小协",
+            "role": "项目协作者",
+            "language": "zh-CN",
+            "tone": "自然",
+            "verbosity": "适中",
+            "humor": "少量",
+            "formality": "轻松",
+            "proactivity": "低",
+            "custom_instructions": "",
+        },
+    ).json()
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "共享项目",
+            "workspace_dir": str(tmp_path),
+            "agent_id": default_agent_id,
+        },
+    ).json()
+
+    denied = client.post(
+        "/api/conversations",
+        json={"project_id": project["id"], "agent_id": second_agent["id"]},
+    )
+    assert denied.status_code == 403
+
+    granted = client.post(
+        f"/api/projects/{project['id']}/agents/{second_agent['id']}"
+    )
+    assert granted.status_code == 200
+    assert set(granted.json()["agent_ids"]) == {default_agent_id, second_agent["id"]}
+
+    default_conversation = client.post(
+        "/api/conversations",
+        json={"title": "默认好友任务", "project_id": project["id"], "agent_id": default_agent_id},
+    ).json()
+    second_conversation = client.post(
+        "/api/conversations",
+        json={"title": "协作好友任务", "project_id": project["id"], "agent_id": second_agent["id"]},
+    ).json()
+
+    removed = client.delete(
+        f"/api/projects/{project['id']}/agents/{second_agent['id']}",
+        params={"delete_conversations": True},
+    )
+    assert removed.status_code == 200
+    assert removed.json() == {"ok": True, "project_deleted": False}
+    remaining_projects = client.get("/api/projects").json()
+    assert remaining_projects[0]["agent_ids"] == [default_agent_id]
+    remaining_conversation_ids = {
+        item["id"] for item in client.get("/api/conversations").json()
+    }
+    assert default_conversation["id"] in remaining_conversation_ids
+    assert second_conversation["id"] not in remaining_conversation_ids
+    assert client.delete(f"/api/settings/agents/{second_agent['id']}").status_code == 200
+
+    removed_last = client.delete(
+        f"/api/projects/{project['id']}/agents/{default_agent_id}",
+        params={"delete_conversations": True},
+    )
+    assert removed_last.status_code == 200
+    assert removed_last.json() == {"ok": True, "project_deleted": True}
+    assert client.get("/api/projects").json() == []
+
+
+def test_chat_rechecks_project_access_before_running(client, tmp_path):
+    project = client.post(
+        "/api/projects",
+        json={"name": "受限项目", "workspace_dir": str(tmp_path)},
+    ).json()
+    conversation = client.post(
+        "/api/conversations",
+        json={"project_id": project["id"]},
+    ).json()
+    with SessionLocal() as session:
+        session.query(ProjectAgentAccess).filter(
+            ProjectAgentAccess.project_id == project["id"]
+        ).delete(synchronize_session=False)
+        session.commit()
+
+    response = client.post(
+        "/api/chat",
+        json={"conversation_id": conversation["id"], "message": "修改项目"},
+    )
+    assert response.status_code == 403
+
+
 def test_chat_stream_events(client):
     conv = client.post("/api/conversations", json={}).json()
     r = client.post("/api/chat", json={"conversation_id": conv["id"], "message": "你好"})
@@ -147,9 +317,12 @@ def test_chat_stream_events(client):
     assert "model.started" in types
     assert "message.delta" in types
     assert "message.completed" in types
+    assert "postprocess.started" in types
     assert "run.completed" in types
     assert types.index("run.started") < types.index("context.started")
     assert types.index("context.completed") < types.index("model.started")
+    assert types.index("message.completed") < types.index("postprocess.started")
+    assert types.index("postprocess.started") < types.index("run.completed")
     # 事件携带 run_id
     started = dict(events)[
         "run.started"
@@ -187,6 +360,11 @@ def test_chat_stream_events(client):
     assert run["context_stats"]["conversation_token_estimate"] > 0
     assert run["input_tokens"] > 0
     assert run["tools"] == []
+
+    # 主回答完成后，记忆与摘要作为独立后处理执行；TestClient 会等待后台任务结束。
+    postprocess = client.get(f"/api/runs/{started['run_id']}/postprocess")
+    assert postprocess.status_code == 200
+    assert postprocess.json()["status"] == "completed"
 
 
 def test_run_history_includes_tool_records(client):
@@ -298,6 +476,88 @@ def test_project_memory_requires_existing_project(client):
     assert created.json()["scope_key"] == project["id"]
 
 
+def test_manual_conversation_memory_requires_existing_conversation(client):
+    missing = client.post(
+        "/api/memories",
+        json={
+            "content": "只在当前会话中使用",
+            "kind": "semantic",
+            "scope_type": "conversation",
+            "scope_key": "missing-conversation",
+        },
+    )
+    assert missing.status_code == 404
+
+    conversation = client.post(
+        "/api/conversations", json={"title": "会话记忆测试"}
+    ).json()
+    created = client.post(
+        "/api/memories",
+        json={
+            "content": "只在当前会话中使用",
+            "kind": "semantic",
+            "scope_type": "conversation",
+            "scope_key": conversation["id"],
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["scope_type"] == "conversation"
+    assert created.json()["scope_key"] == conversation["id"]
+
+    rows = client.get(
+        "/api/memories", params={"agent_id": conversation["agent_id"]}
+    ).json()
+    assert [row["content"] for row in rows] == ["只在当前会话中使用"]
+
+
+def test_memory_management_filters_friend_and_public_memories(client):
+    default_agent_id = client.get("/api/settings").json()["agents"]["active_agent_id"]
+    second_agent = client.post(
+        "/api/settings/agents",
+        json={
+            "profile_name": "记忆隔离好友",
+            "name": "小忆",
+            "role": "独立记忆测试",
+            "language": "zh-CN",
+            "tone": "自然",
+            "verbosity": "适中",
+            "humor": "少量",
+            "formality": "轻松",
+            "proactivity": "低",
+            "custom_instructions": "",
+        },
+    ).json()
+    for content, scope_type, scope_key in (
+        ("雷姆专属记忆", "agent", default_agent_id),
+        ("小忆专属记忆", "agent", second_agent["id"]),
+        ("所有好友共享的公共记忆", "global", None),
+    ):
+        response = client.post(
+            "/api/memories",
+            json={
+                "content": content,
+                "kind": "semantic",
+                "scope_type": scope_type,
+                **({"scope_key": scope_key} if scope_key else {}),
+            },
+        )
+        assert response.status_code == 200
+
+    default_rows = client.get(
+        "/api/memories", params={"agent_id": default_agent_id}
+    ).json()
+    second_rows = client.get(
+        "/api/memories", params={"agent_id": second_agent["id"]}
+    ).json()
+    public_rows = client.get(
+        "/api/memories", params={"scope_type": "global"}
+    ).json()
+
+    assert [row["content"] for row in default_rows] == ["雷姆专属记忆"]
+    assert [row["content"] for row in second_rows] == ["小忆专属记忆"]
+    assert [row["content"] for row in public_rows] == ["所有好友共享的公共记忆"]
+
+
 def test_sensitive_memory_create_and_update_are_rejected(client):
     rejected = client.post(
         "/api/memories",
@@ -325,7 +585,9 @@ def test_memory_auto_extract_and_deduplicate(client):
     assert client.post("/api/chat", json=body).status_code == 200
     assert client.post("/api/chat", json=body).status_code == 200
 
-    memories = client.get("/api/memories").json()
+    memories = client.get(
+        "/api/memories", params={"agent_id": conv["agent_id"]}
+    ).json()
     assert len(memories) == 1
     assert memories[0]["content"] == "用户喜欢无糖拿铁"
     assert memories[0]["kind"] == "profile"
@@ -422,11 +684,14 @@ def test_explicit_remember_chat_writes_database_not_file(client):
         },
     )
     assert response.status_code == 200
-    memories = client.get("/api/memories").json()
+    memories = client.get(
+        "/api/memories", params={"agent_id": conversation["agent_id"]}
+    ).json()
     assert len(memories) == 1
     assert memories[0]["content"] == "我喜欢无糖拿铁"
     assert memories[0]["kind"] == "profile"
-    assert memories[0]["scope_type"] == "global"
+    assert memories[0]["scope_type"] == "agent"
+    assert memories[0]["scope_key"] == conversation["agent_id"]
 
     with SessionLocal() as session:
         tools = [row.tool for row in session.query(ToolRun).all()]
@@ -446,7 +711,9 @@ def test_explicit_memory_chat_can_correct_and_forget(client):
         )
         assert response.status_code == 200
 
-    active = client.get("/api/memories").json()
+    active = client.get(
+        "/api/memories", params={"agent_id": conversation["agent_id"]}
+    ).json()
     assert len(active) == 1
     assert active[0]["content"] == "我喜欢绿茶"
     history = client.get(f"/api/memories/{active[0]['id']}/history").json()
@@ -457,7 +724,9 @@ def test_explicit_memory_chat_can_correct_and_forget(client):
         json={"conversation_id": conversation["id"], "message": "忘记我喜欢绿茶"},
     )
     assert forgotten.status_code == 200
-    current = client.get("/api/memories").json()
+    current = client.get(
+        "/api/memories", params={"agent_id": conversation["agent_id"]}
+    ).json()
     assert len(current) == 1
     assert current[0]["is_active"] is False
 
@@ -487,9 +756,16 @@ def test_postprocess_failure_does_not_fail_chat(client):
         "/api/chat",
         json={"conversation_id": conv["id"], "message": "正常聊天"},
     )
-    types = [event for event, _ in parse_sse(response.text)]
+    events = parse_sse(response.text)
+    types = [event for event, _ in events]
+    run_id = dict(events)["run.started"]["run_id"]
+    assert "postprocess.started" in types
     assert "run.completed" in types
     assert "run.failed" not in types
+    status = client.get(f"/api/runs/{run_id}/postprocess")
+    assert status.status_code == 200
+    assert status.json()["status"] == "failed"
+    assert status.json()["error"]
 
 
 def test_tools_list(client):

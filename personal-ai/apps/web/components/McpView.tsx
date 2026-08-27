@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import SelectMenu from "@/components/SelectMenu";
+
 import {
   deleteMcpServer,
   fetchMcpServers,
@@ -52,12 +54,14 @@ function ServerDialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [transport, setTransport] = useState(value?.transport ?? "stdio");
+  const [risk, setRisk] = useState<McpServerInput["default_risk_level"]>(value?.default_risk_level ?? "high");
   const [formError, setFormError] = useState("");
 
   useEffect(() => {
     const dialog = ref.current;
     if (value && dialog && !dialog.open) {
       setTransport(value.transport);
+      setRisk(value.default_risk_level);
       setFormError("");
       dialog.showModal();
     }
@@ -112,7 +116,7 @@ function ServerDialog({
           </div>
           <div className="mt-6 grid gap-5 sm:grid-cols-2">
             <label className="grid gap-2 text-sm font-medium">名称<input name="name" required pattern="[A-Za-z0-9_-]+" defaultValue={value.name} readOnly={Boolean(value.name)} className="h-11 rounded-xl border border-zinc-300 px-3 font-normal read-only:bg-zinc-100" /></label>
-            <label className="grid gap-2 text-sm font-medium">传输方式<select value={transport} onChange={(event) => setTransport(event.target.value as McpServerInput["transport"])} className="h-11 rounded-xl border border-zinc-300 bg-white px-3 font-normal"><option value="stdio">本地 stdio</option><option value="streamable_http">Streamable HTTP</option></select></label>
+            <label className="grid gap-2 text-sm font-medium">传输方式<SelectMenu value={transport} onChange={(nextValue) => setTransport(nextValue as McpServerInput["transport"])} options={[{ value: "stdio", label: "本地 stdio" }, { value: "streamable_http", label: "Streamable HTTP" }]} ariaLabel="传输方式" className="h-11 rounded-xl border border-zinc-300 bg-white px-3 font-normal" /></label>
             {transport === "stdio" ? <>
               <label className="grid gap-2 text-sm font-medium sm:col-span-2">启动命令<input name="command" required defaultValue={value.command} placeholder="python" className="h-11 rounded-xl border border-zinc-300 px-3 font-normal" /></label>
               <label className="grid gap-2 text-sm font-medium sm:col-span-2">参数（每行一个）<textarea name="args" defaultValue={value.args.join("\n")} rows={3} placeholder={"-m\nmy_mcp_server"} className="rounded-xl border border-zinc-300 px-3 py-2 font-mono text-sm font-normal" /></label>
@@ -121,7 +125,7 @@ function ServerDialog({
               <label className="grid gap-2 text-sm font-medium sm:col-span-2">Server URL<input name="url" type="url" required defaultValue={value.url} placeholder="https://example.com/mcp" className="h-11 rounded-xl border border-zinc-300 px-3 font-normal" /></label>
               <label className="grid gap-2 text-sm font-medium sm:col-span-2">认证 Headers JSON<textarea name="headers" defaultValue={Object.keys(value.headers).length ? JSON.stringify(value.headers, null, 2) : ""} rows={3} placeholder={'{"Authorization":"Bearer ..."}'} className="rounded-xl border border-zinc-300 px-3 py-2 font-mono text-sm font-normal" /></label>
             </>}
-            <label className="grid gap-2 text-sm font-medium">默认风险等级<select name="risk" defaultValue={value.default_risk_level} className="h-11 rounded-xl border border-zinc-300 bg-white px-3 font-normal"><option value="high">高（推荐）</option><option value="medium">中</option><option value="low">低</option></select></label>
+            <label className="grid gap-2 text-sm font-medium">默认风险等级<SelectMenu name="risk" value={risk} onChange={(nextValue) => setRisk(nextValue as McpServerInput["default_risk_level"])} options={[{ value: "high", label: "高（推荐）" }, { value: "medium", label: "中" }, { value: "low", label: "低" }]} ariaLabel="默认风险等级" className="h-11 rounded-xl border border-zinc-300 bg-white px-3 font-normal" /></label>
             <label className="grid gap-2 text-sm font-medium">允许的工具<input name="allowed_tools" defaultValue={value.allowed_tools.join(", ")} placeholder="留空表示全部" className="h-11 rounded-xl border border-zinc-300 px-3 font-normal" /></label>
           </div>
           <div aria-live="polite" className="mt-4 min-h-6 text-sm text-red-700">{formError}</div>

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from core.automation.activity import (
@@ -33,6 +33,7 @@ class ActivityCreate(BaseModel):
     execution_mode: Literal["direct", "planned"] = "direct"
     interval_minutes: int | None = Field(default=None, ge=1, le=10080)
     next_run_at: datetime
+    agent_id: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def validate_schedule(self):
@@ -101,9 +102,13 @@ def list_activity_rows():
 
 
 @router.post("")
-def create_activity_row(body: ActivityCreate):
+def create_activity_row(body: ActivityCreate, request: Request):
     if body.execution_mode == "planned" and not settings.planner_enabled:
         raise HTTPException(409, "planner is disabled")
+    agents = request.app.state.runtime_settings_store.snapshot()["agents"]
+    agent_id = body.agent_id or agents["active_agent_id"]
+    if not any(item["id"] == agent_id for item in agents["items"]):
+        raise HTTPException(404, "角色不存在")
     try:
         row = create_activity(
             title=body.title,
@@ -112,6 +117,7 @@ def create_activity_row(body: ActivityCreate):
             execution_mode=body.execution_mode,
             interval_minutes=body.interval_minutes,
             next_run_at=body.next_run_at,
+            agent_id=agent_id,
         )
     except (ValueError, ActivityLimitError) as exc:
         raise _http_error(exc) from None

@@ -150,7 +150,7 @@ async def test_extract_memories_parses_scope_conservatively():
             )
 
     candidates = await extract_memories(Provider(), "以后都用中文回答", "好的")
-    assert [candidate.scope_type for candidate in candidates] == ["global", "conversation"]
+    assert [candidate.scope_type for candidate in candidates] == ["agent", "conversation"]
 
 
 def test_same_key_can_exist_in_different_project_scopes():
@@ -183,6 +183,75 @@ def test_same_key_can_exist_in_different_project_scopes():
         contents = [memory.content for memory in recalled]
         assert any("PostgreSQL" in content for content in contents)
         assert not any("SQLite" in content for content in contents)
+
+
+def test_agent_memories_are_isolated_while_public_and_project_memories_are_shared():
+    with SessionLocal() as session:
+        assert save_memories(
+            session,
+            [_candidate("relationship.address", "雷姆称呼用户为昴大人", scope="agent")],
+            "default",
+            "conv-rem",
+            3,
+            0.7,
+            agent_id="rem",
+        ) == 1
+        assert save_memories(
+            session,
+            [_candidate("relationship.address", "波奇称呼用户为前辈", scope="agent")],
+            "default",
+            "conv-bocchi",
+            3,
+            0.7,
+            agent_id="bocchi",
+        ) == 1
+        assert save_memories(
+            session,
+            [_candidate("user.language", "用户希望所有好友使用中文", scope="global")],
+            "default",
+            "conv-rem",
+            3,
+            0.7,
+            agent_id="rem",
+        ) == 1
+        assert save_memories(
+            session,
+            [_candidate("project.database", "共享项目使用 PostgreSQL", scope="project")],
+            "default",
+            "conv-rem",
+            3,
+            0.7,
+            project_id="shared-project",
+            agent_id="rem",
+        ) == 1
+
+        rem_rows = retrieve_memories(
+            session,
+            "default",
+            "称呼 中文 PostgreSQL",
+            10,
+            conversation_id="conv-rem",
+            project_id="shared-project",
+            agent_id="rem",
+        )
+        bocchi_rows = retrieve_memories(
+            session,
+            "default",
+            "称呼 中文 PostgreSQL",
+            10,
+            conversation_id="conv-bocchi",
+            project_id="shared-project",
+            agent_id="bocchi",
+        )
+
+    rem_contents = {row.content for row in rem_rows}
+    bocchi_contents = {row.content for row in bocchi_rows}
+    assert "雷姆称呼用户为昴大人" in rem_contents
+    assert "波奇称呼用户为前辈" not in rem_contents
+    assert "波奇称呼用户为前辈" in bocchi_contents
+    assert "雷姆称呼用户为昴大人" not in bocchi_contents
+    assert "用户希望所有好友使用中文" in rem_contents & bocchi_contents
+    assert "共享项目使用 PostgreSQL" in rem_contents & bocchi_contents
 
 
 def test_new_fact_supersedes_old_with_traceability():

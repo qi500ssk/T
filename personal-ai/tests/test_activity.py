@@ -46,9 +46,12 @@ def _create(**overrides):
 
 
 def test_create_activity_and_state_transitions():
-    row = _create(next_run_at=NOW + timedelta(hours=1))
+    row = _create(next_run_at=NOW + timedelta(hours=1), agent_id="friend-one")
     with SessionLocal() as session:
-        assert session.get(Conversation, row.conversation_id).title == "活动：每日总结"
+        conversation = session.get(Conversation, row.conversation_id)
+        assert conversation.title == "活动：每日总结"
+        assert conversation.agent_id == "friend-one"
+        assert conversation.conversation_kind == "activity"
 
     assert pause_activity(row.id).status == "paused"
     with pytest.raises(ActivityConflictError):

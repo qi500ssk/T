@@ -67,16 +67,18 @@ def _scope_for_context(
     requested: str,
     conversation: Conversation,
 ) -> tuple[str, str]:
-    if requested == "global":
-        return "global", "global"
     if requested == "project" and conversation.project_id:
         return "project", conversation.project_id
-    return "conversation", conversation.id
+    if requested == "conversation":
+        return "conversation", conversation.id
+    # AI 通过工具写入的稳定记忆默认只属于自己，不能创建公共记忆。
+    return "agent", conversation.agent_id
 
 
 def _visible(memory: Memory, conversation: Conversation) -> bool:
     return (
         (memory.scope_type == "global" and memory.scope_key == "global")
+        or (memory.scope_type == "agent" and memory.scope_key == conversation.agent_id)
         or (
             memory.scope_type == "project"
             and conversation.project_id is not None
@@ -119,10 +121,12 @@ def _list_sync(args: dict) -> str:
                 embedding_provider=context.embedding_provider,
                 conversation_id=conversation.id,
                 project_id=conversation.project_id,
+                agent_id=conversation.agent_id,
             )
         else:
             scope = [
                 and_(Memory.scope_type == "global", Memory.scope_key == "global"),
+                and_(Memory.scope_type == "agent", Memory.scope_key == conversation.agent_id),
                 and_(
                     Memory.scope_type == "conversation",
                     Memory.scope_key == conversation.id,
@@ -183,6 +187,7 @@ def _create_sync(args: dict) -> str:
             0.0,
             context.embedding_provider,
             project_id=conversation.project_id,
+            agent_id=conversation.agent_id,
         )
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         memory = (

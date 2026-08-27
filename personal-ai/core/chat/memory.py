@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = Path(__file__).resolve().parents[2] / "prompts" / "memory" / "extract.md"
 _KINDS = {"episodic", "semantic", "profile"}
-_SCOPES = {"global", "project", "conversation"}
+_SCOPES = {"global", "agent", "project", "conversation"}
 EXTRACTION_VERSION = "extract-v2"
 _NEAR_DUPLICATE_DISTANCE = 0.02
 _OPT_OUT_PATTERN = re.compile(
@@ -115,6 +115,9 @@ async def extract_memories(provider, user_input: str, assistant_response: str) -
         except (TypeError, ValueError):
             continue
         scope_type = str(item.get("scope", ""))
+        # 自动提取永远属于当前好友；公共记忆只允许用户在管理页显式创建。
+        if scope_type == "global":
+            scope_type = "agent"
         if scope_type not in _SCOPES:
             scope_type = "conversation"
         key = normalize_memory_key(str(item.get("key", "")), content)
@@ -126,16 +129,24 @@ async def extract_memories(provider, user_input: str, assistant_response: str) -
 
 
 def _resolve_scope(
-    scope_type: str, conversation_id: str, project_id: str | None
+    scope_type: str,
+    conversation_id: str,
+    project_id: str | None,
+    agent_id: str | None,
 ) -> tuple[str, str]:
     """无法判断或 project 缺少上下文时，一律保守降级到 conversation scope。"""
     if scope_type not in _SCOPES:
         scope_type = "conversation"
     if scope_type == "project" and not project_id:
         scope_type = "conversation"
-    scope_key = {"global": "global", "project": project_id or "", "conversation": conversation_id}[
-        scope_type
-    ]
+    if scope_type == "agent" and not agent_id:
+        scope_type = "conversation"
+    scope_key = {
+        "global": "global",
+        "agent": agent_id or "",
+        "project": project_id or "",
+        "conversation": conversation_id,
+    }[scope_type]
     return scope_type, scope_key
 
 
@@ -143,10 +154,15 @@ def _recall_filters(
     user_id: str,
     conversation_id: str | None,
     project_id: str | None,
+    agent_id: str | None,
     now: datetime,
 ) -> list:
     """召回硬过滤：用户、状态、有效期和作用域，向量候选与词法候选共用。"""
     scope_conditions = [and_(Memory.scope_type == "global", Memory.scope_key == "global")]
+    if agent_id:
+        scope_conditions.append(
+            and_(Memory.scope_type == "agent", Memory.scope_key == agent_id)
+        )
     if conversation_id:
         scope_conditions.append(
             and_(Memory.scope_type == "conversation", Memory.scope_key == conversation_id)
@@ -171,6 +187,7 @@ def save_memories(
     min_confidence: float,
     embedding_provider=None,
     project_id: str | None = None,
+    agent_id: str | None = None,
 ) -> int:
     saved = 0
     accepted = [
@@ -192,7 +209,7 @@ def save_memories(
     seen_in_batch: set[tuple[str, str, str]] = set()
     for candidate, embedding in zip(accepted, embeddings, strict=True):
         scope_type, scope_key = _resolve_scope(
-            candidate.scope_type, conversation_id, project_id
+            candidate.scope_type, conversation_id, project_id, agent_id
         )
         # 同一批候选里的重复 key 直接跳过：改名释放槽位依赖已提交状态。
         if (scope_type, scope_key, candidate.key) in seen_in_batch:
@@ -424,10 +441,11 @@ def retrieve_memories(
     min_vector_similarity: float = 0.3,
     conversation_id: str | None = None,
     project_id: str | None = None,
+    agent_id: str | None = None,
 ) -> list[Memory]:
     """向量 + 词法双通道召回：先做作用域与状态硬过滤，再统一排序。"""
     now = datetime.now(timezone.utc)
-    filters = _recall_filters(user_id, conversation_id, project_id, now)
+    filters = _recall_filters(user_id, conversation_id, project_id, agent_id, now)
     stripped = query.strip()
     normalized = normalize_memory_key(stripped, stripped) if stripped else ""
 

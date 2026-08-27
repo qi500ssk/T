@@ -48,9 +48,10 @@ function formatTime(value: string | null): string {
 
 interface ActivityViewProps {
   onOpenConversation: (conversationId: string) => void;
+  agentId?: string | null;
 }
 
-export default function ActivityView({ onOpenConversation }: ActivityViewProps) {
+export default function ActivityView({ onOpenConversation, agentId }: ActivityViewProps) {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -99,6 +100,7 @@ export default function ActivityView({ onOpenConversation }: ActivityViewProps) 
         interval_minutes: scheduleType === "interval" ? Number(intervalMinutes) : null,
         next_run_at: new Date(nextRunAt).toISOString(),
         execution_mode: executionMode,
+        agent_id: agentId,
       });
       setTitle("");
       setPrompt("");

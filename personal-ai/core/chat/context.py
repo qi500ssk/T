@@ -166,6 +166,7 @@ def build_context(
             min_vector_similarity=config.rag_min_vector_similarity,
             conversation_id=conversation_id,
             project_id=project_id,
+            agent_id=conversation.agent_id if conversation else None,
         )
         if memory_limit
         else []

@@ -180,6 +180,23 @@ def run_checkpoints(run_id: str):
         return [checkpoint_dict(row) for row in rows]
 
 
+@router.get("/runs/{run_id}/postprocess")
+def run_postprocess_status(run_id: str):
+    """返回回答后记忆整理状态；该状态不阻塞主回答 Run。"""
+    with SessionLocal() as session:
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        value = dict((run.context_stats or {}).get("postprocess") or {})
+        return {
+            "status": value.get("status", "idle"),
+            "memory_count": int(value.get("memory_count") or 0),
+            "summary_updated": bool(value.get("summary_updated")),
+            "error": str(value.get("error") or ""),
+            "updated_at": value.get("updated_at"),
+        }
+
+
 @router.get("/conversations/{conversation_id}/checkpoints")
 def conversation_checkpoints(conversation_id: str):
     with SessionLocal() as session:

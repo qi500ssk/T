@@ -51,6 +51,18 @@ class Project(Base):
     )
 
 
+class ProjectAgentAccess(Base):
+    """角色对项目文件夹的访问授权；一个项目可同时授权多个角色。"""
+
+    __tablename__ = "project_agent_access"
+
+    project_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    agent_id: Mapped[str] = mapped_column(String(100), primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
@@ -59,6 +71,8 @@ class Conversation(Base):
     project_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    agent_id: Mapped[str] = mapped_column(String(100), default="default", index=True)
+    conversation_kind: Mapped[str] = mapped_column(String(20), default="normal", index=True)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_message_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -286,8 +300,10 @@ class Memory(Base):
     importance: Mapped[int] = mapped_column(Integer, default=3)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    scope_type: Mapped[str] = mapped_column(String(20), default="global")  # global|project|conversation
-    scope_key: Mapped[str] = mapped_column(String(64), default="global")
+    scope_type: Mapped[str] = mapped_column(
+        String(20), default="global"
+    )  # global|agent|project|conversation
+    scope_key: Mapped[str] = mapped_column(String(100), default="global")
     status: Mapped[str] = mapped_column(String(20), default="active")  # active|superseded|expired
     supersedes_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("memories.id", ondelete="SET NULL"), nullable=True, index=True
