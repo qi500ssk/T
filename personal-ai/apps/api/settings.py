@@ -19,6 +19,7 @@ from core.automation.activity import activity_worker
 from core.chat.gateway import build_provider
 from core.chat.images import InvalidChatImageError, inspect_image
 from core.settings.runtime import resolve_agent_profile
+from core.files.workspaces import resolve_workspace, workspace_root
 from infrastructure.config import settings
 from infrastructure.database import (
     AgentRun,
@@ -345,16 +346,10 @@ async def _replace_provider(request: Request, provider) -> None:
 
 
 def _resolve_directory(raw_path: str) -> Path:
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        raise HTTPException(422, "请选择绝对文件夹路径")
     try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise HTTPException(422, f"文件夹不可访问：{exc}") from exc
-    if not resolved.is_dir():
-        raise HTTPException(422, "选择的路径不是文件夹")
-    return resolved
+        return resolve_workspace(raw_path)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("")
@@ -606,18 +601,8 @@ def delete_model_profile(model_id: str, request: Request):
 def list_directories(
     path: str | None = Query(default=None, max_length=1200),
 ):
-    if not path:
-        if Path("C:/").exists():
-            roots = [
-                {"name": f"{letter}:", "path": f"{letter}:\\"}
-                for letter in string.ascii_uppercase
-                if Path(f"{letter}:/").exists()
-            ]
-        else:
-            roots = [{"name": "/", "path": "/"}]
-        return {"current_path": None, "parent_path": None, "directories": roots}
-
-    current = _resolve_directory(path)
+    root = workspace_root()
+    current = _resolve_directory(path or str(root))
     directories: list[dict] = []
     try:
         children = sorted(current.iterdir(), key=lambda item: item.name.casefold())
@@ -625,13 +610,13 @@ def list_directories(
         raise HTTPException(422, f"无法读取文件夹：{exc}") from exc
     for child in children:
         try:
-            if child.is_dir() and not child.is_symlink():
-                directories.append({"name": child.name, "path": str(child.resolve())})
-        except OSError:
+            if child.is_dir():
+                directories.append({"name": child.name, "path": str(resolve_workspace(child))})
+        except (OSError, ValueError):
             continue
         if len(directories) >= 300:
             break
-    parent = None if current.parent == current else str(current.parent)
+    parent = None if current == root else str(current.parent)
     return {
         "current_path": str(current),
         "parent_path": parent,

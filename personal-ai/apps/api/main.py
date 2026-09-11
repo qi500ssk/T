@@ -15,6 +15,9 @@ from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from apps.api.chat import router as chat_router
+from apps.api.auth import AuthenticationMiddleware, router as auth_router
+from core.settings.auth import ensure_setup_token
+from core.files.workspaces import workspace_root
 from apps.api.activities import router as activities_router
 from apps.api.documents import router as documents_router
 from apps.api.plans import router as plans_router
@@ -124,6 +127,8 @@ def _resolve_agent_for_activity(agent_id: str | None) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    ensure_setup_token()
+    workspace_root().mkdir(parents=True, exist_ok=True)
     reject_all_approvals()
     recover_interrupted_runs()
     original_runtime_config = capture_runtime_config(settings)
@@ -214,7 +219,9 @@ async def lifespan(app: FastAPI):
         apply_runtime_config(settings, original_runtime_config)
 
 
-app = FastAPI(title="Personal AI API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Personal AI API", version="0.1.0", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -222,6 +229,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chat_router)
+app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(activities_router)
 app.include_router(plans_router)

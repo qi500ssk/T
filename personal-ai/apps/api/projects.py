@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.chat.images import resolve_image
+from core.files.workspaces import resolve_workspace
 from infrastructure.database import (
     Activity,
     AgentRun,
@@ -39,12 +40,10 @@ class ProjectUpdate(BaseModel):
 def _normalize_workspace(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
-    path = Path(value.strip()).expanduser()
-    if not path.is_absolute():
-        raise HTTPException(422, "workspace_dir 必须是绝对路径")
-    if not path.exists() or not path.is_dir():
-        raise HTTPException(422, "workspace_dir 不存在或不是文件夹")
-    return str(path.resolve())
+    try:
+        return str(resolve_workspace(value.strip()))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _project_dict(project: Project, session) -> dict:
