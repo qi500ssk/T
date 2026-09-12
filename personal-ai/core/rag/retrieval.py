@@ -1,4 +1,4 @@
-"""pgvector 向量 + BM25 + RRF 混合检索。"""
+"""SQLite 向量 + BM25 + RRF 混合检索。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import jieba
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from infrastructure.database import Document, DocumentChunk
 
@@ -98,6 +99,7 @@ def retrieve(
     user_id: str = "default",
     final_limit: int | None = None,
     document_ids: list[str] | None = None,
+    agent_id: str | None = None,
 ) -> list[RetrievalResult]:
     query_builder = (
         session.query(DocumentChunk, Document)
@@ -105,28 +107,37 @@ def retrieve(
         .filter(
             Document.user_id == user_id,
             Document.status == "indexed",
-            Document.embedding_model == embedding_provider.model_name,
-            Document.embedding_dim == embedding_provider.dimension,
         )
     )
+    query_builder = query_builder.filter(or_(Document.agent_id.is_(None), Document.agent_id == agent_id) if agent_id else Document.agent_id.is_(None))
     if document_ids:
         query_builder = query_builder.filter(Document.id.in_(document_ids))
-    query_vector = embedding_provider.embed_query(query)
+    elif agent_id:
+        # 好友背景走确认后的记忆；自动回查整段可能绕过编辑/停用或带入邻近的未确认内容。
+        # 原始资料仍可由用户显式选择附件进行核对。
+        query_builder = query_builder.filter(Document.agent_id.is_(None))
     rows = query_builder.all()
     if not rows:
         return []
 
     index_by_chunk_id = {chunk.id: index for index, (chunk, _) in enumerate(rows)}
     vector_scores = np.full(len(rows), -1.0, dtype=np.float32)
-    distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
-    vector_rows = (
-        query_builder
-        .filter(DocumentChunk.embedding.is_not(None))
-        .add_columns(distance)
-        .order_by(distance.asc())
-        .limit(settings.rag_vector_top_k)
-        .all()
-    )
+    vector_rows = []
+    if embedding_provider is not None and embedding_provider.dimension > 0:
+        try:
+            query_vector = embedding_provider.embed_query(query)
+            distance = DocumentChunk.embedding.cosine_distance(query_vector).label("distance")
+            vector_rows = (
+                query_builder
+                .filter(DocumentChunk.embedding.is_not(None), Document.embedding_model == embedding_provider.model_name,
+                        Document.embedding_dim == embedding_provider.dimension)
+                .add_columns(distance)
+                .order_by(distance.asc())
+                .limit(settings.rag_vector_top_k)
+                .all()
+            )
+        except Exception:
+            logging.getLogger(__name__).warning("语义检索暂不可用，本次使用关键词检索")
     vector_order = []
     for chunk, _document, cosine_distance in vector_rows:
         index = index_by_chunk_id[chunk.id]
@@ -137,6 +148,9 @@ def retrieve(
     query_tokens = tokenize_for_bm25(query)
     if query_tokens and any(corpus):
         bm25_scores = np.asarray(BM25Okapi(corpus).get_scores(query_tokens), dtype=np.float32)
+        # 单文档/小资料库的 BM25 IDF 可能为负；真实词项命中仍需进入候选。
+        overlaps = np.asarray([len(set(query_tokens) & set(terms)) for terms in corpus])
+        bm25_scores = np.maximum(bm25_scores, overlaps * 0.001)
         bm25_order = [
             index
             for index in np.argsort(-bm25_scores)[: settings.rag_bm25_top_k].tolist()
@@ -145,6 +159,8 @@ def retrieve(
     else:
         bm25_scores = np.zeros(len(rows), dtype=np.float32)
         bm25_order = []
+    if document_ids and not bm25_order and not vector_order:
+        bm25_order = list(range(min(len(rows), settings.rag_bm25_top_k)))
 
     vector_rank = {index: rank for rank, index in enumerate(vector_order, start=1)}
     bm25_rank = {index: rank for rank, index in enumerate(bm25_order, start=1)}

@@ -12,6 +12,7 @@ const items: { id: Exclude<WorkspaceView, "chat">; label: string; description: s
   { id: "memories", label: "记忆", description: "管理长期记忆", icon: "◇" },
   { id: "knowledge", label: "知识库", description: "文档与检索", icon: "▣" },
   { id: "activities", label: "活动", description: "定时与后台任务", icon: "◷" },
+  { id: "runs", label: "过程", description: "角色处理步骤明细", icon: "≣" },
 ];
 
 export default function UtilitySidebar({ view, onViewChange, onCollapse }: UtilitySidebarProps) {

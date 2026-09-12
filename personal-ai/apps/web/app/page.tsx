@@ -5,8 +5,10 @@ import { flushSync } from "react-dom";
 
 import ChatView from "@/components/ChatView";
 import ActivityView from "@/components/ActivityView";
-import MemoryView from "@/components/MemoryView";
+import MemoryWorkspace from "@/components/MemoryWorkspace";
+import RetrievalSettingsView from "@/components/RetrievalSettingsView";
 import KnowledgeView from "@/components/KnowledgeView";
+import RunStepsView from "@/components/RunStepsView";
 import SettingsSidebar, { type SettingsView } from "@/components/SettingsSidebar";
 import Sidebar, { type WorkspaceView } from "@/components/Sidebar";
 import UtilitySidebar from "@/components/UtilitySidebar";
@@ -15,6 +17,7 @@ import McpView from "@/components/McpView";
 import PluginView from "@/components/PluginView";
 import GeneralSettingsView from "@/components/GeneralSettingsView";
 import AppearanceSettingsView from "@/components/AppearanceSettingsView";
+import AccountSettingsView from "@/components/AccountSettingsView";
 import FolderPickerDialog from "@/components/FolderPickerDialog";
 import {
   createConversation,
@@ -304,7 +307,7 @@ export default function Home() {
               setAppSettings(value);
               setSelectedAgentId((current) => current ?? value.agents.active_agent_id);
             }} />
-          ) : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />}
+          ) : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "account" ? <AccountSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />}
         </>
       ) : (
         <>
@@ -362,11 +365,13 @@ export default function Home() {
                   onOpenFolder={() => setFolderDialogOpen(true)}
                 />
               ) : view === "memories" ? (
-                <MemoryView key={chatAgentId ?? "none"} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} />
+                <MemoryWorkspace key={chatAgentId ?? "none"} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} />
               ) : view === "knowledge" ? (
                 <KnowledgeView />
               ) : view === "activities" ? (
                 <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} />
+              ) : view === "runs" ? (
+                <RunStepsView agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} conversations={conversations} />
               ) : null}
             </div>
             {rightSidebarOpen ? <UtilitySidebar view={view} onViewChange={setView} onCollapse={() => setRightOpen(false)} /> : null}

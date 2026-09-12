@@ -9,15 +9,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import anyio
 
 from infrastructure.config import settings
 from core.execution.workspace import current_coding_workspace
+from core.files.workspaces import resolve_workspace
 
 
 MAX_READ_BYTES = 256 * 1024
+_WRITE_LOCK = threading.Lock()  # 单进程：覆盖整个读取、校验、替换，避免丢失修改。
 MAX_READ_LINES = 400
 MAX_WRITE_BYTES = 1024 * 1024
 MAX_LIST_ENTRIES = 300
@@ -53,8 +56,10 @@ def _workspace_root() -> Path:
     root = current_coding_workspace()
     if root is None:
         raise CodingToolError("当前对话未选择文件夹，编码工具不可用")
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    try:
+        return resolve_workspace(root)
+    except ValueError as exc:
+        raise CodingToolError(str(exc)) from exc
 
 
 def _is_sensitive_name(name: str) -> bool:
@@ -62,6 +67,10 @@ def _is_sensitive_name(name: str) -> bool:
     if lowered in SENSITIVE_FILENAMES or Path(lowered).suffix in SENSITIVE_SUFFIXES:
         return True
     return lowered.startswith(".env.") and lowered != ".env.example"
+
+
+def _service_files() -> set[Path]:
+    return {Path(settings.runtime_settings_file).resolve(), Path(settings.auth_setup_token_file).resolve()}
 
 
 def _workspace_path(raw_path: str, *, allow_sensitive: bool = False) -> Path:
@@ -83,9 +92,11 @@ def _workspace_path(raw_path: str, *, allow_sensitive: bool = False) -> Path:
         if part == ".":
             continue
         current = current / part
-        if current.exists() and current.is_symlink():
+        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
             raise CodingToolError("不允许访问符号链接")
     resolved = (root / relative).resolve(strict=False)
+    if resolved in _service_files():
+        raise CodingToolError("不允许访问服务的设置或登录凭据文件")
     try:
         resolved.relative_to(root)
     except ValueError as exc:
@@ -101,6 +112,7 @@ def _relative(path: Path) -> str:
 def _iter_files(root: Path):
     stack: list[Path] = [root]
     visited = 0
+    protected = _service_files()
     while stack and visited < MAX_SEARCH_FILES:
         folder = stack.pop()
         try:
@@ -108,7 +120,7 @@ def _iter_files(root: Path):
         except OSError:
             continue
         for child in children:
-            if child.is_symlink():
+            if child.is_symlink() or getattr(child, "is_junction", lambda: False)() or _is_sensitive_name(child.name):
                 continue
             if child.is_dir():
                 if child.name.lower() not in EXCLUDED_DIRECTORIES:
@@ -117,7 +129,7 @@ def _iter_files(root: Path):
             visited += 1
             if visited > MAX_SEARCH_FILES:
                 return
-            if not _is_sensitive_name(child.name):
+            if child.resolve() not in protected:
                 yield child
 
 
@@ -127,6 +139,7 @@ def _list_files_sync(raw_path: str) -> str:
         raise CodingToolError("目录不存在")
     root = _workspace_root()
     rows: list[str] = []
+    protected = _service_files()
     stack: list[tuple[Path, int]] = [(target, 0)]
     while stack and len(rows) < MAX_LIST_ENTRIES:
         folder, depth = stack.pop()
@@ -137,7 +150,9 @@ def _list_files_sync(raw_path: str) -> str:
         for child in children:
             if len(rows) >= MAX_LIST_ENTRIES:
                 break
-            if child.is_symlink() or _is_sensitive_name(child.name):
+            if child.is_symlink() or getattr(child, "is_junction", lambda: False)() or _is_sensitive_name(child.name):
+                continue
+            if child.resolve() in protected:
                 continue
             if child.is_dir():
                 if child.name.lower() in EXCLUDED_DIRECTORIES:
@@ -244,6 +259,11 @@ def _atomic_write(path: Path, content: str) -> int:
 
 
 def _create_file_sync(raw_path: str, content: str) -> str:
+    with _WRITE_LOCK:
+        return _create_file_locked(raw_path, content)
+
+
+def _create_file_locked(raw_path: str, content: str) -> str:
     path = _workspace_path(raw_path)
     if path.exists():
         raise CodingToolError("文件已存在；请使用 code_edit 进行精确修改")
@@ -256,6 +276,11 @@ async def code_create_file(args: dict) -> str:
 
 
 def _edit_file_sync(raw_path: str, old_text: str, new_text: str) -> str:
+    with _WRITE_LOCK:
+        return _edit_file_locked(raw_path, old_text, new_text)
+
+
+def _edit_file_locked(raw_path: str, old_text: str, new_text: str) -> str:
     if not old_text:
         raise CodingToolError("old_text 不能为空")
     path = _workspace_path(raw_path)

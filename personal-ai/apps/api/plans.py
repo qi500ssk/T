@@ -50,6 +50,12 @@ def _load_plan(session, plan: Plan) -> dict:
 
 def _run_history_item(session, run: AgentRun) -> dict:
     message = session.get(Message, run.input_message_id) if run.input_message_id else None
+    conversation = session.get(Conversation, run.conversation_id)
+    assistant_message = (
+        session.query(Message)
+        .filter(Message.run_id == run.id, Message.role == "assistant")
+        .one_or_none()
+    )
     tools = (
         session.query(ToolRun)
         .filter(ToolRun.run_id == run.id)
@@ -59,11 +65,13 @@ def _run_history_item(session, run: AgentRun) -> dict:
     return {
         "id": run.id,
         "conversation_id": run.conversation_id,
+        "conversation_title": conversation.title if conversation else "",
         "execution_mode": run.execution_mode,
         "status": run.status,
         "input_message": message.content if message else "",
         "intent": run.intent_json,
         "context_stats": run.context_stats,
+        "thinking": assistant_message.thinking if assistant_message else None,
         "input_tokens": run.input_tokens,
         "output_tokens": run.output_tokens,
         "error": run.error,
@@ -143,6 +151,21 @@ def conversation_run_history(conversation_id: str, limit: int = 50):
         rows = (
             session.query(AgentRun)
             .filter(AgentRun.conversation_id == conversation_id)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(max(1, min(limit, 100)))
+            .all()
+        )
+        return [_run_history_item(session, run) for run in rows]
+
+
+@router.get("/agents/{agent_id}/runs/history")
+def agent_run_history(agent_id: str, limit: int = 50):
+    """按角色隔离的处理步骤视图：该好友全部会话的 Run，最新在前。"""
+    with SessionLocal() as session:
+        rows = (
+            session.query(AgentRun)
+            .join(Conversation, Conversation.id == AgentRun.conversation_id)
+            .filter(Conversation.agent_id == agent_id)
             .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
             .limit(max(1, min(limit, 100)))
             .all()

@@ -9,6 +9,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncIterator, Literal
 
 import anyio
@@ -74,16 +75,13 @@ from infrastructure.database import (
 
 logger = logging.getLogger(__name__)
 MAX_SUMMARY_CHARS = 500
+SYSTEM_PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts" / "system"
+THINKING_MAX_CHARS = 1200
 
 
 def _mcp_tool_guidance(mcp_clients: list | None) -> str:
     names = {str(client.config.name) for client in (mcp_clients or [])}
     lines: list[str] = []
-    if "desktop-media" in names:
-        lines.append(
-            "- mcp_desktop-media_* 只操作 Windows QQ 音乐；工具结果已经包含最终验证，"
-            "失败时不要猜测用户未提供的歌手。"
-        )
     if "playwright" in names:
         lines.append(
             "- mcp_playwright_* 只操作 Playwright 打开的网页，不得用于等待、验证或控制桌面软件。"
@@ -466,6 +464,8 @@ async def run_chat(
     context = None
     reply = ""
     partial_reply = ""
+    thinking_text = ""
+    thinking_usage: dict = {}
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     used_sources: list[dict] = []
     plan_id: str | None = None
@@ -640,6 +640,25 @@ async def run_chat(
             )
             yield AgentEvent("context.completed", context_stats)
             messages = [{"role": "system", "content": context.system}] + context.messages
+            # 角色思考（内心独白）：每次 Run 只做一次，放在所有生成阶段之前；
+            # 定时活动的后台 Run 没有观看者，跳过以节省调用。
+            thinking_text = ""
+            thinking_usage: dict = {}
+            if activity_id is None:
+                thinking_captured: list[dict] = []
+                async for event in _stream_thinking(
+                    provider,
+                    context.system,
+                    context.messages,
+                    run_id,
+                    conversation_id,
+                    approval_mode,
+                    thinking_captured,
+                ):
+                    yield event
+                thinking_text = str(thinking_captured[0]) if thinking_captured else ""
+                if len(thinking_captured) > 1:
+                    thinking_usage = dict(thinking_captured[1])
             if planning_document_mode:
                 yield AgentEvent(
                     "planning.started", {"run_id": run_id, "phase": "document"}
@@ -1058,6 +1077,11 @@ async def run_chat(
                         )
                     yield AgentEvent("message.delta", {"content": reply})
 
+        # direct / planning_document 分支会整体替换 usage，思考用量在分支
+        # 汇合后并入，保证三种模式的 Run 统计都包含独白这次调用的开销。
+        if thinking_usage:
+            _add_token_usage(usage, thinking_usage)
+
         allowed_citations = {item["citation_id"].lower() for item in context.sources}
         cited = {item.lower() for item in re.findall(r"\[(c\d+)\]", reply, flags=re.IGNORECASE)}
         unknown = cited - allowed_citations
@@ -1067,7 +1091,14 @@ async def run_chat(
             item for item in context.sources if item["citation_id"].lower() in cited
         ]
         cache_stats = await _finish_run(
-            run_id, conversation_id, reply, used_sources, usage, run_status, run_error
+            run_id,
+            conversation_id,
+            reply,
+            used_sources,
+            usage,
+            run_status,
+            run_error,
+            thinking=thinking_text,
         )
     except asyncio.CancelledError:
         cancel_run_approvals(run_id)
@@ -1095,6 +1126,7 @@ async def run_chat(
                     conversation_id,
                     partial_reply,
                     visible_sources,
+                    thinking=thinking_text,
                 )
         elif execution_mode == "planned" and not planning_document_mode:
             await anyio.to_thread.run_sync(
@@ -1262,6 +1294,58 @@ def _save_run_context_stats(run_id: str, context_stats: dict) -> None:
             session.commit()
 
 
+async def _stream_thinking(
+    provider,
+    system: str,
+    messages: list[dict],
+    run_id: str,
+    conversation_id: str,
+    approval_mode: Literal["interactive", "deny"],
+    captured: list[dict],
+) -> AsyncIterator[AgentEvent]:
+    """回答前的角色内心独白：delta 转为 thinking 事件，不与正式回答混淆。
+
+    captured[0] 收集独白全文，captured[1] 收集本次调用的 token 用量。
+    """
+    thinking_messages = [
+        {
+            "role": "system",
+            "content": system
+            + "\n\n"
+            + (SYSTEM_PROMPT_ROOT / "thinking.md").read_text(encoding="utf-8"),
+        },
+        *messages,
+    ]
+    yield AgentEvent("thinking.started", {"run_id": run_id})
+    text = ""
+    async for event in execute_model_loop(
+        provider,
+        thinking_messages,
+        None,
+        set(),
+        run_id,
+        conversation_id,
+        approval_mode=approval_mode,
+        max_turns=1,
+        tool_budget=ToolCallBudget(0),
+    ):
+        if event.type == "executor.completed":
+            captured.append(dict(event.data.get("usage") or {}))
+            continue
+        if event.type == "message.delta":
+            chunk = str(event.data.get("content") or "")
+            if not chunk:
+                continue
+            text += chunk
+            if len(text) <= THINKING_MAX_CHARS:
+                yield AgentEvent("thinking.delta", {"run_id": run_id, "content": chunk})
+            continue
+        yield AgentEvent(event.type, event.data)
+    full_text = text.strip()[:THINKING_MAX_CHARS]
+    captured.insert(0, full_text)
+    yield AgentEvent("thinking.completed", {"run_id": run_id, "content": full_text})
+
+
 async def _finish_run(
     run_id: str,
     conversation_id: str,
@@ -1270,6 +1354,7 @@ async def _finish_run(
     usage: dict,
     status: str = "completed",
     error: str = "",
+    thinking: str = "",
 ) -> dict:
     def _finish() -> dict:
         with SessionLocal() as session:
@@ -1281,6 +1366,7 @@ async def _finish_run(
                     citations=sources or None,
                     run_id=run_id,
                     status="completed",
+                    thinking=thinking.strip() or None,
                 )
             )
             run = session.get(AgentRun, run_id)
@@ -1311,6 +1397,7 @@ async def _save_interrupted_message(
     conversation_id: str,
     content: str,
     sources: list[dict],
+    thinking: str = "",
 ) -> bool:
     """只在 Run 确认中断后保存一次可见草稿，避免完成态产生重复消息。"""
 
@@ -1331,6 +1418,7 @@ async def _save_interrupted_message(
             if existing is not None:
                 existing.content = content.strip()
                 existing.citations = sources or None
+                existing.thinking = thinking.strip() or None
             else:
                 session.add(
                     Message(
@@ -1340,6 +1428,7 @@ async def _save_interrupted_message(
                         citations=sources or None,
                         run_id=run_id,
                         status="interrupted",
+                        thinking=thinking.strip() or None,
                     )
                 )
             conversation = session.get(Conversation, conversation_id)

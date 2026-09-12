@@ -7,12 +7,34 @@ import remarkGfm from "remark-gfm";
 import Avatar, { DEFAULT_USER_AVATAR, agentAvatarUrl } from "@/components/Avatar";
 import SelectMenu from "@/components/SelectMenu";
 import {
+  getLiveRunSession,
+  postprocessPollRegistered,
+  publishLiveRunSession,
+  registerPostprocessPoll,
+  subscribeLiveRunSession,
+  unregisterPostprocessPoll,
+  updateLiveRunSession,
+  type ApprovalItem,
+  type ContextUsage,
+  type LiveRunSession,
+  type ToolActivity,
+} from "@/components/liveRuns";
+import {
+  RISK_LABELS,
+  STATUS_LABELS,
+  TOOL_LABELS,
+  ThinkingBlock,
+  compactText,
+  type RunTraceItem,
+  type ToolStatus,
+  type TraceStatus,
+} from "@/components/runTrace";
+import {
   chatImageContentUrl,
   cancelChatRun,
   deleteStagedChatImage,
   documentContentUrl,
   fetchAppSettings,
-  fetchConversationRunHistory,
   fetchConversationRunStats,
   fetchCurrentConversationRun,
   fetchMessages,
@@ -23,7 +45,6 @@ import {
   uploadChatImage,
   type AppSettings,
   type AgentSettings,
-  type AgentRunHistory,
   type AgentRunState,
   type ChatMessage,
   type ChatImage,
@@ -50,155 +71,6 @@ interface ChatViewProps {
   activeProjectId: string | null;
   onSelectProject: (id: string | null) => void;
   onOpenFolder: () => void;
-}
-
-type ToolStatus = "running" | "completed" | "rejected" | "failed" | "timeout";
-
-interface ToolActivity {
-  key: string;
-  tool: string;
-  status: ToolStatus;
-  result: string;
-}
-
-type TraceStatus = "running" | "completed" | "failed" | "cancelled";
-
-interface RunTraceItem {
-  key: string;
-  label: string;
-  detail: string;
-  status: TraceStatus;
-}
-
-interface ApprovalItem {
-  approvalId: string;
-  tool: string;
-  argsSummary: string;
-  state: "pending" | "submitting" | "approved" | "rejected" | "expired";
-  error: string;
-}
-
-interface ContextUsage {
-  usedTokens: number;
-  inputBudgetTokens: number;
-  contextWindowTokens: number;
-  maxOutputTokens: number;
-  conversationTokens: number;
-  breakdown: Record<string, number>;
-}
-
-interface LiveRunSession {
-  runId: string;
-  controller: AbortController | null;
-  currentRun: AgentRunState | null;
-  streaming: string;
-  streamingSources: CitationSource[];
-  toolActivities: ToolActivity[];
-  approvals: ApprovalItem[];
-  isStopping: boolean;
-  contextUsage: ContextUsage | null;
-  contextLoading: boolean;
-  runTrace: RunTraceItem[];
-  traceOpen: boolean;
-  startedAt: number;
-  elapsedSeconds: number;
-  error: string;
-  running: boolean;
-  postprocess: Record<string, RunPostprocessStatus>;
-}
-
-type LiveRunListener = (session: LiveRunSession | null) => void;
-
-// Run 属于会话而不是 ChatView 组件。切换会话或打开设置页只分离视图，
-// 不能销毁流、停止后端任务，也不能让旧 Run 的事件污染新会话。
-const LIVE_RUN_SESSIONS = new Map<string, LiveRunSession>();
-const LIVE_RUN_LISTENERS = new Map<string, Set<LiveRunListener>>();
-const POSTPROCESS_POLLS = new Set<string>();
-
-function getLiveRunSession(conversationId: string) {
-  return LIVE_RUN_SESSIONS.get(conversationId) ?? null;
-}
-
-function publishLiveRunSession(conversationId: string, session: LiveRunSession | null) {
-  if (session) LIVE_RUN_SESSIONS.set(conversationId, session);
-  else LIVE_RUN_SESSIONS.delete(conversationId);
-  LIVE_RUN_LISTENERS.get(conversationId)?.forEach((listener) => listener(session));
-}
-
-function updateLiveRunSession(
-  conversationId: string,
-  update: (session: LiveRunSession) => LiveRunSession,
-) {
-  const current = LIVE_RUN_SESSIONS.get(conversationId);
-  if (!current) return null;
-  const next = update(current);
-  publishLiveRunSession(conversationId, next);
-  return next;
-}
-
-function subscribeLiveRunSession(conversationId: string, listener: LiveRunListener) {
-  const listeners = LIVE_RUN_LISTENERS.get(conversationId) ?? new Set<LiveRunListener>();
-  listeners.add(listener);
-  LIVE_RUN_LISTENERS.set(conversationId, listeners);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) LIVE_RUN_LISTENERS.delete(conversationId);
-  };
-}
-
-const TOOL_LABELS: Record<string, string> = {
-  get_time: "查询时间",
-  calculate: "执行计算",
-  read_file: "读取文件",
-  write_file: "写入文件",
-  code_list_files: "列出项目文件",
-  code_search: "搜索代码",
-  code_read: "读取代码",
-  code_create_file: "创建代码文件",
-  code_edit: "修改代码",
-  code_git_diff: "查看代码改动",
-  code_run_check: "运行代码检查",
-  "mcp_document-skills-generator_create_docx": "生成 Word 文档",
-  "mcp_document-skills-generator_append_docx": "更新 Word 文档",
-  "mcp_document-skills-generator_create_pdf": "生成 PDF",
-  "mcp_document-skills-generator_create_pptx": "生成演示文稿",
-  "mcp_document-skills-generator_create_xlsx": "生成工作簿",
-  "mcp_playwright_browser_navigate": "打开网页",
-  "mcp_playwright_browser_snapshot": "读取页面结构",
-  "mcp_playwright_browser_find": "查找页面内容",
-  "mcp_playwright_browser_click": "点击页面元素",
-  "mcp_playwright_browser_type": "输入文字",
-  "mcp_playwright_browser_fill_form": "填写表单",
-  "mcp_playwright_browser_select_option": "选择页面选项",
-  "mcp_playwright_browser_press_key": "发送键盘按键",
-  "mcp_playwright_browser_wait_for": "等待页面状态",
-  "mcp_playwright_browser_tabs": "管理浏览器标签页",
-  "mcp_playwright_browser_close": "关闭浏览器",
-  "mcp_desktop-media_qqmusic_launch": "打开 QQ 音乐",
-  "mcp_desktop-media_qqmusic_search_play": "搜索并播放歌曲",
-  "mcp_desktop-media_media_play_pause": "播放或暂停音乐",
-  "mcp_desktop-media_media_next": "播放下一首",
-  "mcp_desktop-media_media_previous": "播放上一首",
-  "mcp_desktop-media_media_get_current": "读取当前歌曲",
-};
-
-const STATUS_LABELS: Record<ToolStatus, string> = {
-  running: "执行中",
-  completed: "已完成",
-  rejected: "已拒绝",
-  failed: "失败",
-  timeout: "已超时",
-};
-
-const RISK_LABELS: Record<string, string> = {
-  low: "低风险",
-  medium: "中风险",
-  high: "高风险",
-};
-
-function compactText(value: string, maxLength = 180) {
-  const text = value.replace(/\s+/g, " ").trim();
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
 function toolTraceDetail(data: Record<string, unknown>, stage: "proposed" | "running") {
@@ -588,147 +460,6 @@ function ToolActivityList({ items }: { items: ToolActivity[] }) {
   );
 }
 
-function formatElapsed(totalSeconds: number) {
-  const seconds = Math.max(0, Math.floor(totalSeconds));
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) return remainingSeconds > 0 ? `${minutes} 分 ${remainingSeconds} 秒` : `${minutes} 分`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours} 小时 ${remainingMinutes} 分` : `${hours} 小时`;
-}
-
-function traceIcon(key: string) {
-  if (key === "analysis") return "◉";
-  if (key === "context") return "⌕";
-  if (key === "planning") return "≣";
-  if (key === "model") return "◌";
-  if (key.startsWith("tool-")) return "⌘";
-  return "✓";
-}
-
-function RunTracePanel({
-  items,
-  open,
-  active,
-  elapsedSeconds,
-  onToggle,
-}: {
-  items: RunTraceItem[];
-  open: boolean;
-  active: boolean;
-  elapsedSeconds: number;
-  onToggle: () => void;
-}) {
-  if (items.length === 0) return null;
-  const failed = items.some((item) => item.status === "failed");
-  const stopped = items.some((item) => item.status === "cancelled");
-  const heading = failed ? "处理失败" : stopped ? "已停止" : active ? "正在处理" : "已处理";
-  return <section className="py-1" aria-label="Agent 工作记录">
-    <button type="button" onClick={onToggle} className="group flex min-h-11 w-full items-center gap-3 text-left text-sm text-zinc-500 focus-visible:rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-expanded={open}>
-      <span className="shrink-0 font-medium">{heading} {formatElapsed(elapsedSeconds)}</span>
-      <span className="h-px min-w-6 flex-1 bg-zinc-200" aria-hidden="true" />
-      <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs text-zinc-400 transition group-hover:bg-zinc-100 group-hover:text-zinc-700 ${open ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
-    </button>
-    {open && <div className="ml-2 border-l border-zinc-200 pb-2 pl-7 pt-3">
-      <ol className="space-y-6">{items.map((item) => <li key={item.key} className="relative text-sm">
-        <span className={`absolute -left-[35px] top-0 grid size-4 place-items-center bg-[#fcfcfc] text-xs ${item.status === "failed" ? "text-red-500" : item.status === "running" ? "animate-pulse text-blue-500 motion-reduce:animate-none" : "text-zinc-400"}`} aria-hidden="true">{traceIcon(item.key)}</span>
-        <p className={`flex items-center gap-2 text-sm ${item.status === "failed" ? "text-red-600" : "text-zinc-400"}`}>
-          <span>{item.label}</span>
-          {item.status === "running" && <span className="text-xs">进行中</span>}
-          {item.status === "cancelled" && <span className="text-xs">已停止</span>}
-        </p>
-        {item.detail && <p className="mt-2 whitespace-pre-line break-words text-[15px] leading-7 text-zinc-700">{item.detail}</p>}
-      </li>)}</ol>
-    </div>}
-  </section>;
-}
-
-function historicalTraceItems(run: AgentRunHistory): RunTraceItem[] {
-  const intent = run.intent ?? {};
-  const context = run.context_stats ?? {};
-  const memoryCount = Number(context.memory_count ?? 0);
-  const memoryCandidates = Number(context.memory_candidate_count ?? memoryCount);
-  const sourceCount = Number(context.source_count ?? 0);
-  const knowledgeCandidates = Number(context.knowledge_candidate_count ?? sourceCount);
-  const items: RunTraceItem[] = [
-    {
-      key: "analysis",
-      label: "分析请求",
-      status: "completed",
-      detail: `当前理解：${compactText(run.input_message || "历史请求")}\n执行方式：${run.execution_mode === "planned" ? "规划模式" : "自主模式"}`,
-    },
-  ];
-  if (Object.keys(intent).length > 0) {
-    items.push({
-      key: "intent",
-      label: "识别意图",
-      status: "completed",
-      detail: `类型：${String(intent.intent ?? "conversation")} · 路由：${String(intent.source ?? "default")} · 置信度：${Math.round(Number(intent.confidence ?? 0) * 100)}%`,
-    });
-  }
-  items.push({
-    key: "context",
-    label: "装配上下文",
-    status: "completed",
-    detail: Object.keys(context).length > 0
-      ? `记忆候选 ${memoryCandidates}，使用 ${memoryCount}；资料候选 ${knowledgeCandidates}，使用 ${sourceCount}`
-      : "上下文已装配；该历史 Run 未保存详细统计",
-  });
-  for (const [index, tool] of run.tools.entries()) {
-    const status: TraceStatus = tool.status === "completed"
-      ? "completed"
-      : tool.status === "rejected"
-        ? "cancelled"
-        : "failed";
-    items.push({
-      key: `tool-${tool.id || index}`,
-      label: TOOL_LABELS[tool.tool] ?? tool.tool,
-      status,
-      detail: `${tool.args_summary || "未记录参数"}${tool.result_summary ? `\n${tool.result_summary}` : ""}`,
-    });
-  }
-  if (run.status === "completed") {
-    items.push({
-      key: "model",
-      label: run.execution_mode === "planned" ? "生成规划文档" : "生成回答",
-      status: "completed",
-      detail: "内容已生成并保存到当前对话",
-    });
-  }
-  const finalStatus: TraceStatus = run.status === "failed"
-    ? "failed"
-    : ["cancelled", "interrupted"].includes(run.status)
-      ? "cancelled"
-      : "completed";
-  items.push({
-    key: "finished",
-    label: finalStatus === "failed" ? "结束运行" : finalStatus === "cancelled" ? "停止运行" : "完成运行",
-    status: finalStatus,
-    detail: run.error || `输入 ${run.input_tokens || 0} tokens，输出 ${run.output_tokens || 0} tokens`,
-  });
-  return items;
-}
-
-function runElapsedSeconds(run: AgentRunHistory) {
-  if (!run.completed_at) return 0;
-  return Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at)) / 1000));
-}
-
-function HistoricalRunTrace({ run }: { run: AgentRunHistory }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <RunTracePanel
-      items={historicalTraceItems(run)}
-      open={open}
-      active={false}
-      elapsedSeconds={runElapsedSeconds(run)}
-      onToggle={() => setOpen((value) => !value)}
-    />
-  );
-}
-
 function ApprovalCard({
   item,
   onSubmit,
@@ -936,16 +667,15 @@ export default function ChatView({
   const [conversationTokens, setConversationTokens] = useState(0);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
-  const [runTrace, setRunTrace] = useState<RunTraceItem[]>([]);
-  const [runHistory, setRunHistory] = useState<Record<string, AgentRunHistory>>({});
-  const [traceOpen, setTraceOpen] = useState(true);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [thinking, setThinking] = useState("");
+  const [thinkingActive, setThinkingActive] = useState(false);
+  const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
+  const [thinkingEndedAt, setThinkingEndedAt] = useState<number | null>(null);
   const [postprocess, setPostprocess] = useState<Record<string, RunPostprocessStatus>>({});
   const locallyCreatedConversationRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement>(null);
   const activeConversationRef = useRef(conversationId);
   const messagesConversationRef = useRef(conversationId);
-  const initialRunHistoryConversationRef = useRef<string | null>(null);
   const lastPositionedConversationRef = useRef<string | null>(null);
 
   const applyLiveSession = useCallback((session: LiveRunSession | null) => {
@@ -957,9 +687,10 @@ export default function ChatView({
     setCurrentRun(session?.currentRun ?? null);
     setContextUsage(session?.contextUsage ?? null);
     setContextLoading(session?.contextLoading ?? false);
-    setRunTrace(session?.runTrace ?? []);
-    setTraceOpen(session?.traceOpen ?? false);
-    setElapsedSeconds(session?.elapsedSeconds ?? 0);
+    setThinking(session?.thinking ?? "");
+    setThinkingActive(session?.thinkingActive ?? false);
+    setThinkingStartedAt(session?.thinkingStartedAt ?? null);
+    setThinkingEndedAt(session?.thinkingEndedAt ?? null);
     setIsStreaming(session?.running ?? false);
     setError(session?.error ?? "");
     setPostprocess(session?.postprocess ?? {});
@@ -990,7 +721,6 @@ export default function ChatView({
     const resetConversationState = () => {
       if (cancelled) return;
       messagesConversationRef.current = null;
-      initialRunHistoryConversationRef.current = null;
       setMessages([]);
       setStreaming("");
       setStreamingSources([]);
@@ -1001,7 +731,6 @@ export default function ChatView({
       setContextUsage(null);
       setConversationTokens(0);
       setCacheHitRate(null);
-      setRunHistory({});
       setPostprocess({});
       applyLiveSession(conversationId ? getLiveRunSession(conversationId) : null);
     };
@@ -1057,12 +786,15 @@ export default function ChatView({
             contextUsage: null,
             contextLoading: true,
             runTrace: [{ key: "detached", label: "任务仍在运行", detail: "已重新连接到这个会话，正在等待后台任务完成", status: "running" }],
-            traceOpen: true,
             startedAt: Date.parse(run.created_at) || Date.now(),
             elapsedSeconds: 0,
             error: "",
             running: true,
             postprocess: {},
+            thinking: "",
+            thinkingActive: false,
+            thinkingStartedAt: null,
+            thinkingEndedAt: null,
           });
         } else {
           setCurrentRun(run);
@@ -1074,14 +806,6 @@ export default function ChatView({
         if (!cancelled) setCacheHitRate(stats.average_cache_hit_rate);
       })
       .catch(() => { if (!cancelled) setCacheHitRate(null); });
-    fetchConversationRunHistory(conversationId)
-      .then((rows) => {
-        if (!cancelled) {
-          initialRunHistoryConversationRef.current = conversationId;
-          setRunHistory(Object.fromEntries(rows.map((run) => [run.id, run])));
-        }
-      })
-      .catch(() => { if (!cancelled) setRunHistory({}); });
     return () => {
       cancelled = true;
     };
@@ -1115,13 +839,6 @@ export default function ChatView({
     messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streaming, toolActivities, approvals]);
 
-  useLayoutEffect(() => {
-    const activeConversationId = activeConversationRef.current;
-    if (!activeConversationId || initialRunHistoryConversationRef.current !== activeConversationId) return;
-    initialRunHistoryConversationRef.current = null;
-    messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "auto" });
-  }, [runHistory]);
-
   const updateToolActivity = useCallback(
     (ownerConversationId: string, key: string, tool: string, status: ToolStatus, result = "") => {
       updateLiveRunSession(ownerConversationId, (session) => {
@@ -1142,10 +859,19 @@ export default function ChatView({
   const updateTrace = useCallback((ownerConversationId: string, key: string, label: string, status: TraceStatus, detail = "") => {
     updateLiveRunSession(ownerConversationId, (session) => {
       const items = session.runTrace;
-      const next = { key, label, status, detail };
+      const existing = items.find((item) => item.key === key);
+      const now = Date.now();
+      const next: RunTraceItem = {
+        key,
+        label,
+        status,
+        detail,
+        startedAt: existing?.startedAt ?? now,
+        endedAt: status === "running" ? undefined : now,
+      };
       return {
         ...session,
-        runTrace: items.some((item) => item.key === key)
+        runTrace: existing
           ? items.map((item) => item.key === key ? next : item)
           : [...items, next],
       };
@@ -1153,8 +879,8 @@ export default function ChatView({
   }, []);
 
   const pollPostprocess = useCallback((ownerConversationId: string, ownerRunId: string) => {
-    if (POSTPROCESS_POLLS.has(ownerRunId)) return;
-    POSTPROCESS_POLLS.add(ownerRunId);
+    if (postprocessPollRegistered(ownerRunId)) return;
+    registerPostprocessPoll(ownerRunId);
     let attempts = 0;
     const removeIndicator = (delay = 0) => {
       window.setTimeout(() => {
@@ -1177,7 +903,7 @@ export default function ChatView({
           window.setTimeout(() => void poll(), 750);
           return;
         }
-        POSTPROCESS_POLLS.delete(ownerRunId);
+        unregisterPostprocessPoll(ownerRunId);
         if (value.status === "completed") {
           removeIndicator(value.memory_count > 0 || value.summary_updated ? 3000 : 0);
         } else if (value.status === "failed") {
@@ -1190,7 +916,7 @@ export default function ChatView({
           window.setTimeout(() => void poll(), 750);
           return;
         }
-        POSTPROCESS_POLLS.delete(ownerRunId);
+        unregisterPostprocessPoll(ownerRunId);
         updateLiveRunSession(ownerConversationId, (session) => ({
           ...session,
           postprocess: {
@@ -1257,7 +983,7 @@ export default function ChatView({
         }
       }
       const controller = new AbortController();
-      const runId = crypto.randomUUID().replace(/-/g, "");
+      const runId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
       const startedAt = Date.now();
       const pendingRun: AgentRunState = {
         id: runId,
@@ -1282,12 +1008,15 @@ export default function ChatView({
         contextUsage: null,
         contextLoading: true,
         runTrace: [{ key: "analysis", label: "分析请求", detail: `当前理解：${compactText(text)}`, status: "running" }],
-        traceOpen: true,
         startedAt,
         elapsedSeconds: 0,
         error: "",
         running: true,
         postprocess: existingPostprocess,
+        thinking: "",
+        thinkingActive: false,
+        thinkingStartedAt: null,
+        thinkingEndedAt: null,
       };
       publishLiveRunSession(convId, initialSession);
       onRunStatusChange(convId, "running");
@@ -1295,7 +1024,7 @@ export default function ChatView({
       applyLiveSession(initialSession);
       setMessages((ms) => [
         ...ms,
-        { id: `local-${Date.now()}`, role: "user", content: text, citations: [], images: chatImages, run_id: null, status: "completed", token_estimate: estimateMessageTokens(text, chatImages.length), created_at: "" },
+        { id: `local-${Date.now()}`, role: "user", content: text, thinking: null, citations: [], images: chatImages, run_id: null, status: "completed", token_estimate: estimateMessageTokens(text, chatImages.length), created_at: "" },
       ]);
       setConversationTokens((total) => total + estimateMessageTokens(text, chatImages.length));
       try {
@@ -1344,6 +1073,36 @@ export default function ChatView({
                 contextLoading: false,
               }));
               updateTrace(convId, "context", "装配上下文", "completed", selected > 0 ? `限定 ${selected} 个附件；资料候选 ${knowledgeCandidates}，使用 ${sources}，裁剪 ${knowledgeExcluded}` : `记忆候选 ${memoryCandidates}，使用 ${memories}，裁剪 ${memoryExcluded}；资料使用 ${sources}`);
+            } else if (ev.event === "thinking.started") {
+              const startedAtMs = Date.now();
+              updateLiveRunSession(convId, (session) => ({
+                ...session,
+                thinking: "",
+                thinkingActive: true,
+                thinkingStartedAt: startedAtMs,
+                thinkingEndedAt: null,
+              }));
+              updateTrace(convId, "thinking", "思考回应", "running", "角色正在酝酿怎么回应");
+            } else if (ev.event === "thinking.delta") {
+              const chunk = String(ev.data.content ?? "");
+              updateLiveRunSession(convId, (session) => {
+                const thinking = session.thinking + chunk;
+                return {
+                  ...session,
+                  thinking,
+                  runTrace: session.runTrace.map((item) => item.key === "thinking" ? { ...item, detail: compactText(thinking, 400) } : item),
+                };
+              });
+            } else if (ev.event === "thinking.completed") {
+              const fullText = String(ev.data.content ?? "");
+              const endedAtMs = Date.now();
+              updateLiveRunSession(convId, (session) => ({
+                ...session,
+                thinking: fullText,
+                thinkingActive: false,
+                thinkingEndedAt: endedAtMs,
+              }));
+              updateTrace(convId, "thinking", "思考回应", "completed", fullText);
             } else if (ev.event === "planning.started") {
               const phase = String(ev.data.phase ?? "document");
               updateTrace(convId, "planning", phase === "document" ? "编写规划文档" : "恢复既有任务", "running", phase === "document" ? "正在整理目标、范围、技术方案、步骤和验收标准" : "正在从中断位置核对已完成步骤");
@@ -1413,7 +1172,8 @@ export default function ChatView({
               updateLiveRunSession(convId, (session) => ({
                 ...session,
                 currentRun: null,
-                traceOpen: false,
+                thinkingActive: false,
+                thinkingEndedAt: session.thinkingEndedAt ?? Date.now(),
                 error: String(ev.data.error ?? "运行失败"),
                 runTrace: session.runTrace.map((item) => item.status === "running" ? { ...item, status: "failed" } : item),
               }));
@@ -1424,7 +1184,8 @@ export default function ChatView({
               updateLiveRunSession(convId, (session) => ({
                 ...session,
                 currentRun: null,
-                traceOpen: false,
+                thinkingActive: false,
+                thinkingEndedAt: session.thinkingEndedAt ?? Date.now(),
                 runTrace: session.runTrace.map((item) => item.status === "running" ? { ...item, status: "cancelled" } : item),
               }));
               updateTrace(convId, "finished", "停止运行", "cancelled", reason);
@@ -1453,7 +1214,6 @@ export default function ChatView({
                 currentRun: null,
                 controller: null,
                 running: false,
-                traceOpen: false,
               }));
               if (activeConversationRef.current === convId) {
                 setCacheHitRate(rawCacheHitRate === undefined || rawCacheHitRate === null ? null : Number(rawCacheHitRate));
@@ -1473,20 +1233,16 @@ export default function ChatView({
           runId,
           false,
         );
-        const [msgs, history] = await Promise.all([
-          fetchMessages(convId),
-          fetchConversationRunHistory(convId),
-        ]);
+        const msgs = await fetchMessages(convId);
         const cumulativeTokens = msgs.reduce((total, row) => total + Number(row.token_estimate || 0), 0);
         if (activeConversationRef.current === convId) {
           setMessages(msgs);
-          setRunHistory(Object.fromEntries(history.map((run) => [run.id, run])));
           setConversationTokens(cumulativeTokens);
         }
         updateLiveRunSession(convId, (session) => ({
           ...session,
           runTrace: [],
-          traceOpen: false,
+          thinkingActive: false,
           contextUsage: session.contextUsage ? { ...session.contextUsage, conversationTokens: cumulativeTokens } : null,
         }));
         onFinished(convId);
@@ -1539,6 +1295,7 @@ export default function ChatView({
           id: localDraftId,
           role: "assistant",
           content: interruptedDraft,
+          thinking: session.thinking || null,
           citations: session.streamingSources,
           images: [],
           run_id: runId,
@@ -1569,20 +1326,17 @@ export default function ChatView({
         void Promise.all([
           fetchMessages(conversationId),
           fetchCurrentConversationRun(conversationId),
-          fetchConversationRunHistory(conversationId),
-        ]).then(([nextMessages, run, history]) => {
+        ]).then(([nextMessages, run]) => {
           setMessages((current) => {
             const localDraft = current.find((item) => item.id === localDraftId);
             const persisted = runId && nextMessages.some((item) => item.run_id === runId && item.status === "interrupted");
             return localDraft && !persisted ? [...nextMessages, localDraft] : nextMessages;
           });
           setConversationTokens(nextMessages.reduce((total, row) => total + Number(row.token_estimate || 0), 0));
-          setRunHistory(Object.fromEntries(history.map((item) => [item.id, item])));
           updateLiveRunSession(conversationId, (current) => ({
             ...current,
             currentRun: run,
             runTrace: [],
-            traceOpen: false,
           }));
         }).catch(() => undefined);
       }, 250);
@@ -1660,10 +1414,9 @@ export default function ChatView({
 
   const empty = messages.length === 0 && !streaming && toolActivities.length === 0 && approvals.length === 0 && !currentRun;
   const composerProps = { projects, activeProjectId, onSelectProject, onOpenFolder, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage, onStop: () => void stop(), isStopping };
-  const completedRunMessage = runTrace.length > 0 && !isStreaming && messages.at(-1)?.role === "assistant" && messages.at(-1)?.status === "completed" ? messages.at(-1)! : null;
-  const visibleMessages = completedRunMessage ? messages.slice(0, -1) : messages;
   const composerLocked = isStreaming || currentRun?.status === "running";
   const liveRunId = conversationId ? getLiveRunSession(conversationId)?.runId : null;
+  const showLiveThinking = thinkingActive || (isStreaming && thinking !== "");
 
   const effectiveAgent = agent ?? appSettings?.agent;
   const effectiveSettings = appSettings && effectiveAgent
@@ -1682,32 +1435,18 @@ export default function ChatView({
       ) : (
         <div ref={messageScrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
           <div className="mx-auto w-full max-w-4xl space-y-8">
-            {visibleMessages.map((message) => <div key={message.id} className="space-y-3">
-              {message.role === "assistant" && message.run_id && runHistory[message.run_id] && (
-                <HistoricalRunTrace run={runHistory[message.run_id]} />
+            {messages.map((message) => <div key={message.id} className="space-y-3">
+              {message.role === "assistant" && message.thinking && (
+                <ThinkingBlock text={message.thinking} active={false} startedAt={null} endedAt={null} defaultOpen={false} />
               )}
               <MessageBubble role={message.role} content={message.content} status={message.status} citations={message.citations} images={message.images} agent={effectiveAgent} />
               {message.role === "assistant" && message.run_id ? <PostprocessIndicator value={postprocess[message.run_id]} /> : null}
             </div>)}
-            <RunTracePanel
-              items={runTrace}
-              open={traceOpen}
-              active={isStreaming}
-              elapsedSeconds={elapsedSeconds}
-              onToggle={() => {
-                const next = !traceOpen;
-                setTraceOpen(next);
-                if (conversationId) {
-                  updateLiveRunSession(conversationId, (session) => ({ ...session, traceOpen: next }));
-                }
-              }}
-            />
+            {showLiveThinking && (
+              <ThinkingBlock text={thinking} active={thinkingActive} startedAt={thinkingStartedAt} endedAt={thinkingEndedAt} defaultOpen />
+            )}
             <ToolActivityList items={toolActivities} />
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
-            {completedRunMessage && <div className="space-y-2">
-              <MessageBubble key={completedRunMessage.id} role={completedRunMessage.role} content={completedRunMessage.content} status={completedRunMessage.status} citations={completedRunMessage.citations} images={completedRunMessage.images} agent={effectiveAgent} />
-              {completedRunMessage.run_id ? <PostprocessIndicator value={postprocess[completedRunMessage.run_id]} /> : null}
-            </div>}
             {(streaming !== "" || (loading && conversationId)) && <div className="space-y-2">
               <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== "" && isStreaming} agent={effectiveAgent} />
               <PostprocessIndicator value={postprocess[liveRunId ?? ""]} />

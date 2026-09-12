@@ -1,3 +1,4 @@
+# 仅保留用于迁移前的旧 PostgreSQL 实例；SQLite 日常运行不使用 Docker。
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -8,7 +9,7 @@ services:
       POSTGRES_USER: personal_ai
       POSTGRES_PASSWORD: personal_ai_local
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - personal_ai_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -26,7 +27,7 @@ services:
       POSTGRES_USER: personal_ai
       POSTGRES_PASSWORD: personal_ai_test_local
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:

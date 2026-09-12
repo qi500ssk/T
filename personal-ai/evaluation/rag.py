@@ -1,19 +1,18 @@
-"""P2 固定知识库检索评测，运行在独立的 PostgreSQL 测试库。"""
+"""P2 固定知识库检索评测，运行在独立的 SQLite 临时库。"""
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
 from pathlib import Path
 
-# 评测库必须在导入应用模块前确定：默认使用 5433 隔离测试库。
-os.environ["DATABASE_URL"] = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://personal_ai:personal_ai_test_local@localhost:5433/personal_ai_test",
-)
-if not os.environ["DATABASE_URL"].rstrip("/").endswith("/personal_ai_test"):
-    raise RuntimeError("检索评测只允许连接 personal_ai_test 数据库")
+# 评测库必须在导入应用模块前确定：默认使用 SQLite 临时库。
+# 评测每次创建独立临时数据库，避免清理正式数据。
+import tempfile
+_evaluation_data = tempfile.TemporaryDirectory(prefix="personal-ai-evaluation-")
+os.environ["DATABASE_URL"] = "sqlite:///" + (Path(_evaluation_data.name) / "evaluation.db").as_posix()
 
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -22,7 +21,13 @@ from core.rag.chunking import split_into_chunks  # noqa: E402
 from core.rag.parsers import parse_document  # noqa: E402
 from core.rag.retrieval import retrieve  # noqa: E402
 from infrastructure.config import settings  # noqa: E402
-from infrastructure.database import Document, DocumentChunk, SessionLocal, init_db  # noqa: E402
+from infrastructure.database import Document, DocumentChunk, SessionLocal, engine, init_db  # noqa: E402
+
+
+@atexit.register
+def _close_evaluation_database() -> None:
+    engine.dispose()
+    _evaluation_data.cleanup()
 
 
 ROOT = Path(__file__).resolve().parents[1]

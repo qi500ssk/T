@@ -8,14 +8,12 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "sqlalchemy>=2.0",
     "alembic>=1.16",
-    "pgvector>=0.4",
-    "psycopg[binary]>=3.2",
     "pydantic>=2.8",
     "pydantic-settings>=2.6",
     "httpx>=0.28",
     "pyyaml>=6.0",
     "anyio>=4.4",
-    "sentence-transformers>=3.0",
+    "fastembed>=0.7,<0.8",
     "numpy>=1.26",
     "pypdf>=5.0",
     "pdfplumber>=0.11",
@@ -27,14 +25,11 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "python-multipart>=0.0.9",
     "mcp>=1.28,<2",
-    "comtypes>=1.4.8; sys_platform == 'win32'",
-    "pywinauto>=0.6.9; sys_platform == 'win32'",
-    "winrt-Windows.Foundation>=3.2.1; sys_platform == 'win32'",
-    "winrt-Windows.Foundation.Collections>=3.2.1; sys_platform == 'win32'",
-    "winrt-Windows.Media.Control>=3.2.1; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
+legacy-embedding = ["sentence-transformers>=3.0"]
+postgres-import = ["psycopg[binary]>=3.2"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

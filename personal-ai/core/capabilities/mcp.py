@@ -152,7 +152,7 @@ def _safe_subprocess_env(extra: dict[str, str]) -> dict[str, str]:
     allowed = {
         "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
         "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOME",
-        "LANG", "LC_ALL",
+        "LANG", "LC_ALL", "PERSONAL_AI_DATA_DIR", "XDG_DATA_HOME",
     }
     result = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     result.update(extra)

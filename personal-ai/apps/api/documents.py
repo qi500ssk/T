@@ -36,6 +36,7 @@ def _document_dict(document: Document) -> dict:
             break
     return {
         "id": document.id,
+        "agent_id": document.agent_id,
         "original_filename": document.original_filename,
         "mime_type": document.mime_type,
         "file_type": document.file_type,

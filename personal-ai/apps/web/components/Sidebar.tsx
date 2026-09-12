@@ -1,6 +1,7 @@
 "use client";
 
 import Avatar, { agentAvatarUrl } from "@/components/Avatar";
+import LogoutButton from "@/components/LogoutButton";
 import {
   projectFolderName,
   type AgentProfile,
@@ -9,7 +10,7 @@ import {
   type Project,
 } from "@/lib/api";
 
-export type WorkspaceView = "chat" | "memories" | "knowledge" | "activities";
+export type WorkspaceView = "chat" | "memories" | "knowledge" | "activities" | "runs";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -195,6 +196,7 @@ export default function Sidebar(props: SidebarProps) {
       </div>
 
       <button type="button" onClick={onOpenSettings} className="m-3 mt-auto flex min-h-11 shrink-0 items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-100"><span>⚙</span>设置与技能</button>
+      <LogoutButton />
     </aside>
   );
 }

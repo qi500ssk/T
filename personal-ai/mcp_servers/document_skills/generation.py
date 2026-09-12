@@ -24,6 +24,14 @@ MAX_ROWS = 2_000
 MAX_COLUMNS = 50
 ACCENT = "2563EB"
 DARK = "172033"
+# PDF 中文字体按平台各取一个常见路径，找不到时退回内置字体。
+_CJK_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/msyh.ttc"),
+    Path("C:/Windows/Fonts/simhei.ttf"),
+    Path("/System/Library/Fonts/PingFang.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+)
 
 
 def _require_text(value: str, label: str, maximum: int = MAX_TEXT_CHARS) -> str:
@@ -195,10 +203,16 @@ def create_pdf(title: str, content: str, filename: str = "document.pdf") -> str:
         except ImportError as exc:
             raise ValueError("缺少 reportlab 依赖") from exc
 
-        font_path = Path("C:/Windows/Fonts/simhei.ttf")
         font_name = "ArtifactCJK"
-        if font_path.is_file() and font_name not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+        if font_name not in pdfmetrics.getRegisteredFontNames():
+            for font_path in _CJK_FONT_CANDIDATES:
+                if not font_path.is_file():
+                    continue
+                try:
+                    pdfmetrics.registerFont(TTFont(font_name, str(font_path), subfontIndex=0))
+                    break
+                except Exception:
+                    continue
         if font_name not in pdfmetrics.getRegisteredFontNames():
             font_name = "Helvetica"
 

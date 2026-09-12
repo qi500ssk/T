@@ -1,4 +1,4 @@
-"""SQLAlchemy 数据层：PostgreSQL/pgvector 模型与会话管理。"""
+"""SQLAlchemy 数据层：SQLite 模型与会话管理。"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,7 +6,7 @@ import uuid
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
+    CheckConstraint,
     Float,
     ForeignKey,
     Index,
@@ -19,7 +19,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from pgvector.sqlalchemy import VECTOR
+from infrastructure.sqlite_types import UTCDateTime as DateTime, Vector as VECTOR, cosine_distance
 
 from infrastructure.config import settings
 
@@ -95,6 +95,8 @@ class Message(Base):
     citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="completed", index=True)
+    # 回答前的角色内心独白；只用于回放展示，不进入后续上下文。
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -124,7 +126,7 @@ class AgentRun(Base):
             "uq_agent_runs_running_conversation",
             "conversation_id",
             unique=True,
-            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
         ),
     )
 
@@ -231,7 +233,7 @@ class ToolRun(Base):
             "uq_tool_runs_idempotency_key",
             "idempotency_key",
             unique=True,
-            postgresql_where=text("idempotency_key IS NOT NULL"),
+            sqlite_where=text("idempotency_key IS NOT NULL"),
         ),
     )
 
@@ -315,7 +317,7 @@ class Memory(Base):
     extraction_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
-        VECTOR(settings.embedding_dim), nullable=True
+        VECTOR(), nullable=True
     )
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -349,6 +351,7 @@ class Document(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(64), index=True, default="default")
+    agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     original_filename: Mapped[str] = mapped_column(String(255))
     stored_filename: Mapped[str] = mapped_column(String(100), unique=True)
     mime_type: Mapped[str] = mapped_column(String(120))
@@ -384,14 +387,108 @@ class DocumentChunk(Base):
     char_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[list[float]] = mapped_column(
-        VECTOR(settings.embedding_dim), nullable=False
+        VECTOR(), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+class CharacterMemory(Base):
+    """好友背景记忆；草稿、正式记录与聊天记忆分表，保留来源快照。"""
+    __tablename__ = "character_memories"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String(100), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="experience")
+    content: Mapped[str] = mapped_column(Text)
+    evidence_type: Mapped[str] = mapped_column(String(20), default="fact")
+    is_core: Mapped[bool] = mapped_column(Boolean, default=False)
+    known_to_character: Mapped[bool] = mapped_column(Boolean, default=True)
+    time_label: Mapped[str] = mapped_column(String(200), default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    chunk_id: Mapped[str | None] = mapped_column(ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True)
+    source_name: Mapped[str] = mapped_column(String(255), default="")
+    source_section: Mapped[str] = mapped_column(String(500), default="")
+    source_quote: Mapped[str] = mapped_column(Text, default="")
+    extraction_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    embedding: Mapped[list | None] = mapped_column(VECTOR(), nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class CharacterExtraction(Base):
+    __tablename__ = "character_extractions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String(100), index=True)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    rejected: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AdminAccount(Base):
+    """第一版只允许一个管理员；现有 default 数据归这个账号使用。"""
+
+    __tablename__ = "admin_accounts"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_single_admin"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    username: Mapped[str] = mapped_column(String(80), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+
+
+class RecoveryCode(Base):
+    """一次性账号恢复码；只保存 SHA-256 摘要，明文仅在生成时显示一次。"""
+
+    __tablename__ = "recovery_codes"
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("admin_accounts.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("admin_accounts.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+from sqlalchemy import event
+from sqlalchemy.engine import make_url
+
+
+def build_sqlite_engine(url):
+    parsed = make_url(url)
+    if parsed.drivername not in {"sqlite", "sqlite+pysqlite"} or parsed.host or parsed.query:
+        raise ValueError("本地软件仅支持 SQLite 文件数据库，不接受远程数据库或 URI 参数")
+    if not parsed.database or parsed.database == ":memory:":
+        raise ValueError("请配置持久化 SQLite 文件路径")
+    path = Path(parsed.database).expanduser()
+    if str(path).startswith(("\\\\", "//")):
+        raise ValueError("数据库必须保存在本机，不能使用网络共享路径")
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    result = create_engine(parsed.set(database=str(path)), connect_args={"check_same_thread": False, "timeout": 30})
+
+    @event.listens_for(result, "connect")
+    def configure(connection, record):
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.create_function("vector_cosine_distance", 2, cosine_distance, deterministic=True)
+    return result
+
+
+engine = build_sqlite_engine(settings.database_url)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
 _schema_ready = False
 
 
@@ -399,19 +496,18 @@ def init_db() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    if engine.dialect.name != "postgresql":
-        raise RuntimeError("Personal AI 仅支持 PostgreSQL DATABASE_URL")
-    _upgrade_postgresql_schema()
+    _upgrade_sqlite_schema()
     _schema_ready = True
 
 
-def _upgrade_postgresql_schema() -> None:
-    """通过 Alembic 将 PostgreSQL 升级到当前 schema。"""
+def _upgrade_sqlite_schema() -> None:
+    """通过 Alembic 将 SQLite 升级到当前 schema。"""
     from alembic import command
     from alembic.config import Config
 
     project_root = Path(__file__).resolve().parents[1]
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("script_location", str(project_root / "migrations"))
+    config.set_main_option("version_locations", str(project_root / "migrations" / "sqlite_versions"))
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
     command.upgrade(config, "head")

@@ -112,7 +112,10 @@ def index_document(document_id: str, embedding_provider, settings) -> str:
         if result.needs_ocr:
             _set_document_status(document_id, "needs_ocr", "扫描件或可提取文本过少")
             return "needs_ocr"
-        drafts = split_into_chunks(result.blocks, embedding_provider.count_tokens, settings)
+        from types import SimpleNamespace
+        chunk_settings = SimpleNamespace(**settings.model_dump())
+        chunk_settings.rag_chunk_max_tokens = min(settings.rag_chunk_max_tokens, getattr(embedding_provider, "max_tokens", settings.rag_chunk_max_tokens) - 8)
+        drafts = split_into_chunks(result.blocks, embedding_provider.count_tokens, chunk_settings)
         if not drafts:
             raise ParseError("文档没有可索引文本")
         check_timeout()
@@ -147,6 +150,8 @@ def index_document(document_id: str, embedding_provider, settings) -> str:
             document.status = "indexed"
             document.error = None
             document.chunk_count = len(drafts)
+            document.embedding_model = embedding_provider.model_name
+            document.embedding_dim = embedding_provider.dimension
             document.updated_at = datetime.now(timezone.utc)
             session.commit()
         return "indexed"

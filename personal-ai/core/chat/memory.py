@@ -454,7 +454,6 @@ def retrieve_memories(
         lexical_conditions.append(Memory.normalized_key == normalized)
     if len(stripped) >= 2:
         lexical_conditions.append(Memory.content.ilike(f"%{stripped}%"))
-        lexical_conditions.append(Memory.content.op("%")(stripped))  # pg_trgm 相似
         term_patterns = [f"%{term}%" for term in sorted(_terms(stripped))[:32]]
         if term_patterns:
             # 词元（英文词 + 中文二元组）命中任意一个即可成为候选，
@@ -474,26 +473,29 @@ def retrieve_memories(
 
     vector_scores: dict[str, float] = {}
     vector_rows: list[Memory] = []
-    if embedding_provider is not None:
-        query_vector = embedding_provider.embed_query(query)
-        distance = Memory.embedding.cosine_distance(query_vector).label("distance")
-        matches = (
-            session.query(Memory, distance)
-            .filter(
-                *filters,
-                Memory.embedding.is_not(None),
-                Memory.embedding_model == embedding_provider.model_name,
-                Memory.embedding_dim == embedding_provider.dimension,
+    if embedding_provider is not None and embedding_provider.dimension > 0:
+        try:
+            query_vector = embedding_provider.embed_query(query)
+            distance = Memory.embedding.cosine_distance(query_vector).label("distance")
+            matches = (
+                session.query(Memory, distance)
+                .filter(
+                    *filters,
+                    Memory.embedding.is_not(None),
+                    Memory.embedding_model == embedding_provider.model_name,
+                    Memory.embedding_dim == embedding_provider.dimension,
+                )
+                .order_by(distance.asc())
+                .limit(max(limit * 4, 20))
+                .all()
             )
-            .order_by(distance.asc())
-            .limit(max(limit * 4, 20))
-            .all()
-        )
-        for memory, cosine_distance in matches:
-            similarity = 1.0 - float(cosine_distance)
-            if similarity >= min_vector_similarity:
-                vector_rows.append(memory)
-                vector_scores[memory.id] = similarity
+            for memory, cosine_distance in matches:
+                similarity = 1.0 - float(cosine_distance)
+                if similarity >= min_vector_similarity:
+                    vector_rows.append(memory)
+                    vector_scores[memory.id] = similarity
+        except Exception:
+            logger.warning("长期记忆语义检索暂不可用，使用关键词召回")
 
     rows_by_id = {memory.id: memory for memory in [*lexical_rows, *vector_rows]}
     query_terms = _terms(query)

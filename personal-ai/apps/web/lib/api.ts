@@ -1,7 +1,43 @@
 /** 后端 API 封装：REST CRUD + SSE 流式聊天。 */
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787/api";
+export const API_URL = "/api";
+
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.set("X-Requested-With", "PersonalAI");
+  const response = await fetch(url, { ...init, headers, credentials: "same-origin", cache: "no-store" });
+  if (response.status === 401 && !url.startsWith(`${API_URL}/auth/`)) {
+    window.dispatchEvent(new Event("personal-ai:unauthorized"));
+  }
+  return response;
+}
+
+export interface AuthStatus {
+  setup_required: boolean;
+  authenticated: boolean;
+  username: string | null;
+  setup_token_required: boolean;
+}
+export const fetchAuthStatus = () => req<AuthStatus>(`${API_URL}/auth/status`);
+export const login = (username: string, password: string, remember: boolean) => req<{ ok: boolean }>(`${API_URL}/auth/login`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password, remember }),
+});
+export const setupAdmin = (username: string, password: string, setup_token: string) => req<{ ok: boolean; username: string; recovery_codes: string[] }>(`${API_URL}/auth/setup`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password, setup_token }),
+});
+export const recoverAccount = (username: string, recovery_code: string, new_password: string) => req<{ ok: boolean; username: string; recovery_codes_remaining: number }>(`${API_URL}/auth/recovery`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, recovery_code, new_password }),
+});
+export const changePassword = (current_password: string, new_password: string) => req<{ ok: boolean }>(`${API_URL}/auth/password`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_password, new_password }),
+});
+export interface RecoveryCodeSummary { total: number; used: number; remaining: number }
+export const fetchRecoveryCodes = () => req<RecoveryCodeSummary>(`${API_URL}/auth/recovery-codes`);
+export const regenerateRecoveryCodes = (password: string) => req<{ ok: boolean; recovery_codes: string[] }>(`${API_URL}/auth/recovery-codes`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+});
+export const logout = () => req<{ ok: boolean }>(`${API_URL}/auth/logout`, { method: "POST" });
+export const logoutAll = () => req<{ ok: boolean }>(`${API_URL}/auth/logout-all`, { method: "POST" });
 
 export interface Conversation {
   id: string;
@@ -32,6 +68,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking: string | null;
   citations: CitationSource[];
   run_id: string | null;
   status: "completed" | "interrupted";
@@ -67,6 +104,7 @@ export interface CitationSource {
 export type DocumentStatus = "pending" | "indexing" | "indexed" | "needs_ocr" | "failed";
 
 export interface KnowledgeDocument {
+  agent_id?: string | null;
   id: string;
   original_filename: string;
   mime_type: string;
@@ -224,11 +262,13 @@ export interface RunHistoryTool {
 export interface AgentRunHistory {
   id: string;
   conversation_id: string;
+  conversation_title: string;
   execution_mode: "direct" | "planned";
   status: string;
   input_message: string;
   intent: Record<string, unknown> | null;
   context_stats: Record<string, unknown> | null;
+  thinking: string | null;
   input_tokens: number;
   output_tokens: number;
   error: string | null;
@@ -430,10 +470,10 @@ export interface Memory {
   updated_at: string;
 }
 
-async function req<T>(url: string, init?: RequestInit): Promise<T> {
+export async function req<T>(url: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
-    resp = await fetch(url, init);
+    resp = await apiFetch(url, init);
   } catch (error) {
     if (error instanceof TypeError) {
       let apiOrigin = API_URL;
@@ -443,7 +483,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
         // 相对地址或非标准地址直接显示原配置。
       }
       throw new Error(
-        `后端暂时不可用（${apiOrigin}），可能正在启动或自动重载。请稍后重试；若持续出现，再检查后端进程与 CORS_ORIGINS。`,
+        `本地服务暂时没有响应（${apiOrigin}），可能正在启动。请稍后重试；仍无法连接时请重新启动应用。`,
         { cause: error },
       );
     }
@@ -453,8 +493,10 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     const text = await resp.text();
     let detail = text;
     try {
-      const parsed = JSON.parse(text) as { detail?: string };
-      detail = parsed.detail ?? text;
+      const parsed = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+      detail = Array.isArray(parsed.detail)
+        ? parsed.detail.map((item) => item.msg || "输入格式有误").join("；")
+        : parsed.detail ?? text;
     } catch {
       // 非 JSON 错误保留后端原文。
     }
@@ -657,6 +699,9 @@ export const fetchConversationRunStats = (conversationId: string) =>
 
 export const fetchConversationRunHistory = (conversationId: string) =>
   req<AgentRunHistory[]>(`${API_URL}/conversations/${conversationId}/runs/history`);
+
+export const fetchAgentRunHistory = (agentId: string, limit = 100) =>
+  req<AgentRunHistory[]>(`${API_URL}/agents/${encodeURIComponent(agentId)}/runs/history?limit=${limit}`);
 
 export const fetchRunPostprocessStatus = (runId: string) =>
   req<RunPostprocessStatus>(`${API_URL}/runs/${encodeURIComponent(runId)}/postprocess`);
@@ -884,7 +929,7 @@ export async function streamChat(
   runId?: string,
   requirePlanApproval = false,
 ): Promise<void> {
-  const resp = await fetch(`${API_URL}/chat`, {
+  const resp = await apiFetch(`${API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -930,7 +975,7 @@ export async function streamResumeRun(
   onEvent: (ev: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const resp = await fetch(`${API_URL}/chat/${encodeURIComponent(runId)}/resume`, {
+  const resp = await apiFetch(`${API_URL}/chat/${encodeURIComponent(runId)}/resume`, {
     method: "POST",
     signal,
   });

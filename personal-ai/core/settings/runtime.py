@@ -19,6 +19,11 @@ MODEL_FIELDS = (
     "llm_max_output_tokens",
 )
 
+EMBEDDING_FIELDS = (
+    "embedding_provider", "embedding_model", "embedding_model_path", "embedding_dim",
+    "embedding_base_url", "embedding_api_key", "embedding_query_instruction", "embedding_request_dimensions",
+)
+
 AGENT_FIELDS = (
     "name",
     "role",
@@ -163,6 +168,7 @@ def capture_runtime_config(config) -> dict:
             for field in MODEL_FIELDS
         },
         "workspace": {"coding_workspace_dir": config.coding_workspace_dir},
+        "embedding": {field: getattr(config, field, "") for field in EMBEDDING_FIELDS},
     }
 
 
@@ -174,6 +180,9 @@ def apply_runtime_config(config, values: dict) -> None:
             setattr(config, field, model[field])
     if "coding_workspace_dir" in workspace:
         config.coding_workspace_dir = str(workspace["coding_workspace_dir"])
+    for field, value in (values.get("embedding") or {}).items():
+        if field in EMBEDDING_FIELDS:
+            setattr(config, field, value)
 
 
 class RuntimeSettingsStore:
@@ -231,7 +240,7 @@ class RuntimeSettingsStore:
 
     def snapshot(self) -> dict:
         result = copy.deepcopy(self._defaults)
-        for section in ("workspace", "plugin_settings"):
+        for section in ("workspace", "plugin_settings", "embedding"):
             override = self._overrides.get(section)
             if isinstance(override, dict):
                 result[section].update(copy.deepcopy(override))
@@ -270,9 +279,10 @@ class RuntimeSettingsStore:
         return result
 
     def update(self, section: str, values: dict) -> dict:
-        if section not in {"model", "models", "workspace", "agent", "agents", "plugin_settings"}:
+        if section not in {"model", "models", "workspace", "agent", "agents", "plugin_settings", "embedding"}:
             raise KeyError(section)
         with self._lock:
+            previous = copy.deepcopy(self._overrides)
             if section == "model":
                 models = self.snapshot()["models"]
                 for item in models["items"]:
@@ -307,7 +317,11 @@ class RuntimeSettingsStore:
                 self._overrides.pop("agent", None)
             else:
                 self._overrides[section] = copy.deepcopy(values)
-            self._write()
+            try:
+                self._write()
+            except Exception:
+                self._overrides = previous
+                raise
             return self.snapshot()[section]
 
     def _write(self) -> None:

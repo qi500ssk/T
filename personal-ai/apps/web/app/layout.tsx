@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import AppearanceController from "@/components/AppearanceController";
+import AuthGate from "@/components/AuthGate";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,7 +14,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="zh-CN"
       className="h-full antialiased"
     >
-      <body className="min-h-full flex flex-col"><AppearanceController />{children}</body>
+      <body className="min-h-full flex flex-col"><AppearanceController /><AuthGate>{children}</AuthGate></body>
     </html>
   );
 }

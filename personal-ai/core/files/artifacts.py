@@ -33,8 +33,7 @@ class ArtifactRecord:
 
     @property
     def download_url(self) -> str:
-        base = settings.artifact_public_base_url.rstrip("/")
-        return f"{base}/api/artifacts/{self.id}"
+        return f"/api/artifacts/{self.id}"
 
     def public(self) -> dict:
         return {

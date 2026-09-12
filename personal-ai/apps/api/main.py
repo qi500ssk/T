@@ -28,6 +28,8 @@ from apps.api.artifacts import router as artifacts_router
 from apps.api.settings import agent_avatar_url, router as settings_router
 from apps.api.projects import router as projects_router
 from apps.api.images import image_dict, router as images_router
+from apps.api.retrieval_settings import RetrievalMaintenanceMiddleware, router as retrieval_settings_router
+from apps.api.character_memory import router as character_memory_router
 from core.chat.images import resolve_image
 from core.chat.context import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from core.automation.activity import activity_worker, recover_interrupted_activities
@@ -127,6 +129,16 @@ def _resolve_agent_for_activity(agent_id: str | None) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    app.state.retrieval_maintenance = False
+    app.state.retrieval_requests = 0
+    app.state.retrieval_task = None
+    app.state.retrieval_job = {"status": "idle", "processed": 0, "total": 0}
+    app.state.character_tasks = {}
+    from infrastructure.database import CharacterExtraction
+    with SessionLocal() as session:
+        session.query(CharacterExtraction).filter(CharacterExtraction.status == "running").update(
+            {"status": "failed", "error": "上次提取因退出而中断，草稿保留，可重新提取"})
+        session.commit()
     ensure_setup_token()
     workspace_root().mkdir(parents=True, exist_ok=True)
     reject_all_approvals()
@@ -205,6 +217,14 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # 下载/重建线程结束后才释放 Provider，避免后台线程继续使用已关闭对象。
+        if app.state.retrieval_task is not None:
+            await app.state.retrieval_task
+        character_tasks = list(app.state.character_tasks.values())
+        for task in character_tasks:
+            task.cancel()
+        if character_tasks:
+            await asyncio.gather(*character_tasks, return_exceptions=True)
         if app.state.activity_task is not None:
             app.state.activity_stop_event.set()
             app.state.activity_task.cancel()
@@ -222,6 +242,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Personal AI API", version="0.1.0", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(AuthenticationMiddleware)
+app.add_middleware(RetrievalMaintenanceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -240,6 +261,8 @@ app.include_router(artifacts_router)
 app.include_router(settings_router)
 app.include_router(projects_router)
 app.include_router(images_router)
+app.include_router(retrieval_settings_router)
+app.include_router(character_memory_router)
 
 
 class ApprovalRequest(BaseModel):
@@ -296,6 +319,7 @@ def _message_dict(m: Message, images: list[ChatImage] | None = None) -> dict:
         "id": m.id,
         "role": m.role,
         "content": m.content,
+        "thinking": m.thinking,
         "citations": m.citations or [],
         "run_id": m.run_id,
         "status": m.status,

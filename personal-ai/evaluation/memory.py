@@ -1,18 +1,17 @@
-"""阶段 D 固定记忆评测：仅操作 5433 隔离测试库中的专用评测用户。"""
+"""阶段 D 固定记忆评测：仅操作 SQLite 临时库中的专用评测用户。"""
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 from collections import Counter
 from pathlib import Path
 
-os.environ["DATABASE_URL"] = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://personal_ai:personal_ai_test_local@localhost:5433/personal_ai_test",
-)
-if not os.environ["DATABASE_URL"].rstrip("/").endswith("/personal_ai_test"):
-    raise RuntimeError("记忆评测只允许连接 personal_ai_test 数据库")
+# 评测每次创建独立临时数据库，避免清理正式数据。
+import tempfile
+_evaluation_data = tempfile.TemporaryDirectory(prefix="personal-ai-evaluation-")
+os.environ["DATABASE_URL"] = "sqlite:///" + (Path(_evaluation_data.name) / "evaluation.db").as_posix()
 
 from core.chat.context import build_context  # noqa: E402
 from core.chat.memory import MemoryCandidate, retrieve_memories, save_memories  # noqa: E402
@@ -23,8 +22,15 @@ from infrastructure.database import (  # noqa: E402
     Memory,
     Project,
     SessionLocal,
+    engine,
     init_db,
 )
+
+
+@atexit.register
+def _close_evaluation_database() -> None:
+    engine.dispose()
+    _evaluation_data.cleanup()
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -1,8 +1,10 @@
 """全局配置：环境变量 + .env 文件（pydantic-settings）。"""
 
+from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from urllib.parse import urlparse
+from infrastructure.paths import data_path
 
 
 class Settings(BaseSettings):
@@ -29,15 +31,15 @@ class Settings(BaseSettings):
     tools_enabled: bool = True
     tool_timeout_seconds: float = 30.0
     approval_timeout_seconds: float = 60.0
-    sandbox_dir: str = "./data/sandbox"
+    sandbox_dir: str = Field(default_factory=lambda: data_path("sandbox"))
     skills_dir: str = "./skills"
-    skill_trash_dir: str = "./data/skill-trash"
+    skill_trash_dir: str = Field(default_factory=lambda: data_path("skill-trash"))
     plugins_dir: str = "./plugins"
-    plugin_trash_dir: str = "./data/plugin-trash"
-    artifacts_dir: str = "./data/artifacts"
+    plugin_trash_dir: str = Field(default_factory=lambda: data_path("plugin-trash"))
+    artifacts_dir: str = Field(default_factory=lambda: data_path("artifacts"))
     artifact_max_bytes: int = 52_428_800
-    artifact_public_base_url: str = "http://localhost:8787"
-    coding_workspace_dir: str = "./data/coding-workspace"
+    coding_workspace_dir: str = Field(default_factory=lambda: data_path("coding-workspace"))
+    workspace_root_dir: str = Field(default_factory=lambda: data_path("coding-workspace"))
     coding_check_timeout_seconds: float = 120.0
 
     # ---- MCP ----
@@ -86,7 +88,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap_sentences: int = 1
 
     # ---- Files ----
-    file_storage_dir: str = "./data/uploads"
+    file_storage_dir: str = Field(default_factory=lambda: data_path("uploads"))
     file_max_bytes: int = 10_485_760
     file_allowed_extensions: str = ".pdf,.docx,.txt,.md"
     file_max_pages: int = 300
@@ -98,35 +100,37 @@ class Settings(BaseSettings):
     pdf_needs_ocr_min_text_page_ratio: float = 0.2
 
     # ---- Chat Images ----
-    chat_image_storage_dir: str = "./data/chat-images"
+    chat_image_storage_dir: str = Field(default_factory=lambda: data_path("chat-images"))
     chat_image_max_bytes: int = 10_485_760
     chat_image_max_count: int = Field(default=4, ge=1, le=10)
     chat_image_max_pixels: int = Field(default=16_777_216, ge=65_536, le=100_000_000)
     chat_image_recent_turns: int = Field(default=2, ge=0, le=10)
 
     # ---- Agent Avatars ----
-    agent_avatar_storage_dir: str = "./data/agent-avatars"
+    agent_avatar_storage_dir: str = Field(default_factory=lambda: data_path("agent-avatars"))
 
     # ---- Embedding ----
-    embedding_provider: str = "local"  # local | openai-compatible | mock
-    embedding_model_path: str = (
-        "C:/Users/twb/.cache/modelscope/models/BAAI--bge-small-zh-v1.5/snapshots/master"
-    )
-    embedding_dim: int = 512
+    embedding_provider: str = "fastembed"  # keyword | fastembed | local(旧版) | openai-compatible | mock
+    # 留空时按 ./data/models 与用户缓存目录自动查找本地模型，见 core/rag/embedding.py。
+    embedding_model_path: str = ""
+    embedding_dim: int = 384
     embedding_batch_size: int = 32
-    embedding_query_instruction: str = "为这个句子生成表示以用于检索相关文章："
+    embedding_query_instruction: str = ""
     embedding_base_url: str = ""
     embedding_api_key: str = ""
-    embedding_model: str = ""
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_request_dimensions: bool = False
+    character_memory_tokens_budget: int = 1800
 
     # ---- Database ----
-    database_url: str = (
-        "postgresql+psycopg://personal_ai:personal_ai_local@localhost:5432/personal_ai"
-    )
+    database_url: str = Field(default_factory=lambda: "sqlite:///" + Path(data_path("personal-ai.db")).as_posix())
 
     # ---- API ----
-    api_host: str = "127.0.0.1"
-    api_port: int = 8787
+    auth_setup_token_file: str = Field(default_factory=lambda: data_path("auth-setup-token"))
+    auth_session_hours: int = Field(default=168, ge=1, le=720)
+    # 勾选“记住我”时的会话时长（默认 30 天）。
+    auth_session_remember_hours: int = Field(default=720, ge=1, le=8760)
+    auth_cookie_secure: bool = False  # 仅当页面通过 HTTPS 提供服务时设为 true
     cors_origins: str = (
         "http://localhost:4321,http://127.0.0.1:4321,"
         "http://localhost:4322,http://127.0.0.1:4322"
@@ -136,7 +140,7 @@ class Settings(BaseSettings):
     character_file: str = "core/chat/character.yaml"
     system_prompt_file: str = "prompts/system/main.md"
     rag_context_prompt_file: str = "prompts/rag/context.md"
-    runtime_settings_file: str = "./data/runtime-settings.json"
+    runtime_settings_file: str = Field(default_factory=lambda: data_path("runtime-settings.json"))
 
     @property
     def cors_origin_list(self) -> list[str]:

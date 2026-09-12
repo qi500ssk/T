@@ -55,15 +55,15 @@ export default function FolderPickerDialog({
       <div className="flex h-full flex-col">
         <div className="flex items-start justify-between border-b border-zinc-200 px-5 py-5 sm:px-6">
           <div>
-            <h2 id="folder-dialog-title" className="text-xl font-bold">打开文件夹</h2>
-            <p className="mt-1 text-sm text-zinc-500">选择后会授权给当前 AI 好友；再次选择同一目录可共享给其他好友。</p>
+            <h2 id="folder-dialog-title" className="text-xl font-bold">选择工作文件夹</h2>
+            <p className="mt-1 text-sm text-zinc-500">列出这台电脑上允许访问的文件夹，选择后授权给当前 AI 好友。</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-zinc-500 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-label="关闭文件夹选择">×</button>
         </div>
         <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-3 sm:px-6">
-          <button type="button" onClick={() => void load()} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50">磁盘</button>
+          <button type="button" onClick={() => void load()} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50">工作区根目录</button>
           <button type="button" disabled={!listing?.parent_path || loading} onClick={() => void load(listing?.parent_path)} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40">↑ 上一级</button>
-          <p className="min-w-0 flex-1 truncate rounded-xl bg-zinc-100 px-3 py-2.5 font-mono text-xs text-zinc-600" title={listing?.current_path ?? "选择磁盘"}>{listing?.current_path ?? "选择一个磁盘"}</p>
+          <p className="min-w-0 flex-1 truncate rounded-xl bg-zinc-100 px-3 py-2.5 font-mono text-xs text-zinc-600" title={listing?.current_path ?? "工作区"}>{listing?.current_path ?? "工作区"}</p>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {error && <p role="alert" className="m-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -88,7 +88,7 @@ export default function FolderPickerDialog({
           <p className="hidden text-xs text-zinc-500 sm:block">这里只选择位置，不会上传文件内容</p>
           <div className="ml-auto flex gap-3">
             <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm font-medium hover:bg-zinc-50">取消</button>
-            <button type="button" disabled={!listing?.current_path} onClick={() => listing?.current_path && onSelect(listing.current_path)} className="min-h-11 rounded-xl bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40">选择此文件夹</button>
+            <button type="button" disabled={loading || !!error || !listing?.current_path} onClick={() => listing?.current_path && onSelect(listing.current_path)} className="min-h-11 rounded-xl bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40">选择此文件夹</button>
           </div>
         </div>
       </div>
