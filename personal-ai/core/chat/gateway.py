@@ -11,9 +11,18 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator
 
 import httpx
+
+
+def model_transport_error(exc: httpx.RequestError) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "聊天模型请求超时，请检查模型服务或稍后重试（尚不能据此判断联网搜索是否可用）"
+    if isinstance(exc, httpx.ConnectError):
+        return "无法连接聊天模型服务，系统网络连接及直连均失败；请检查模型地址、网络或代理设置"
+    return f"聊天模型连接中断（{type(exc).__name__}），请稍后重试"
 
 
 @dataclass
@@ -60,6 +69,26 @@ class OpenAICompatibleProvider:
             timeout=timeout,
         )
 
+    def _direct_client(self):
+        return httpx.AsyncClient(base_url=self._client.base_url,
+            headers=self._client.headers, timeout=self._client.timeout, trust_env=False)
+
+    @asynccontextmanager
+    async def _stream_response(self, payload):
+        # 只在收到响应前的连接失败时重试，不重放已产生内容的流。
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    response = await stack.enter_async_context(
+                        self._client.stream("POST", "/chat/completions", json=payload))
+                except httpx.ConnectError:
+                    direct = await stack.enter_async_context(self._direct_client())
+                    response = await stack.enter_async_context(
+                        direct.stream("POST", "/chat/completions", json=payload))
+                yield response
+        except httpx.RequestError as exc:
+            raise RuntimeError(model_transport_error(exc)) from exc
+
     async def stream(
         self,
         messages: list[dict],
@@ -77,7 +106,9 @@ class OpenAICompatibleProvider:
             payload["temperature"] = temperature
         if tools:
             payload["tools"] = tools
-        async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
+        if "deepseek" in self.model.lower():
+            payload["thinking"] = {"type": "disabled"}
+        async with self._stream_response(payload) as resp:
             if resp.status_code != 200:
                 body = (await resp.aread()).decode("utf-8", "ignore")[:300]
                 raise RuntimeError(f"LLM API 错误 {resp.status_code}: {body}")
@@ -109,15 +140,30 @@ class OpenAICompatibleProvider:
             "stream": False,
             "max_tokens": self.max_output_tokens,
         }
+        if "deepseek" in self.model.lower():
+            payload["thinking"] = {"type": "disabled"}
+        if getattr(self, "structured_output", False) and "deepseek" in self.model.lower():
+            payload["response_format"] = {"type": "json_object"}
         if _supports_parameter(self.model, "temperature"):
             payload["temperature"] = temperature
-        response = await self._client.post("/chat/completions", json=payload)
+        try:
+            try:
+                response = await self._client.post("/chat/completions", json=payload)
+            except httpx.ConnectError:
+                async with self._direct_client() as direct:
+                    response = await direct.post("/chat/completions", json=payload)
+        except httpx.RequestError as exc:
+            raise RuntimeError(model_transport_error(exc)) from exc
         if response.status_code != 200:
             body = response.text[:300]
             raise RuntimeError(f"LLM API 错误 {response.status_code}: {body}")
         choices = response.json().get("choices") or []
         if not choices:
             raise RuntimeError("LLM API 未返回 choices")
+        if choices[0].get("finish_reason") == "length":
+            raise ValueError("模型输出达到长度上限，内容已截断；请提高输出上限或减少单章范围")
+        if not (choices[0].get("message") or {}).get("content"):
+            raise ValueError("模型没有返回正文，可能只有思考输出；请检查模型的思考模式与输出预算")
         return str((choices[0].get("message") or {}).get("content") or "")
 
     async def close(self) -> None:

@@ -4,12 +4,16 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ["DATABASE_URL"] = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://personal_ai:personal_ai_test_local@localhost:5433/personal_ai_test",
-)
-if not os.environ["DATABASE_URL"].rstrip("/").endswith("/personal_ai_test"):
-    raise RuntimeError("测试只允许连接 personal_ai_test 数据库")
+# 每次测试运行使用全新临时 SQLite 文件，不接受外部正式库地址。
+_test_data = tempfile.TemporaryDirectory(prefix="personal-ai-tests-")
+os.environ["PERSONAL_AI_DATA_DIR"] = _test_data.name
+_postgres_test_url = os.environ.get("PERSONAL_AI_TEST_POSTGRES_URL", "")
+if _postgres_test_url:
+    from sqlalchemy.engine import make_url
+    _test_url = make_url(_postgres_test_url)
+    if _test_url.get_backend_name() != "postgresql" or not (_test_url.database or "").startswith("personal_ai_test_") or _test_url.host not in {"localhost", "127.0.0.1"}:
+        raise RuntimeError("PostgreSQL tests require a dedicated local personal_ai_test_* database")
+os.environ["DATABASE_URL"] = _postgres_test_url or "sqlite:///" + (Path(_test_data.name) / "test.db").as_posix()
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["MODEL_ENVIRONMENT_FALLBACK_ENABLED"] = "true"
 os.environ["EMBEDDING_PROVIDER"] = "mock"
@@ -19,6 +23,7 @@ os.environ["SANDBOX_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_sandbox"
 os.environ["MCP_ENABLED"] = "false"
 os.environ["ACTIVITY_ENABLED"] = "false"
 os.environ["CODING_WORKSPACE_DIR"] = f"{tempfile.gettempdir()}/personal_ai_test_coding"
+os.environ["WORKSPACE_ROOT_DIR"] = tempfile.gettempdir()
 os.environ["RUNTIME_SETTINGS_FILE"] = f"{tempfile.gettempdir()}/personal_ai_test_runtime_settings.json"
 
 import pytest
@@ -31,19 +36,22 @@ from infrastructure.database import Base, engine, init_db
 
 @pytest.fixture(scope="session", autouse=True)
 def test_database():
-    """测试只使用独立 PostgreSQL 数据库，并通过 Alembic 建立 pgvector schema。"""
+    """测试使用独立临时 SQLite 文件，通过 Alembic 建立 schema。"""
     init_db()
     yield
+    engine.dispose()
+    _test_data.cleanup()
 
 
 @pytest.fixture(autouse=True)
-def clean_db(test_database):
-    """每个测试前清空独立测试库，保留 pgvector 扩展和索引。"""
-    table_names = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+def clean_db(test_database, tmp_path, monkeypatch):
+    """每个测试前清空临时库；保留表结构与索引。"""
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"
-        )
+        for table in reversed(Base.metadata.sorted_tables):
+            connection.execute(table.delete())
+    monkeypatch.setattr(settings, "auth_setup_token_file", str(tmp_path / "setup-token"))
+    from core.settings.auth import _attempts
+    _attempts.clear()
     upload_dir = Path(settings.file_storage_dir)
     image_dir = Path(settings.chat_image_storage_dir)
     sandbox_dir = Path(settings.sandbox_dir)
@@ -74,7 +82,30 @@ def clean_db(test_database):
             path.unlink()
 
 
+@pytest.fixture(scope="session")
+def admin_password_hash():
+    from core.settings.auth import hash_password
+    return hash_password("test-admin-password")
+
+
 @pytest.fixture
-def client():
+def client(admin_password_hash):
+    from core.settings.auth import COOKIE_NAME, new_session
+    from infrastructure.database import AdminAccount, SessionLocal
+    with SessionLocal() as session:
+        account = AdminAccount(id=1, username="admin", password_hash=admin_password_hash)
+        session.add(account)
+        session.flush()
+        token = new_session(session, account)
+        session.commit()
     with TestClient(app) as c:
+        c.headers["X-Requested-With"] = "PersonalAI"
+        c.cookies.set(COOKIE_NAME, token)
+        yield c
+
+
+@pytest.fixture
+def anonymous_client():
+    with TestClient(app) as c:
+        c.headers["X-Requested-With"] = "PersonalAI"
         yield c

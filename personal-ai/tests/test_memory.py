@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from core.chat.memory import (
+from core.memory.conversation import (
     MemoryCandidate,
     contains_sensitive_information,
     extract_memories,

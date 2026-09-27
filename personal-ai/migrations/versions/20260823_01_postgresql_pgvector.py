@@ -20,15 +20,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     Base.metadata.create_all(bind=bind)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw "
-        "ON document_chunks USING hnsw (embedding vector_cosine_ops)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_memories_embedding_hnsw "
-        "ON memories USING hnsw (embedding vector_cosine_ops) "
-        "WHERE embedding IS NOT NULL"
-    )
+    # Current metadata supports multiple embedding dimensions; exact pgvector
+    # recall is filtered by model/dimension. Old fixed-dimension HNSW indexes
+    # are removed by revision 13 when upgrading an existing database.
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_memories_user_active_kind "
         "ON memories (user_id, is_active, kind)"

@@ -61,7 +61,7 @@ export interface Project {
 
 export const projectFolderName = (project: Pick<Project, "name" | "workspace_dir">) => {
   const path = project.workspace_dir?.replace(/[\\/]+$/, "");
-  return path?.split(/[\\/]/).at(-1) || path || project.name;
+  return project.name?.trim() || path?.split(/[\\/]/).at(-1) || path || "文件夹";
 };
 
 export interface ChatMessage {
@@ -304,9 +304,10 @@ export interface SkillItem {
   deletable: boolean;
 }
 
-export type McpTransport = "stdio" | "streamable_http";
+export type McpTransport = "stdio" | "streamable_http" | "sse";
 
 export interface McpServerItem {
+  timeout_ms: number;
   name: string;
   transport: McpTransport;
   command: string;
@@ -327,6 +328,7 @@ export interface McpServerItem {
 }
 
 export interface McpServerInput {
+  timeout_ms: number;
   name: string;
   transport: McpTransport;
   command: string;
@@ -568,10 +570,10 @@ export const fetchDocument = (id: string) =>
 export const documentContentUrl = (id: string, page?: number | null) =>
   `${API_URL}/documents/${id}/content${page ? `#page=${page}` : ""}`;
 
-export const uploadFile = (file: File) => {
+export const uploadFile = (file: File, signal?: AbortSignal) => {
   const body = new FormData();
   body.append("file", file);
-  return req<KnowledgeDocument>(`${API_URL}/files`, { method: "POST", body });
+  return req<KnowledgeDocument>(`${API_URL}/files`, { method: "POST", body, signal });
 };
 
 export const chatImageContentUrl = (id: string) =>
@@ -749,6 +751,20 @@ export const deleteSkill = (id: string) =>
   });
 
 export const fetchMcpServers = () => req<McpServerItem[]>(`${API_URL}/mcp-servers`);
+
+export interface WebSearchSettings { enabled: boolean; has_api_key: boolean; provider: "tavily" }
+export interface WebSearchSettingsInput { enabled?: boolean; api_key?: string; clear_api_key?: boolean }
+export const fetchWebSearchSettings = () => req<WebSearchSettings>(`${API_URL}/settings/web-search`);
+export const saveWebSearchSettings = (body: WebSearchSettingsInput) => req<WebSearchSettings>(`${API_URL}/settings/web-search`, {
+  method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
+export const testWebSearchSettings = (body: WebSearchSettingsInput) => req<{ ok: boolean; message: string }>(`${API_URL}/settings/web-search/test`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
+
+export const importMcpServers = (body: unknown) => req<McpServerItem[]>(`${API_URL}/mcp-servers/import`, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
 
 export const refreshMcpServers = () =>
   req<McpServerItem[]>(`${API_URL}/mcp-servers/refresh`, { method: "POST" });
@@ -1004,3 +1020,5 @@ export async function streamResumeRun(
     }
   }
 }
+
+export const pickLocalDirectory = (id:string) => req<{path:string|null}>(`${API_URL}/settings/directories/pick?request_id=${encodeURIComponent(id)}`, {method:"POST"});

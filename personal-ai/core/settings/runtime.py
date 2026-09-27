@@ -195,6 +195,7 @@ class RuntimeSettingsStore:
             **capture_runtime_config(config),
             "agent": default_agent_profile(character),
             "plugin_settings": {},
+            "web_search": {"enabled": False, "api_key": ""},
         }
         if not getattr(config, "model_environment_fallback_enabled", False):
             self._defaults["model"] = {
@@ -234,13 +235,17 @@ class RuntimeSettingsStore:
                     legacy_agent.update(copy.deepcopy(raw["agent"]))
                 raw["agents"] = _normalize_agents(None, legacy_agent)
             raw.pop("agent", None)
+            # 旧联网插件的 Key 转入独立设置，首次迁移保持关闭，等待用户开启。
+            legacy_web = (raw.get("plugin_settings") or {}).get("web-search", {})
+            if "web_search" not in raw and isinstance(legacy_web, dict):
+                raw["web_search"] = {"enabled": False, "api_key": str(legacy_web.get("tavily_api_key") or "")}
             self._overrides = raw
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.error = f"运行时设置加载失败，已使用环境默认值：{exc}"
 
     def snapshot(self) -> dict:
         result = copy.deepcopy(self._defaults)
-        for section in ("workspace", "plugin_settings", "embedding"):
+        for section in ("workspace", "plugin_settings", "embedding", "web_search"):
             override = self._overrides.get(section)
             if isinstance(override, dict):
                 result[section].update(copy.deepcopy(override))
@@ -279,7 +284,7 @@ class RuntimeSettingsStore:
         return result
 
     def update(self, section: str, values: dict) -> dict:
-        if section not in {"model", "models", "workspace", "agent", "agents", "plugin_settings", "embedding"}:
+        if section not in {"model", "models", "workspace", "agent", "agents", "plugin_settings", "embedding", "web_search"}:
             raise KeyError(section)
         with self._lock:
             previous = copy.deepcopy(self._overrides)
@@ -317,6 +322,11 @@ class RuntimeSettingsStore:
                 self._overrides.pop("agent", None)
             else:
                 self._overrides[section] = copy.deepcopy(values)
+                if section == "web_search":
+                    # 新入口保存或清除后，不再保留旧插件中的第二份 Key。
+                    legacy_settings = self._overrides.get("plugin_settings")
+                    if isinstance(legacy_settings, dict):
+                        legacy_settings.pop("web-search", None)
             try:
                 self._write()
             except Exception:

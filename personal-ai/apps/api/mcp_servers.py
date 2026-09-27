@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from apps.api.skills import refresh_skill_runtime
 
@@ -15,7 +15,8 @@ router = APIRouter(prefix="/api/mcp-servers", tags=["mcp-servers"])
 
 class McpServerBody(BaseModel):
     name: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
-    transport: Literal["stdio", "streamable_http"] = "stdio"
+    transport: Literal["stdio", "streamable_http", "sse"] = "stdio"
+    timeout_ms: int = Field(default=30000, ge=1000, le=300000, strict=True)
     command: str = Field(default="", max_length=500)
     args: list[str] = Field(default_factory=list, max_length=50)
     url: str = Field(default="", max_length=2000)
@@ -32,7 +33,7 @@ class McpServerBody(BaseModel):
     def validate_transport_fields(self):
         if self.transport == "stdio" and not self.command.strip():
             raise ValueError("stdio Server 必须填写 command")
-        if self.transport == "streamable_http" and not self.url.strip():
+        if self.transport != "stdio" and not self.url.strip():
             raise ValueError("Streamable HTTP Server 必须填写 URL")
         return self
 
@@ -72,6 +73,34 @@ async def test_mcp_server(body: McpServerBody, request: Request):
         return await _manager(request).test_config(body.name, body.manager_document())
     except Exception as exc:
         raise HTTPException(422, f"连接测试失败：{exc}") from exc
+
+
+@router.post("/import")
+async def import_mcp_servers(body: dict, request: Request):
+    try:
+        entries = body.get("mcpServers", body.get("mcp_servers", body))
+        if not isinstance(entries, dict) or not 1 <= len(entries) <= 50:
+            raise ValueError("请提供 1 到 50 个 MCP 服务器配置")
+        documents = {}
+        for name, raw in entries.items():
+            if not isinstance(raw, dict):
+                raise ValueError("服务器配置必须是对象")
+            raw = dict(raw)
+            transport = raw.pop("type", raw.get("transport", "streamable_http" if raw.get("url") else "stdio"))
+            raw["transport"] = "streamable_http" if transport == "http" else transport
+            raw["enabled"] = False
+            unknown = set(raw) - set(McpServerBody.model_fields)
+            if unknown:
+                raise ValueError("不支持的配置字段：" + ", ".join(sorted(unknown)))
+            documents[name] = McpServerBody(**{**raw, "name": name}).manager_document()
+        await _manager(request).import_users(documents)
+    except ValidationError as exc:
+        fields = [".".join(str(part) for part in item["loc"]) for item in exc.errors()]
+        raise HTTPException(422, "配置字段无效：" + "、".join(fields)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _sync_runtime(request)
+    return _manager(request).list_status()
 
 
 @router.post("")

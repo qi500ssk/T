@@ -33,7 +33,11 @@ def _account_transaction():
     # SQLite 的 FOR UPDATE 不提供行锁。先取得写锁，再检查凭据和换发会话，
     # 避免旧密码登录与密码重设并发时重新产生本应失效的会话。
     with SessionLocal() as session:
-        session.execute(text("BEGIN IMMEDIATE"))
+        if session.get_bind().dialect.name == "sqlite":
+            session.execute(text("BEGIN IMMEDIATE"))
+        else:
+            # Also serializes first-account creation when no row exists yet.
+            session.execute(text("SELECT pg_advisory_xact_lock(713204091)"))
         yield session
         session.commit()
 

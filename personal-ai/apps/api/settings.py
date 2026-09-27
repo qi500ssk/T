@@ -25,6 +25,9 @@ from infrastructure.database import (
     AgentRun,
     Conversation,
     Memory,
+    CharacterMemory,
+    CharacterStoryBinding,
+    CandidateMemory,
     ProjectAgentAccess,
     SessionLocal,
 )
@@ -433,8 +436,18 @@ def delete_agent_profile(agent_id: str, request: Request):
             .first()
         ):
             raise HTTPException(409, "此角色仍有独立记忆，请先删除这些记忆")
-    agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
-    _store(request).update("agents", agents)
+        if session.query(CharacterMemory.id).filter(CharacterMemory.agent_id == agent_id).first():
+            raise HTTPException(409, "此角色仍有背景记忆或候选，请先在记忆页删除")
+        previous = _store(request).snapshot()["agents"]
+        agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
+        session.query(CharacterStoryBinding).filter_by(agent_id=agent_id).delete(synchronize_session=False)
+        session.query(CandidateMemory).filter_by(agent_id=agent_id).delete(synchronize_session=False)
+        try:
+            _store(request).update("agents", agents)
+            session.commit()
+        except Exception:
+            session.rollback(); _store(request).update("agents", previous)
+            raise
     _delete_avatar(agent_id)
     return {"ok": True}
 
@@ -616,9 +629,31 @@ def list_directories(
             continue
         if len(directories) >= 300:
             break
-    parent = None if current == root else str(current.parent)
+    try:
+        parent = str(resolve_workspace(current.parent)) if current != root and current.parent != current else None
+    except ValueError:
+        parent = None
     return {
         "current_path": str(current),
         "parent_path": parent,
         "directories": directories,
     }
+
+
+@router.post("/directories/pick")
+def pick_local_directory(request_id: str | None = Query(default=None, pattern=r"^[a-zA-Z0-9-]{1,64}$")):
+    from core.files.native_folder import select_local_folder
+    from core.files.workspaces import authorize_selected_folder
+    try:
+        selected = select_local_folder(request_id) if request_id else select_local_folder()
+        path = authorize_selected_folder(selected) if selected else None
+        return {"path": str(path) if path else None}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/directories/pick/{request_id}/cancel")
+def cancel_directory_picker(request_id: str):
+    from core.files.native_folder import cancel_local_folder
+    cancel_local_folder(request_id)
+    return {"ok": True}

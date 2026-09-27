@@ -14,7 +14,7 @@ _evaluation_data = tempfile.TemporaryDirectory(prefix="personal-ai-evaluation-")
 os.environ["DATABASE_URL"] = "sqlite:///" + (Path(_evaluation_data.name) / "evaluation.db").as_posix()
 
 from core.chat.context import build_context  # noqa: E402
-from core.chat.memory import MemoryCandidate, retrieve_memories, save_memories  # noqa: E402
+from core.memory.conversation import MemoryCandidate, retrieve_memories, save_memories  # noqa: E402
 from core.rag.embedding import MockEmbeddingProvider  # noqa: E402
 from infrastructure.config import settings  # noqa: E402
 from infrastructure.database import (  # noqa: E402

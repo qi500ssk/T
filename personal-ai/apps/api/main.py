@@ -24,19 +24,23 @@ from apps.api.plans import router as plans_router
 from apps.api.skills import refresh_skill_runtime, router as skills_router
 from apps.api.mcp_servers import router as mcp_servers_router
 from apps.api.plugins import router as plugins_router
+from apps.api.web_search import router as web_search_router
+from core.capabilities.web_search import WebSearchService
 from apps.api.artifacts import router as artifacts_router
 from apps.api.settings import agent_avatar_url, router as settings_router
 from apps.api.projects import router as projects_router
 from apps.api.images import image_dict, router as images_router
 from apps.api.retrieval_settings import RetrievalMaintenanceMiddleware, router as retrieval_settings_router
 from apps.api.character_memory import router as character_memory_router
+from apps.api.document_graph import router as document_graph_router
+from apps.api.stories import router as stories_router
 from core.chat.images import resolve_image
 from core.chat.context import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from core.automation.activity import activity_worker, recover_interrupted_activities
 from core.rag.embedding import build_embedding_provider
 from core.chat.character import load_character
 from core.chat.gateway import build_provider
-from core.chat.memory import (
+from core.memory.conversation import (
     contains_sensitive_information,
     memory_history,
     normalize_memory_key,
@@ -134,10 +138,14 @@ async def lifespan(app: FastAPI):
     app.state.retrieval_task = None
     app.state.retrieval_job = {"status": "idle", "processed": 0, "total": 0}
     app.state.character_tasks = {}
-    from infrastructure.database import CharacterExtraction
+    from infrastructure.database import CharacterExtraction, DocumentGraphChunk, GraphOrganization
     with SessionLocal() as session:
         session.query(CharacterExtraction).filter(CharacterExtraction.status == "running").update(
             {"status": "failed", "error": "上次提取因退出而中断，草稿保留，可重新提取"})
+        session.query(DocumentGraphChunk).filter(DocumentGraphChunk.status == "running").update(
+            {"status": "failed", "error": "上次提取中断，可继续未完成片段"})
+        session.query(GraphOrganization).filter(GraphOrganization.status == "running").update(
+            {"status": "paused", "error": "上次自动整理因退出中断，已保留进度，可继续"})
         session.commit()
     ensure_setup_token()
     workspace_root().mkdir(parents=True, exist_ok=True)
@@ -185,6 +193,8 @@ async def lifespan(app: FastAPI):
     )
     await app.state.mcp_manager.startup()
     app.state.skill_registry = build_default_skill_registry()
+    app.state.web_search_service = WebSearchService(app.state.runtime_settings_store)
+    app.state.web_search_service.sync()
     app.state.plugin_manager = PluginManager(
         app.state.skill_registry,
         app.state.mcp_manager,
@@ -234,6 +244,7 @@ async def lifespan(app: FastAPI):
                 pass
         reject_all_approvals()
         await app.state.mcp_manager.shutdown()
+        app.state.web_search_service.close()
         await app.state.provider.close()
         app.state.embedding_provider.close()
         apply_runtime_config(settings, original_runtime_config)
@@ -257,12 +268,17 @@ app.include_router(plans_router)
 app.include_router(skills_router)
 app.include_router(mcp_servers_router)
 app.include_router(plugins_router)
+app.include_router(web_search_router)
 app.include_router(artifacts_router)
 app.include_router(settings_router)
 app.include_router(projects_router)
 app.include_router(images_router)
 app.include_router(retrieval_settings_router)
 app.include_router(character_memory_router)
+app.include_router(document_graph_router)
+app.include_router(stories_router)
+from apps.api.story_builds import router as story_builds_router
+app.include_router(story_builds_router)
 
 
 class ApprovalRequest(BaseModel):

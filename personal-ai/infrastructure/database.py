@@ -1,4 +1,4 @@
-"""SQLAlchemy 数据层：SQLite 模型与会话管理。"""
+"""SQLAlchemy 数据层：PostgreSQL/pgvector 与 SQLite 回退。"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +19,9 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from infrastructure.sqlite_types import UTCDateTime as DateTime, Vector as VECTOR, cosine_distance
-
 from infrastructure.config import settings
+from sqlalchemy.engine import make_url
+from infrastructure.sqlite_types import UTCDateTime as DateTime, Vector as VECTOR, cosine_distance
 
 
 def _uuid() -> str:
@@ -34,6 +34,21 @@ def _now() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+class StoryBuild(Base):
+    __tablename__ = "story_builds"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(120), default="世界书草稿")
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    request: Mapped[dict] = mapped_column(JSON, default=dict)
+    plan: Mapped[dict] = mapped_column(JSON, default=dict)
+    chapters: Mapped[list] = mapped_column(JSON, default=list)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_dir: Mapped[str] = mapped_column(Text)
+    error: Mapped[str] = mapped_column(Text, default="")
+    document_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Project(Base):
@@ -127,6 +142,7 @@ class AgentRun(Base):
             "conversation_id",
             unique=True,
             sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
         ),
     )
 
@@ -234,6 +250,7 @@ class ToolRun(Base):
             "idempotency_key",
             unique=True,
             sqlite_where=text("idempotency_key IS NOT NULL"),
+            postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
     )
 
@@ -330,6 +347,23 @@ class Memory(Base):
     )
 
 
+class CandidateMemory(Base):
+    __tablename__ = "candidate_memories"
+    __table_args__ = (UniqueConstraint("user_id", "agent_id", "normalized_key", name="uq_candidate_owner_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(64), default="default")
+    agent_id: Mapped[str] = mapped_column(String(100), index=True)
+    normalized_key: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20))
+    importance: Mapped[int] = mapped_column(Integer)
+    confidence: Mapped[float] = mapped_column(Float)
+    source_conversation_id: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class AssistantSkill(Base):
     """Assistant 对本地 Skill 的启用选择；当前使用 default Assistant。"""
 
@@ -386,9 +420,19 @@ class DocumentChunk(Base):
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     char_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    embedding: Mapped[list[float]] = mapped_column(
-        VECTOR(), nullable=False
+    embedding: Mapped[list[float] | None] = mapped_column(
+        VECTOR(), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CharacterStoryBinding(Base):
+    """An immutable character identity within one confirmed story, independent of display graphs."""
+    __tablename__ = "character_story_bindings"
+    agent_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    character_id: Mapped[str] = mapped_column(String(60))
+    story_title: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -403,6 +447,9 @@ class CharacterMemory(Base):
     is_core: Mapped[bool] = mapped_column(Boolean, default=False)
     known_to_character: Mapped[bool] = mapped_column(Boolean, default=True)
     time_label: Mapped[str] = mapped_column(String(200), default="")
+    graph: Mapped[dict] = mapped_column(JSON, default=dict)
+    world_fact_id: Mapped[str | None] = mapped_column(ForeignKey("world_facts.id", ondelete="SET NULL"), nullable=True, index=True)
+    perspective: Mapped[dict] = mapped_column(JSON, default=dict)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
     document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
@@ -416,6 +463,53 @@ class CharacterMemory(Base):
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class GraphOrganization(Base):
+    __tablename__ = "graph_organizations"
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    signature: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    state: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
+class PersonResolution(Base):
+    __tablename__ = "person_resolutions"
+    __table_args__ = (UniqueConstraint("document_id", "name", "target", name="uq_person_resolution"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    target: Mapped[str] = mapped_column(String(80))
+    decision: Mapped[str] = mapped_column(String(20))
+
+
+class WorldFact(Base):
+    """L2 事实/事件只存一次，L3 引用此记录并保存自己的视角。"""
+    __tablename__ = "world_facts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("document_chunks.id", ondelete="CASCADE"), index=True)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str] = mapped_column(Text)
+    source_quote: Mapped[str] = mapped_column(Text)
+    time_label: Mapped[str] = mapped_column(String(200), default="")
+    evidence_type: Mapped[str] = mapped_column(String(20), default="fact")
+    graph: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+
+
+class DocumentGraphChunk(Base):
+    """文档全人物图谱，与角色可知的记忆分离；按原始片段保存覆盖情况。"""
+    __tablename__ = "document_graph_chunks"
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("document_chunks.id", ondelete="CASCADE"), primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    facts: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
@@ -485,7 +579,17 @@ def build_sqlite_engine(url):
     return result
 
 
-engine = build_sqlite_engine(settings.database_url)
+def build_database_engine(url):
+    parsed = make_url(url)
+    if parsed.get_backend_name() == "sqlite":
+        return build_sqlite_engine(parsed)
+    if parsed.get_backend_name() != "postgresql":
+        raise ValueError("仅支持 PostgreSQL 或 SQLite")
+    parsed = parsed.set(drivername="postgresql+psycopg")
+    return create_engine(parsed, pool_pre_ping=True, connect_args={"connect_timeout": 10})
+
+
+engine = build_database_engine(settings.database_url)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
@@ -508,6 +612,7 @@ def _upgrade_sqlite_schema() -> None:
     project_root = Path(__file__).resolve().parents[1]
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("script_location", str(project_root / "migrations"))
-    config.set_main_option("version_locations", str(project_root / "migrations" / "sqlite_versions"))
+    versions = "sqlite_versions" if engine.dialect.name == "sqlite" else "versions"
+    config.set_main_option("version_locations", str(project_root / "migrations" / versions))
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
     command.upgrade(config, "head")

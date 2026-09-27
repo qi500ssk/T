@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     artifact_max_bytes: int = 52_428_800
     coding_workspace_dir: str = Field(default_factory=lambda: data_path("coding-workspace"))
     workspace_root_dir: str = Field(default_factory=lambda: data_path("coding-workspace"))
+    workspace_grants_file: str = Field(default_factory=lambda: data_path("workspace-grants.json"))
     coding_check_timeout_seconds: float = 120.0
 
     # ---- MCP ----

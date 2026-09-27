@@ -11,9 +11,9 @@ import KnowledgeView from "@/components/KnowledgeView";
 import RunStepsView from "@/components/RunStepsView";
 import SettingsSidebar, { type SettingsView } from "@/components/SettingsSidebar";
 import Sidebar, { type WorkspaceView } from "@/components/Sidebar";
-import UtilitySidebar from "@/components/UtilitySidebar";
 import SkillView from "@/components/SkillView";
 import McpView from "@/components/McpView";
+import WebSearchSettingsView from "@/components/WebSearchSettingsView";
 import PluginView from "@/components/PluginView";
 import GeneralSettingsView from "@/components/GeneralSettingsView";
 import AppearanceSettingsView from "@/components/AppearanceSettingsView";
@@ -46,7 +46,6 @@ export default function Home() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [pendingConversationKind, setPendingConversationKind] = useState<"friend" | "normal" | "project">("normal");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [runIndicators, setRunIndicators] = useState<Record<string, "running" | "completed">>({});
   const visibleConversationRef = useRef<{ id: string | null; isChat: boolean }>({ id: null, isChat: true });
 
@@ -82,7 +81,6 @@ export default function Home() {
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       setLeftSidebarOpen(localStorage.getItem("personal-ai-left-sidebar") !== "closed");
-      setRightSidebarOpen(localStorage.getItem("personal-ai-right-sidebar") !== "closed");
     });
     return () => cancelAnimationFrame(frame);
   }, []);
@@ -90,11 +88,6 @@ export default function Home() {
   const setLeftOpen = useCallback((open: boolean) => {
     setLeftSidebarOpen(open);
     localStorage.setItem("personal-ai-left-sidebar", open ? "open" : "closed");
-  }, []);
-
-  const setRightOpen = useCallback((open: boolean) => {
-    setRightSidebarOpen(open);
-    localStorage.setItem("personal-ai-right-sidebar", open ? "open" : "closed");
   }, []);
 
   const handleCreate = useCallback(async () => {
@@ -197,7 +190,7 @@ export default function Home() {
     setView("chat");
   }, []);
 
-  const handleOpenFolder = useCallback(async (workspaceDir: string) => {
+  const handleOpenFolder = useCallback(async (workspaceDir: string, projectName?: string) => {
     if (!selectedAgentId) {
       window.alert("请先选择一个 AI 好友");
       return;
@@ -206,7 +199,7 @@ export default function Home() {
     const existing = projects.find((item) => item.workspace_dir?.replace(/[\\/]+$/, "").toLocaleLowerCase() === normalized);
     const folderName = workspaceDir.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || workspaceDir;
     const project = existing ?? await createProject({
-      name: folderName,
+      name: projectName?.trim() || folderName,
       workspace_dir: workspaceDir,
       agent_id: selectedAgentId,
     });
@@ -281,7 +274,7 @@ export default function Home() {
   );
 
   const handleOpenWorkspace = useCallback((nextView: WorkspaceView) => {
-    setView(nextView);
+    if (nextView === "memories" || nextView === "knowledge" || nextView === "activities") { setSettingsView(nextView); setView("settings"); } else setView(nextView);
   }, []);
 
   const activeConversation = conversations.find((item) => item.id === activeId);
@@ -307,7 +300,7 @@ export default function Home() {
               setAppSettings(value);
               setSelectedAgentId((current) => current ?? value.agents.active_agent_id);
             }} />
-          ) : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "account" ? <AccountSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : <PluginView />}
+          ) : settingsView === "memories" ? <MemoryWorkspace agents={appSettings?.agents.items} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} /> : settingsView === "knowledge" ? <KnowledgeView onAgentCreated={() => {void fetchAppSettings().then(setAppSettings);}} /> : settingsView === "activities" ? <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} /> : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "account" ? <AccountSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : settingsView === "web-search" ? <WebSearchSettingsView /> : <PluginView />}
         </>
       ) : (
         <>
@@ -339,14 +332,14 @@ export default function Home() {
             />
           ) : null}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
-            <div className="relative flex min-h-0 min-w-0 flex-1">
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
               {!leftSidebarOpen ? (
                 <button type="button" onClick={() => setLeftOpen(true)} className="absolute left-3 top-3 z-30 grid size-11 place-items-center rounded-xl border border-zinc-200 bg-white/95 text-zinc-600 shadow-sm backdrop-blur hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-zinc-900" aria-label="显示左侧栏" title="显示左侧栏">›</button>
               ) : null}
-              {!rightSidebarOpen ? (
-                <button type="button" onClick={() => setRightOpen(true)} className="absolute right-3 top-3 z-30 grid size-11 place-items-center rounded-xl border border-zinc-200 bg-white/95 text-zinc-600 shadow-sm backdrop-blur hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-zinc-900" aria-label="显示右侧栏" title="显示右侧栏">‹</button>
-              ) : null}
-              {view === "chat" ? (
+              <nav className="flex shrink-0 gap-2 border-b border-zinc-200 px-6 py-3" aria-label="聊天视图">
+                {(["chat", "runs"] as const).map(value=><button key={value} onClick={()=>setView(value)} aria-pressed={view===value} className={"min-h-10 rounded-xl px-4 text-sm "+(view===value?"bg-zinc-900 text-white":"text-zinc-500 hover:bg-zinc-100")}>{value==="chat"?"对话":"步骤明细"}</button>)}
+              </nav>
+              <div className={view === "chat" ? "flex min-h-0 flex-1" : "hidden"}>
                 <ChatView
                   key={`chat-${newConversationKey}`}
                   conversationId={activeId}
@@ -364,21 +357,13 @@ export default function Home() {
                   onSelectProject={handleSelectProject}
                   onOpenFolder={() => setFolderDialogOpen(true)}
                 />
-              ) : view === "memories" ? (
-                <MemoryWorkspace key={chatAgentId ?? "none"} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} />
-              ) : view === "knowledge" ? (
-                <KnowledgeView />
-              ) : view === "activities" ? (
-                <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} />
-              ) : view === "runs" ? (
-                <RunStepsView agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} conversations={conversations} />
-              ) : null}
+              </div>
+              {view === "runs" && <RunStepsView agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} conversations={conversations} />}
             </div>
-            {rightSidebarOpen ? <UtilitySidebar view={view} onViewChange={setView} onCollapse={() => setRightOpen(false)} /> : null}
           </div>
         </>
       )}
-      <FolderPickerDialog open={folderDialogOpen} initialPath={projects.find((item) => item.id === activeProjectId)?.workspace_dir ?? ""} onClose={() => setFolderDialogOpen(false)} onSelect={(path) => void handleOpenFolder(path)} />
+      <FolderPickerDialog open={folderDialogOpen} initialPath={projects.find((item) => item.id === activeProjectId)?.workspace_dir ?? ""} onClose={() => setFolderDialogOpen(false)} onSelect={handleOpenFolder} />
     </div>
   );
 }

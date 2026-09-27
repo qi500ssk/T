@@ -181,6 +181,13 @@ class McpToolProvider:
 
     async def stream(self, messages, temperature=0.7, tools=None):
         self.round += 1
+        if any(
+            "CHARACTER_THINKING_V1" in str(item.get("content") or "")
+            for item in messages
+            if item.get("role") == "system"
+        ):
+            yield StreamChunk(text="想想怎么调用工具。", finish_reason="stop")
+            return
         if self.round == 1:
             assert any(item["function"]["name"] == self.tool_name for item in tools)
             yield StreamChunk(

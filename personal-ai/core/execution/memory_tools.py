@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import anyio
 from sqlalchemy import and_, or_
 
-from core.chat.memory import (
+from core.memory.conversation import (
     MemoryCandidate,
     contains_sensitive_information,
     normalize_memory_key,
@@ -67,7 +67,7 @@ def _scope_for_context(
     requested: str,
     conversation: Conversation,
 ) -> tuple[str, str]:
-    if requested == "project" and conversation.project_id:
+    if requested == "project" and conversation.project_id and not conversation.agent_id.startswith("story-"):
         return "project", conversation.project_id
     if requested == "conversation":
         return "conversation", conversation.id
@@ -81,6 +81,7 @@ def _visible(memory: Memory, conversation: Conversation) -> bool:
         or (memory.scope_type == "agent" and memory.scope_key == conversation.agent_id)
         or (
             memory.scope_type == "project"
+            and not conversation.agent_id.startswith("story-")
             and conversation.project_id is not None
             and memory.scope_key == conversation.project_id
         )
@@ -132,7 +133,7 @@ def _list_sync(args: dict) -> str:
                     Memory.scope_key == conversation.id,
                 ),
             ]
-            if conversation.project_id:
+            if conversation.project_id and not conversation.agent_id.startswith("story-"):
                 scope.append(
                     and_(
                         Memory.scope_type == "project",

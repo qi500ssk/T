@@ -143,43 +143,9 @@ settings:
     assert "super-secret" not in str(public)
 
 
-def test_web_search_plugin_settings_api_masks_key(client):
-    before = client.get("/api/plugins").json()
-    web_search = next(item for item in before if item["id"] == "web-search")
-    assert web_search["enabled"] is False
-    assert web_search["config_ready"] is False
-    assert web_search["settings"][0]["configured"] is False
-
-    blocked = client.patch("/api/plugins/web-search", json={"enabled": True})
-    assert blocked.status_code == 409
-    assert "Tavily API Key" in blocked.json()["detail"]
-
-    saved = client.patch(
-        "/api/plugins/web-search/settings",
-        json={"values": {"tavily_api_key": "test-tavily-secret"}},
-    )
-    assert saved.status_code == 200
-    assert saved.json()["config_ready"] is True
-    assert saved.json()["settings"][0]["configured"] is True
-    assert "test-tavily-secret" not in saved.text
-
-    cleared = client.patch(
-        "/api/plugins/web-search/settings",
-        json={"clear_keys": ["tavily_api_key"]},
-    )
-    assert cleared.status_code == 200
-    assert cleared.json()["config_ready"] is False
-
-
-def test_web_research_skill_declares_tavily_tools_and_source_rules():
-    path = Path("plugins/web-search/skills/web-research/SKILL.md")
-    skill = parse_skill_document("web-research", path.read_text(encoding="utf-8"))
-    assert set(skill.required_tools) == {
-        "mcp_web-search-tavily_tavily_search",
-        "mcp_web-search-tavily_tavily_extract",
-    }
-    assert "Markdown 链接" in skill.instructions
-    assert "不写入个人记忆或知识库" in skill.instructions
+def test_web_search_has_moved_to_dedicated_settings(client):
+    assert all(item['id'] != 'web-search' for item in client.get('/api/plugins').json())
+    assert client.get('/api/settings/web-search').json()['enabled'] is False
 
 
 def test_p9_management_routes_are_available(client):

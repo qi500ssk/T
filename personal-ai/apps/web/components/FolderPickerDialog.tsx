@@ -1,97 +1,31 @@
 "use client";
-
 import { useEffect, useRef, useState } from "react";
+import { pickLocalDirectory } from "@/lib/api";
 
-import { fetchDirectories, type DirectoryListing } from "@/lib/api";
-
-
-export default function FolderPickerDialog({
-  open,
-  initialPath,
-  onClose,
-  onSelect,
-}: {
-  open: boolean;
-  initialPath: string;
-  onClose: () => void;
-  onSelect: (path: string) => void;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const [listing, setListing] = useState<DirectoryListing | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const load = async (path?: string | null) => {
-    setLoading(true);
-    setError("");
-    try {
-      setListing(await fetchDirectories(path));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "文件夹读取失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      dialog.showModal();
-      void load(initialPath);
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open, initialPath]);
-
-  return (
-    <dialog
-      ref={ref}
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onClose={onClose}
-      className="m-auto h-[min(80vh,42rem)] w-[min(94vw,46rem)] rounded-3xl bg-white p-0 text-zinc-950 shadow-2xl backdrop:bg-zinc-950/35"
-      aria-labelledby="folder-dialog-title"
-    >
-      <div className="flex h-full flex-col">
-        <div className="flex items-start justify-between border-b border-zinc-200 px-5 py-5 sm:px-6">
-          <div>
-            <h2 id="folder-dialog-title" className="text-xl font-bold">选择工作文件夹</h2>
-            <p className="mt-1 text-sm text-zinc-500">列出这台电脑上允许访问的文件夹，选择后授权给当前 AI 好友。</p>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-zinc-500 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900" aria-label="关闭文件夹选择">×</button>
-        </div>
-        <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-3 sm:px-6">
-          <button type="button" onClick={() => void load()} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50">工作区根目录</button>
-          <button type="button" disabled={!listing?.parent_path || loading} onClick={() => void load(listing?.parent_path)} className="min-h-10 rounded-xl border border-zinc-200 px-3 text-sm font-medium hover:bg-zinc-50 disabled:opacity-40">↑ 上一级</button>
-          <p className="min-w-0 flex-1 truncate rounded-xl bg-zinc-100 px-3 py-2.5 font-mono text-xs text-zinc-600" title={listing?.current_path ?? "工作区"}>{listing?.current_path ?? "工作区"}</p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {error && <p role="alert" className="m-3 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-          {loading ? (
-            <div className="grid gap-2 p-3"><div className="h-12 animate-pulse rounded-xl bg-zinc-100 motion-reduce:animate-none" /><div className="h-12 animate-pulse rounded-xl bg-zinc-100 motion-reduce:animate-none" /></div>
-          ) : (
-            <ul className="space-y-1">
-              {listing?.directories.map((directory) => (
-                <li key={directory.path}>
-                  <button type="button" onClick={() => void load(directory.path)} className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
-                    <span className="text-amber-500" aria-hidden="true">▰</span>
-                    <span className="min-w-0 flex-1 truncate">{directory.name}</span>
-                    <span className="text-xs text-zinc-400">打开 ›</span>
-                  </button>
-                </li>
-              ))}
-              {!loading && listing && listing.directories.length === 0 && <li className="px-4 py-10 text-center text-sm text-zinc-400">这个文件夹中没有子文件夹</li>}
-            </ul>
-          )}
-        </div>
-        <div className="flex items-center justify-between gap-4 border-t border-zinc-200 px-4 py-4 sm:px-6">
-          <p className="hidden text-xs text-zinc-500 sm:block">这里只选择位置，不会上传文件内容</p>
-          <div className="ml-auto flex gap-3">
-            <button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm font-medium hover:bg-zinc-50">取消</button>
-            <button type="button" disabled={loading || !!error || !listing?.current_path} onClick={() => listing?.current_path && onSelect(listing.current_path)} className="min-h-11 rounded-xl bg-zinc-950 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-40">选择此文件夹</button>
-          </div>
-        </div>
+export default function FolderPickerDialog({open,initialPath,onClose,onSelect}:{open:boolean;initialPath:string;onClose:()=>void;onSelect:(path:string,name?:string)=>Promise<void>}) {
+  const ref=useRef<HTMLDialogElement>(null);
+  const pickId=useRef<string|null>(null);
+  const [name,setName]=useState("");
+  const [path,setPath]=useState("");
+  const [picking,setPicking]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const busy=picking||saving;
+  useEffect(()=>{const dialog=ref.current;if(!dialog)return;if(open&&!dialog.open){setName("");setPath(initialPath);setError("");dialog.showModal();}else if(!open&&dialog.open)dialog.close();},[open,initialPath]);
+  async function pick(){const id=crypto.randomUUID();pickId.current=id;setPicking(true);setError("");try{const result=await pickLocalDirectory(id);if(pickId.current===id&&result.path)setPath(result.path);}catch(e){if(pickId.current===id)setError(e instanceof Error?e.message:"无法选择文件夹");}finally{if(pickId.current===id){pickId.current=null;setPicking(false);}}}
+  async function create(){if(!path||busy)return;setSaving(true);setError("");try{await onSelect(path,name.trim());}catch(e){setError(e instanceof Error?e.message:"创建项目失败");}finally{setSaving(false);}}
+  return <dialog ref={ref} onCancel={e=>{e.preventDefault();if(!busy)onClose();}} className="m-auto h-[min(80vh,42rem)] w-[min(94vw,46rem)] rounded-3xl bg-white p-0 text-zinc-950 shadow-2xl backdrop:bg-zinc-950/35" aria-labelledby="folder-dialog-title">
+    <div className="flex h-full flex-col">
+      <header className="flex items-center justify-between border-b border-zinc-200 px-6 py-5"><h2 id="folder-dialog-title" className="text-xl font-bold">创建项目</h2><button type="button" disabled={busy} onClick={onClose} aria-label="关闭文件夹选择" className="size-10 rounded-lg text-zinc-500 hover:bg-zinc-100 disabled:opacity-40">×</button></header>
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-6">
+        <label className="grid gap-3 text-sm font-medium">项目名<input value={name} onChange={e=>setName(e.target.value)} maxLength={120} disabled={busy} placeholder="不填写则使用文件夹名称" className="h-12 w-full rounded-xl border border-zinc-200 px-4 font-normal outline-none focus:border-zinc-500"/></label>
+        <section className="flex flex-1 flex-col"><h3 className="mb-3 text-sm font-medium">源文件夹</h3><div className="flex min-h-44 flex-1 flex-col items-center justify-center gap-5 rounded-2xl border border-zinc-200 p-6">
+          {path&&<p className="max-w-full break-all text-center text-sm text-zinc-600">{path}</p>}
+          <button type="button" onClick={()=>void pick()} disabled={busy} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm hover:bg-zinc-50 disabled:opacity-50">{picking?"文件夹窗口已打开":path?"更换文件夹":"在此电脑中选择文件夹"}</button>
+        </div></section>
+        {error&&<p role="alert" className="text-sm text-red-600">{error}</p>}
       </div>
-    </dialog>
-  );
+      <footer className="flex items-center justify-between gap-4 border-t border-zinc-200 px-6 py-4"><p className="hidden text-xs text-zinc-500 sm:block">这里只选择位置，不会上传文件内容</p><div className="ml-auto flex gap-3"><button type="button" disabled={busy} onClick={onClose} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm disabled:opacity-40">取消</button><button type="button" disabled={busy||!path} onClick={()=>void create()} className="min-h-11 rounded-xl bg-zinc-950 px-5 text-sm font-medium text-white disabled:opacity-40">{saving?"创建中…":"创建项目"}</button></div></footer>
+    </div>
+  </dialog>;
 }

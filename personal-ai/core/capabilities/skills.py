@@ -200,6 +200,7 @@ def allowed_tool_names(skills: list[Skill], enabled: bool = True) -> set[str]:
     if not enabled:
         return set()
     names = set(DEFAULT_TOOL_NAMES)
+    names.update(name for name in ("web_search", "web_read") if name in TOOLS)
     if skills:
         names.add("skill_load")
     for skill in skills:

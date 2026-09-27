@@ -51,6 +51,38 @@ def _document_dict(document: Document) -> dict:
     }
 
 
+@router.get("/worldbooks")
+def list_worldbooks():
+    from core.story.reader import read_book
+    with SessionLocal() as session:
+        result = []
+        for row in session.query(Document).order_by(Document.created_at.desc()):
+            try:
+                book = read_book(row, settings)
+                result.append({"id": row.id, "title": book["title"], "synopsis": book["synopsis"], "structured": book["structured"]})
+            except (OSError, ValueError):
+                result.append({"id": row.id, "title": row.original_filename, "synopsis": "原文件暂时无法读取，请重新上传", "structured": False})
+        return result
+
+
+@router.get("/worldbooks/{document_id}")
+def read_worldbook(document_id: str, page: int = Query(default=0, ge=0)):
+    from core.story.reader import read_book, paginate
+    with SessionLocal() as session:
+        row = session.get(Document, document_id)
+        if row is None:
+            raise HTTPException(404, "世界书不存在")
+        try:
+            book = read_book(row, settings)
+        except (OSError, ValueError):
+            raise HTTPException(422, "无法读取原文，请检查文件格式或重新上传") from None
+    pages = paginate(book.pop("sections"))
+    if page >= max(1, len(pages)):
+        raise HTTPException(404, "页码不存在")
+    return {**book, "id": document_id, "page": page, "total": len(pages),
+            "content": pages[page] if pages else {"title": "正文", "text": "暂无正文"}}
+
+
 def _chunk_dict(chunk: DocumentChunk) -> dict:
     return {
         "id": chunk.id,
@@ -72,6 +104,21 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     if not data:
         raise HTTPException(415, "文件内容为空")
     original_filename = Path(file.filename or "").name
+    if Path(original_filename).suffix.lower() in {".json", ".md", ".txt"}:
+        from core.story.document import parse_story
+        from core.story.importer import import_story
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeError:
+            text = ""
+        if "personal-ai-story-v1" in text or Path(original_filename).suffix.lower() == ".json":
+            try:
+                story = parse_story(text)
+            except ValueError:
+                raise HTTPException(422, "故事文件格式或人物引用有误，未导入，请检查后重试") from None
+            doc_id = await anyio.to_thread.run_sync(import_story, story, request.app.state.embedding_provider, settings)
+            with SessionLocal() as session:
+                return _document_dict(session.get(Document, doc_id))
     try:
         extension = validate_file(data, original_filename, file.content_type or "", settings)
     except UnsupportedFileError as exc:

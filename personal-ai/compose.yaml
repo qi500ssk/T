@@ -1,4 +1,4 @@
-# 仅保留用于迁移前的旧 PostgreSQL 实例；SQLite 日常运行不使用 Docker。
+# 本机 PostgreSQL + pgvector；仅监听回环地址，已有卷保持不变。
 services:
   postgres:
     image: pgvector/pgvector:pg16

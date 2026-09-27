@@ -94,6 +94,8 @@ def values_for(body, previous):
 
 def public_status(request):
     state = request.app.state
+    # 先复制任务状态，避免返回值序列化期间被后台任务改为完成。
+    job = dict(getattr(state, "retrieval_job", {"status": "idle", "processed": 0, "total": 0}))
     values = state.runtime_settings_store.snapshot()["embedding"]
     provider = state.embedding_provider
     return {
@@ -107,7 +109,7 @@ def public_status(request):
         "query_instruction": values["embedding_query_instruction"],
         "notice": getattr(provider, "reason", ""),
         "models": [{"id": key, **value, "cached_path": cached_model_directory(key)} for key, value in LOCAL_MODELS.items()],
-        "job": getattr(state, "retrieval_job", {"status": "idle", "processed": 0, "total": 0}),
+        "job": job,
     }
 
 

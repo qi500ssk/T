@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import StoryBuildProgress from "./StoryBuildProgress";
 import remarkGfm from "remark-gfm";
 
 import Avatar, { DEFAULT_USER_AVATAR, agentAvatarUrl } from "@/components/Avatar";
 import SelectMenu from "@/components/SelectMenu";
+import CopyCode from "@/components/CopyCode";
+import StoryQuestions, { parseStoryQuestions } from "@/components/StoryQuestions";
 import {
   getLiveRunSession,
   postprocessPollRegistered,
@@ -23,7 +26,6 @@ import {
   RISK_LABELS,
   STATUS_LABELS,
   TOOL_LABELS,
-  ThinkingBlock,
   compactText,
   type RunTraceItem,
   type ToolStatus,
@@ -277,6 +279,7 @@ function ChatComposer({
   onRemoveImage: (id: string) => void;
 }) {
   const [projectOpen, setProjectOpen] = useState(false);
+  const [projectSearch, setProjectSearch] = useState("");
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const activeProject = projects.find((project) => project.id === activeProjectId);
 
@@ -333,17 +336,17 @@ function ChatComposer({
     >
       <div className="relative flex min-h-12 items-center gap-2 border-b border-zinc-100 px-3 sm:px-4" ref={projectMenuRef}>
         <button type="button" disabled={isStreaming} onClick={() => setProjectOpen((value) => !value)} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-xl px-2.5 text-left text-sm font-medium text-zinc-700 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-50" aria-expanded={projectOpen} aria-haspopup="menu" aria-controls="folder-menu">
-          <span className="text-zinc-400" aria-hidden="true">▱</span>
-          <span className="max-w-40 truncate sm:max-w-64">{activeProject ? projectFolderName(activeProject) : "不在项目中工作"}</span>
+          <span className="max-w-40 truncate sm:max-w-64">{activeProject ? projectFolderName(activeProject) : "对话"}</span>
           <span className="text-xs text-zinc-400" aria-hidden="true">⌃</span>
         </button>
-        {projectOpen && <div id="folder-menu" className="absolute bottom-11 left-3 z-30 max-h-[min(24rem,calc(100dvh-6rem))] w-[min(20rem,calc(100vw-3rem))] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-xl" role="menu" aria-label="选择文件夹">
-          <p className="px-3 pb-2 pt-1 text-xs font-medium text-zinc-400">已打开的文件夹</p>
-          {projects.map((project) => <button key={project.id} type="button" role="menuitemradio" aria-checked={project.id === activeProjectId} onClick={() => { onSelectProject(project.id); setProjectOpen(false); }} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm ${project.id === activeProjectId ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}><span className="text-zinc-400" aria-hidden="true">▱</span><span className="min-w-0 flex-1 truncate">{projectFolderName(project)}</span>{project.id === activeProjectId && <span aria-hidden="true">✓</span>}</button>)}
-          {projects.length === 0 && <p className="px-3 py-4 text-sm text-zinc-400">还没有打开过文件夹</p>}
-          <div className="my-1 border-t border-zinc-100" />
-          <button type="button" role="menuitem" onClick={() => { setProjectOpen(false); onOpenFolder(); }} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium hover:bg-zinc-50"><span aria-hidden="true">⊞</span>打开文件夹</button>
-          <button type="button" role="menuitemradio" aria-checked={activeProjectId === null} onClick={() => { onSelectProject(null); setProjectOpen(false); }} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm ${activeProjectId === null ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}><span aria-hidden="true">◯</span><span className="min-w-0 flex-1">不在项目中工作</span>{activeProjectId === null && <span aria-hidden="true">✓</span>}</button>
+        {projectOpen && <div id="folder-menu" className="absolute bottom-11 left-3 z-30 max-h-[min(24rem,calc(100dvh-6rem))] w-[min(20rem,calc(100vw-3rem))] overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-xl" role="menu" aria-label="选择对话方式">
+          {projects.length > 0 && <>
+            <input aria-label="搜索项目" placeholder="搜索项目" value={projectSearch} onChange={e=>setProjectSearch(e.target.value)} className="mb-2 w-full border-b border-zinc-100 bg-transparent px-3 py-3 text-sm outline-none focus:border-zinc-400" />
+            {projects.filter(p=>(p.name+" "+(p.workspace_dir||"")).toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase())).map(project=><button key={project.id} type="button" role="menuitemradio" aria-checked={project.id===activeProjectId} onClick={()=>{onSelectProject(project.id);setProjectOpen(false);setProjectSearch("");}} className={`flex min-h-11 w-full items-center rounded-xl px-3 text-left text-sm ${project.id===activeProjectId?"bg-zinc-100 font-medium":"hover:bg-zinc-50"}`} title={project.workspace_dir||project.name}><span className="truncate">{project.name}</span></button>)}
+            <div className="my-2 border-t border-zinc-100" />
+          </>}
+          <button type="button" role="menuitem" onClick={() => { setProjectOpen(false); onOpenFolder(); }} className="flex min-h-11 w-full items-center rounded-xl px-3 text-left text-sm font-medium hover:bg-zinc-50">文件夹</button>
+          <button type="button" role="menuitemradio" aria-checked={activeProjectId === null} onClick={() => { onSelectProject(null); setProjectOpen(false); }} className={`flex min-h-11 w-full items-center rounded-xl px-3 text-left text-sm ${activeProjectId === null ? "bg-zinc-100 font-medium" : "hover:bg-zinc-50"}`}>对话</button>
         </div>}
         <span className="ml-auto hidden text-xs text-zinc-400 sm:block">当前对话上下文</span>
       </div>
@@ -533,6 +536,10 @@ function MessageBubble({
   agent?: AgentSettings;
 }) {
   const isUser = role === "user";
+  const supportsQuestions = !!agent?.custom_instructions?.includes("story-questions");
+  const questionnaire = !isUser && supportsQuestions ? parseStoryQuestions(content) : null;
+  const cleanContent = !isUser && supportsQuestions ? content.replace(/```story-build[\s\S]*?(?:```|$)/g, "创作方案见下方，可开始生成并自动保存。").trim() : content;
+  const displayContent = questionnaire ? `${questionnaire.text}\n\n${questionnaire.questions[0].title}` : (!isUser && supportsQuestions && streaming ? cleanContent.replace(/```story-questions[\s\S]*$/, "正在整理选项…") : cleanContent);
   const usedCitations = citations.filter((source) =>
     content.toLowerCase().includes(`[${source.citation_id.toLowerCase()}]`),
   );
@@ -559,7 +566,7 @@ function MessageBubble({
         ) : (
           <div className="text-sm">
             <div className="prose prose-sm max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CopyCode }}>{displayContent}</ReactMarkdown>
             </div>
             {streaming && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-gray-400 align-middle" />
@@ -667,13 +674,10 @@ export default function ChatView({
   const [conversationTokens, setConversationTokens] = useState(0);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
-  const [thinking, setThinking] = useState("");
-  const [thinkingActive, setThinkingActive] = useState(false);
-  const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
-  const [thinkingEndedAt, setThinkingEndedAt] = useState<number | null>(null);
   const [postprocess, setPostprocess] = useState<Record<string, RunPostprocessStatus>>({});
   const locallyCreatedConversationRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement>(null);
+  const followBottom = useRef(true);
   const activeConversationRef = useRef(conversationId);
   const messagesConversationRef = useRef(conversationId);
   const lastPositionedConversationRef = useRef<string | null>(null);
@@ -687,10 +691,6 @@ export default function ChatView({
     setCurrentRun(session?.currentRun ?? null);
     setContextUsage(session?.contextUsage ?? null);
     setContextLoading(session?.contextLoading ?? false);
-    setThinking(session?.thinking ?? "");
-    setThinkingActive(session?.thinkingActive ?? false);
-    setThinkingStartedAt(session?.thinkingStartedAt ?? null);
-    setThinkingEndedAt(session?.thinkingEndedAt ?? null);
     setIsStreaming(session?.running ?? false);
     setError(session?.error ?? "");
     setPostprocess(session?.postprocess ?? {});
@@ -836,7 +836,7 @@ export default function ChatView({
       messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "auto" });
       return;
     }
-    messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "smooth" });
+    if (followBottom.current) messageScrollRef.current?.scrollTo({ top: messageScrollRef.current.scrollHeight, behavior: "instant" });
   }, [messages, streaming, toolActivities, approvals]);
 
   const updateToolActivity = useCallback(
@@ -1073,36 +1073,6 @@ export default function ChatView({
                 contextLoading: false,
               }));
               updateTrace(convId, "context", "装配上下文", "completed", selected > 0 ? `限定 ${selected} 个附件；资料候选 ${knowledgeCandidates}，使用 ${sources}，裁剪 ${knowledgeExcluded}` : `记忆候选 ${memoryCandidates}，使用 ${memories}，裁剪 ${memoryExcluded}；资料使用 ${sources}`);
-            } else if (ev.event === "thinking.started") {
-              const startedAtMs = Date.now();
-              updateLiveRunSession(convId, (session) => ({
-                ...session,
-                thinking: "",
-                thinkingActive: true,
-                thinkingStartedAt: startedAtMs,
-                thinkingEndedAt: null,
-              }));
-              updateTrace(convId, "thinking", "思考回应", "running", "角色正在酝酿怎么回应");
-            } else if (ev.event === "thinking.delta") {
-              const chunk = String(ev.data.content ?? "");
-              updateLiveRunSession(convId, (session) => {
-                const thinking = session.thinking + chunk;
-                return {
-                  ...session,
-                  thinking,
-                  runTrace: session.runTrace.map((item) => item.key === "thinking" ? { ...item, detail: compactText(thinking, 400) } : item),
-                };
-              });
-            } else if (ev.event === "thinking.completed") {
-              const fullText = String(ev.data.content ?? "");
-              const endedAtMs = Date.now();
-              updateLiveRunSession(convId, (session) => ({
-                ...session,
-                thinking: fullText,
-                thinkingActive: false,
-                thinkingEndedAt: endedAtMs,
-              }));
-              updateTrace(convId, "thinking", "思考回应", "completed", fullText);
             } else if (ev.event === "planning.started") {
               const phase = String(ev.data.phase ?? "document");
               updateTrace(convId, "planning", phase === "document" ? "编写规划文档" : "恢复既有任务", "running", phase === "document" ? "正在整理目标、范围、技术方案、步骤和验收标准" : "正在从中断位置核对已完成步骤");
@@ -1416,9 +1386,11 @@ export default function ChatView({
   const composerProps = { projects, activeProjectId, onSelectProject, onOpenFolder, attachments, onRemoveAttachment: (id: string) => setAttachments((items) => items.filter((item) => item.id !== id)), images, onImageFiles: (files: File[]) => void handleImageFiles(files), onRemoveImage: removeImage, onStop: () => void stop(), isStopping };
   const composerLocked = isStreaming || currentRun?.status === "running";
   const liveRunId = conversationId ? getLiveRunSession(conversationId)?.runId : null;
-  const showLiveThinking = thinkingActive || (isStreaming && thinking !== "");
 
   const effectiveAgent = agent ?? appSettings?.agent;
+  const lastMessage = messages.at(-1);
+  const pendingQuestion = effectiveAgent?.custom_instructions?.includes("story-questions") && lastMessage?.role === "assistant" && (!lastMessage.status || lastMessage.status === "completed") && !composerLocked
+    ? parseStoryQuestions(lastMessage.content) : null;
   const effectiveSettings = appSettings && effectiveAgent
     ? { ...appSettings, agent: effectiveAgent }
     : appSettings;
@@ -1433,19 +1405,14 @@ export default function ChatView({
           </section>
         </div>
       ) : (
-        <div ref={messageScrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+        <div ref={messageScrollRef} onScroll={e => { const el = e.currentTarget; followBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8" style={{ scrollBehavior: "auto" }}>
           <div className="mx-auto w-full max-w-4xl space-y-8">
             {messages.map((message) => <div key={message.id} className="space-y-3">
-              {message.role === "assistant" && message.thinking && (
-                <ThinkingBlock text={message.thinking} active={false} startedAt={null} endedAt={null} defaultOpen={false} />
-              )}
               <MessageBubble role={message.role} content={message.content} status={message.status} citations={message.citations} images={message.images} agent={effectiveAgent} />
               {message.role === "assistant" && message.run_id ? <PostprocessIndicator value={postprocess[message.run_id]} /> : null}
             </div>)}
-            {showLiveThinking && (
-              <ThinkingBlock text={thinking} active={thinkingActive} startedAt={thinkingStartedAt} endedAt={thinkingEndedAt} defaultOpen />
-            )}
             <ToolActivityList items={toolActivities} />
+            {conversationId && effectiveAgent?.custom_instructions?.includes("story-build") && <StoryBuildProgress key={conversationId} conversationId={conversationId} revision={lastMessage?.id||""} />}
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
             {(streaming !== "" || (loading && conversationId)) && <div className="space-y-2">
               <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== "" && isStreaming} agent={effectiveAgent} />
@@ -1458,7 +1425,8 @@ export default function ChatView({
       )}
 
       {!empty && <div className="border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur sm:px-6">
-        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
+        {pendingQuestion ? <StoryQuestions key={`${conversationId}:${lastMessage?.id}`} questions={pendingQuestion.questions.slice(0, 1)} disabled={composerLocked || uploadBusy || !(appSettings?.model_control.locked || selectedModelId)} onSubmit={async text => { if (!composerLocked && !uploadBusy) await send(text); }} /> :
+        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />}
         {composerNotice && <p className="mx-auto mt-2 max-w-4xl px-1 text-xs text-emerald-700">{composerNotice}</p>}
       </div>}
     </main>

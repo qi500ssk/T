@@ -22,6 +22,15 @@ def _conversation() -> str:
         return row.id
 
 
+def is_thinking_call(messages) -> bool:
+    """思考阶段（内心独白）不携带工具定义；fake provider 对它返回一段短文本。"""
+    return any(
+        "CHARACTER_THINKING_V1" in str(item.get("content") or "")
+        for item in messages
+        if item.get("role") == "system"
+    )
+
+
 async def _run(message: str, approve: bool | None = None):
     events = []
     async for event in run_chat(
@@ -110,6 +119,9 @@ async def test_user_stop_persists_partial_reply_as_interrupted(monkeypatch):
 
     class PartialProvider:
         async def stream(self, messages, temperature=0.7, tools=None):
+            if is_thinking_call(messages):
+                yield StreamChunk(text="想想怎么回应。", finish_reason="stop")
+                return
             yield StreamChunk(text="这是一段已经显示的部分回答。")
             await asyncio.Event().wait()
 
@@ -321,6 +333,9 @@ class RecordingProvider:
 
     async def stream(self, messages, temperature=0.7, tools=None):
         self.calls.append(messages.copy())
+        if is_thinking_call(messages):
+            yield StreamChunk(text="想想怎么回应。", finish_reason="stop")
+            return
         if len(self.calls) == 1:
             yield StreamChunk(
                 tool_calls_delta=[
@@ -347,6 +362,9 @@ class SequencedMemoryCreateProvider:
         self.final_messages = []
 
     async def stream(self, messages, temperature=0.7, tools=None):
+        if is_thinking_call(messages):
+            yield StreamChunk(text="想想怎么记住。", finish_reason="stop")
+            return
         if self.calls < len(self.requests):
             request = self.requests[self.calls]
             call_index = self.calls
@@ -456,6 +474,9 @@ class SkillLoadingProvider:
 
     async def stream(self, messages, temperature=0.7, tools=None):
         self.calls += 1
+        if is_thinking_call(messages):
+            yield StreamChunk(text="想想怎么读取笔记。", finish_reason="stop")
+            return
         if self.calls == 1:
             assert any(item["function"]["name"] == "skill_load" for item in tools)
             yield StreamChunk(tool_calls_delta=[{
@@ -478,11 +499,11 @@ async def test_assistant_tool_call_message_is_returned(monkeypatch):
     provider = RecordingProvider()
     async for _ in run_chat(provider, _conversation(), "tool", skills=[]):
         pass
-    second_call = provider.calls[1]
-    assert second_call[-2]["role"] == "assistant"
-    assert second_call[-2]["tool_calls"][0]["id"] == "call-recorded"
-    assert second_call[-1]["role"] == "tool"
-    assert second_call[-1]["tool_call_id"] == "call-recorded"
+    # 携带工具结果（末条 role=tool）的调用是工具后的续跑。
+    follow_up = next(call for call in provider.calls if call[-1]["role"] == "tool")
+    assert follow_up[-2]["role"] == "assistant"
+    assert follow_up[-2]["tool_calls"][0]["id"] == "call-recorded"
+    assert follow_up[-1]["tool_call_id"] == "call-recorded"
 
 
 @pytest.mark.asyncio

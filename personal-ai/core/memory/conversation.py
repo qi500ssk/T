@@ -1,4 +1,4 @@
-"""聊天域长期记忆：提取事实、按作用域去重写入并按当前问题召回。"""
+"""L4 对话长期记忆：提取事实、按作用域去重写入并按当前问题召回。"""
 
 from __future__ import annotations
 
@@ -137,6 +137,8 @@ def _resolve_scope(
     """无法判断或 project 缺少上下文时，一律保守降级到 conversation scope。"""
     if scope_type not in _SCOPES:
         scope_type = "conversation"
+    if (agent_id or "").startswith("story-") and scope_type == "project":
+        scope_type = "agent"
     if scope_type == "project" and not project_id:
         scope_type = "conversation"
     if scope_type == "agent" and not agent_id:
@@ -168,7 +170,8 @@ def _recall_filters(
             and_(Memory.scope_type == "conversation", Memory.scope_key == conversation_id)
         )
     if project_id:
-        scope_conditions.append(and_(Memory.scope_type == "project", Memory.scope_key == project_id))
+        if not (agent_id or "").startswith("story-"):
+            scope_conditions.append(and_(Memory.scope_type == "project", Memory.scope_key == project_id))
     return [
         Memory.user_id == user_id,
         Memory.is_active.is_(True),

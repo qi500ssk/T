@@ -68,6 +68,7 @@ export default function SelectMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [position, setPosition] = useState<MenuPosition | null>(null);
 
@@ -95,6 +96,8 @@ export default function SelectMenu({
 
   const openMenu = (initialIndex = selectedIndex >= 0 ? selectedIndex : firstEnabled(options)) => {
     if (disabled || options.length === 0) return;
+    // Keep menus in the native dialog's top layer, including nested dialogs.
+    setPortalTarget(triggerRef.current?.closest("dialog") ?? document.body);
     setActiveIndex(options[initialIndex]?.disabled ? firstEnabled(options) : initialIndex);
     setOpen(true);
   };
@@ -167,6 +170,7 @@ export default function SelectMenu({
       choose(activeIndex);
     } else if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeMenu(true);
     } else if (event.key === "Tab") {
       closeMenu();
@@ -201,7 +205,7 @@ export default function SelectMenu({
           <path d="m4 6 4 4 4-4" />
         </svg>
       </button>
-      {open && typeof document !== "undefined" && createPortal(
+      {open && portalTarget && createPortal(
         <div
           ref={menuRef}
           id={listboxId}
@@ -236,7 +240,7 @@ export default function SelectMenu({
             );
           })}
         </div>,
-        document.body,
+        portalTarget,
       )}
     </>
   );

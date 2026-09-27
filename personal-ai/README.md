@@ -13,6 +13,7 @@
 - 设置页选择本地或在线 Embedding；未下载模型时可用关键词检索
 - 自主模式与规划模式，支持中断、恢复和执行记录
 - 本地工具、Skill、声明式插件和 MCP Server
+- 可选联网搜索：在设置页填写 Tavily Key 并开启，由 AI 按问题决定是否搜索或读取网页；[使用说明](docs/web-search.md)
 - 高风险操作审批、工具白名单、超时和审计记录
 - 定时或一次性活动任务
 - Agent 人格、模型、上下文窗口和本地文件夹项目
@@ -22,9 +23,9 @@
 | 部分 | 技术 |
 |---|---|
 | 后端 | Python 3.11+、FastAPI、SQLAlchemy、Alembic |
-| 数据库 | SQLite（Python 内置驱动） |
+| 数据库 | PostgreSQL + pgvector（保留 SQLite 测试兼容） |
 | 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS 4 |
-| 检索 | SQLite JSON 向量、余弦相似度、BM25、RRF |
+| 检索 | pgvector 余弦相似度、BM25、RRF |
 | 协议 | HTTP、SSE、MCP |
 
 ## 环境要求
@@ -50,10 +51,9 @@ Copy-Item .env.example .env
 
 ### 2. 本机数据库
 
-不需要安装或启动数据库服务。首次启动后端会自动创建 SQLite 文件和数据表。
-默认位置为当前系统用户的数据目录：Windows 为 `%LOCALAPPDATA%/PersonalAI/personal-ai.db`，macOS 为 `~/Library/Application Support/PersonalAI/personal-ai.db`，Linux 为 `~/.local/share/personal-ai/personal-ai.db`。
-可在启动进程前设置 `PERSONAL_AI_DATA_DIR` 改变默认数据目录，或用 `DATABASE_URL=sqlite:///./data/personal-ai.db` 显式指定开发数据库。
-不同电脑、不同系统用户默认保存各自的数据；同一用户重装或升级会继续使用原数据。不要让不同实例指向同一个数据库文件。
+当前开发环境使用本机 PostgreSQL + pgvector。先运行 `docker compose up -d postgres`，再启动后端。
+连接地址由 `.env` 的 `DATABASE_URL` 指定；不要覆盖已有连接地址，否则会打开另一个数据库。首次启动自动运行对应的 Alembic 迁移。
+SQLite 仍支持显式 `sqlite:///...` 连接，供测试和回退使用。上传文件与运行时配置目录不因切换数据库而改变。
 
 ### 3. 启动后端
 
@@ -88,7 +88,7 @@ npm run dev
 
 | 配置 | 作用 |
 |---|---|
-| `DATABASE_URL` | 本机 SQLite 文件地址，拒绝远程数据库连接 |
+| `DATABASE_URL` | 数据库连接地址，当前使用本机 PostgreSQL + psycopg |
 | `LLM_*` | 可选的部署级模型锁定配置 |
 | `EMBEDDING_PROVIDER` | 默认 `fastembed`；另有 `keyword`、`openai-compatible`、兼容旧模型的 `local` 和测试用 `mock` |
 | `CHARACTER_MEMORY_TOKENS_BUDGET` | 好友背景与经历的上下文预算，默认 1800 token |
@@ -174,30 +174,21 @@ personal-ai/
 
 ## 数据存储
 
-数据库的用途、选型与迁移方法见 [Agent 数据库选型与切换指南](docs/Agent数据库选型与切换指南.md)。
+- 账号、会话、角色记忆、长期记忆及世界书元数据保存在 PostgreSQL；上传文件、生成文件和模型设置仍保存在本机目录。
+- 使用单个后端进程。pgvector 按模型与维度筛选后进行精确向量召回；关键词模式以 NULL 表示没有向量。当前未建立跨模型近似向量索引。
+- `.env`、数据库备份与运行时设置包含私密数据，不加入版本控制或发行包。
+- PostgreSQL 备份使用 `pg_dump -Fc`，并另行备份上传文件、worldbooks 文件夹和运行时设置。恢复前停止后端，优先恢复至新库，再切换连接。
+- SQLite 备份仍可使用 `python -m scripts.backup_database <新文件路径>`。
 
-- 账号、恢复码摘要、会话、记忆、知识库元数据和向量：本机 SQLite 文件。
-- 上传文件、生成文件和运行时配置：默认位于同一个用户数据目录；`.env` 可单独覆盖路径。
-- SQLite 启用 WAL、外键检查和写锁等待。仍使用单个后端进程；向量相似度为扫描计算，适合当前个人资料库，尚未实现大规模向量索引。
-- 本地登录不等于磁盘加密。发行包不得包含开发者的 `.env`、数据库、备份、上传文件、运行时密钥配置或 `data/` 中的测试脚本。
-
-数据库备份（不要只复制运行中的 `.db` 文件而遗漏 WAL）：
-
-```powershell
-uv run python -m scripts.backup_database ./backups/personal-ai.db
-```
-
-还需单独备份上传文件、生成文件和运行时设置。恢复时先停止后端，保存现有数据，再替换数据库与配套文件。
-
-从旧 PostgreSQL 迁入（只读源库，不覆盖目标；保留账号、恢复码和业务记录，旧会话需重新登录）：
+从 SQLite 切回 PostgreSQL（先停止后端；只创建新目标库，不覆盖已有库）：
 
 ```powershell
-# 先停止旧后端，把原 .env 留存为 .env.postgresql-backup
-uv run --group postgres-import python -m scripts.import_postgres --source-env .env.postgresql-backup --destination ./data/personal-ai.db
-# 成功后设置 DATABASE_URL=sqlite:///./data/personal-ai.db，保留原文件存储路径
+uv run python -m scripts.migrate_sqlite_to_postgres --source data/personal-ai.db --target-env .env.postgresql-backup --database personal_ai_new --activate
 ```
 
-旧 PostgreSQL 迁移历史在 `migrations/versions/`；SQLite 只运行 `migrations/sqlite_versions/`。不会自动删除旧数据库或 Docker volume。
+脚本先创建一致的 SQLite 副本，迁移所有业务表，逐行比对内容和向量，再修改 `.env`；报告与旧配置位于 `data/backups/postgres-switch-*`。原 SQLite 和旧 PostgreSQL 库保留。PostgreSQL 使用 `migrations/versions/`，SQLite 使用 `migrations/sqlite_versions/`。
+
+当前本机迁移记录与回退说明见 [PostgreSQL 切换记录](docs/postgresql-switch.md)。
 
 ## 测试与检查
 

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import Avatar, { agentAvatarUrl } from "@/components/Avatar";
+import SmallDialog from "./SmallDialog";
+import MemoryView from "./MemoryView";
 import SelectMenu from "@/components/SelectMenu";
 
 import {
@@ -36,6 +38,8 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [agent, setAgent] = useState<AgentSettings | null>(null);
   const [agentProfileName, setAgentProfileName] = useState("");
+  const [agentDialog, setAgentDialog] = useState(false);
+  const [cardTab, setCardTab] = useState("settings");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [model, setModel] = useState<ModelProfileInput | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
@@ -192,34 +196,22 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
     <main id="main-content" className="min-w-0 flex-1 overflow-y-auto bg-white">
       <div className="mx-auto w-full max-w-5xl px-5 py-8 sm:px-8 lg:px-14 lg:py-14">
         {section === "general" && (
-          <form onSubmit={saveAgent}>
-            <p className="text-sm font-medium text-zinc-500">基础设置</p>
-            <h1 className="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">角色设定</h1>
-            <p className="mt-4 max-w-3xl text-sm leading-6 text-zinc-600">保存多个可命名的角色并随时切换。有自定义提示词时，它会完整覆盖基础行为设定；留空时才使用语言、语气等基础选项。</p>
-            <div className="mt-9 grid items-start gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-              <aside className="rounded-3xl border border-zinc-200 bg-white p-3" aria-label="已保存角色">
-                <div className="flex items-center justify-between px-2 py-2">
-                  <div><h2 className="font-semibold">已保存角色</h2><p className="mt-0.5 text-xs text-zinc-500">{settings.agents.items.length} 个预设</p></div>
-                  <button type="button" onClick={newAgentProfile} className="min-h-10 rounded-xl bg-zinc-950 px-3 text-sm font-medium text-white hover:bg-zinc-800">＋ 新建</button>
-                </div>
-                <div className="mt-2 space-y-2">
-                  {settings.agents.items.map((profile) => (
-                    <div key={profile.id} className={`rounded-2xl border p-2 ${profile.id === selectedAgentId ? "border-zinc-900 bg-zinc-50" : "border-zinc-200"}`}>
-                      <button type="button" onClick={() => selectAgentProfile(profile)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
+          <div>
+            <header className="mb-8 flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">角色卡</h1><button type="button" onClick={()=>{newAgentProfile();setCardTab("settings");setAgentDialog(true);}} className="min-h-10 rounded-xl bg-zinc-900 px-4 text-sm text-white">＋ 新建</button></header>
+            <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">                  {settings.agents.items.map((profile) => (
+                    <div key={profile.id} className="rounded-2xl border border-zinc-200 bg-white p-5">
+                      <button type="button" onClick={() => {selectAgentProfile(profile);setCardTab("settings");setAgentDialog(true);}} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
                         <Avatar src={agentAvatarUrl(profile)} alt={`${profile.name}的头像`} className="size-10 rounded-xl ring-1 ring-zinc-200" />
                         <span className="min-w-0 flex-1"><span className="flex items-center gap-2"><strong className="min-w-0 flex-1 truncate text-sm">{profile.profile_name}</strong>{profile.is_active && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">使用中</span>}</span>
-                        <span className="mt-1 block truncate text-xs text-zinc-500">{profile.custom_instructions.trim() ? "完全自定义提示词" : `${profile.name} · 基础设定`}</span></span>
+                        <span className="mt-1 block truncate text-xs text-zinc-500">{profile.role}</span></span>
                       </button>
                       <div className="flex gap-1 px-1 pb-1">
                         {!profile.is_active && <button type="button" disabled={busy !== ""} onClick={() => void run("agent-select", async () => { await setActiveAgentProfile(profile.id); await refreshAgentSettings(`已切换为“${profile.profile_name}”`, profile.id); })} className="min-h-9 rounded-lg px-2 text-xs font-medium text-zinc-600 hover:bg-white disabled:opacity-40">使用此角色</button>}
                         <button type="button" disabled={busy !== "" || profile.is_active} onClick={() => { if (window.confirm(`删除角色预设“${profile.profile_name}”？`)) void run("agent-delete", async () => { await deleteAgentProfile(profile.id); await refreshAgentSettings("角色预设已删除", settings.agents.active_agent_id); }); }} className="ml-auto min-h-9 rounded-lg px-2 text-xs text-red-600 hover:bg-red-50 disabled:text-zinc-300" title={profile.is_active ? "请先使用另一个角色" : "删除预设"}>删除</button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </aside>
-
-              <section className="rounded-3xl bg-zinc-100 p-5 ring-1 ring-zinc-200 sm:p-7" aria-label={selectedAgentId ? "编辑角色预设" : "新建角色预设"}>
+                  ))}</div>
+            {agentDialog&&<SmallDialog size="large" title={selectedAgentId?"编辑角色":"新建角色"} onClose={()=>setAgentDialog(false)}>{selectedAgentId&&<nav aria-label="角色卡内容" className="mb-5 flex gap-2">{[["settings","角色设置"],["memories","相处与用户记忆"]].map(([value,label])=><button type="button" key={value} aria-pressed={cardTab===value} onClick={()=>setCardTab(value)} className={`min-h-10 rounded-xl px-4 text-sm ${cardTab===value?"bg-zinc-900 text-white":"border border-zinc-200"}`}>{label}</button>)}</nav>}{cardTab==="memories"&&selectedAgentId?<MemoryView key={selectedAgentId} agentId={selectedAgentId} agentName={agent.name}/>:<form onSubmit={saveAgent}>              <section className="rounded-3xl bg-zinc-100 p-5 ring-1 ring-zinc-200 sm:p-7" aria-label={selectedAgentId ? "编辑角色预设" : "新建角色预设"}>
                 <div className="flex items-center gap-4 rounded-2xl bg-white p-4">
                   <button type="button" disabled={!selectedAgentId || busy !== ""} onClick={() => avatarInputRef.current?.click()} className="group relative size-14 shrink-0 overflow-hidden rounded-2xl ring-1 ring-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed" aria-label={selectedAgentId ? "选择新的角色头像" : "请先保存角色，再选择头像"} title={selectedAgentId ? "点击更换头像" : "保存角色后可更换头像"}>
                     <Avatar src={agentAvatarUrl(agent)} alt={`${agent.name}的头像`} className="size-full transition group-hover:brightness-75" />
@@ -249,9 +241,8 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                   </fieldset>
                 </div>
                 <div className="mt-6 flex justify-end"><button type="submit" disabled={busy !== "" || !agentProfileName.trim()} className="min-h-11 rounded-xl bg-zinc-950 px-6 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50">{busy === "agent" ? "保存中…" : selectedAgentId ? "保存修改" : "保存角色"}</button></div>
-              </section>
-            </div>
-          </form>
+              </section>{error&&<p role="alert" className="mt-3 text-red-700">{error}</p>}{notice&&<p role="status" className="mt-3 text-sm">{notice}</p>}</form>}</SmallDialog>}
+          </div>
         )}
 
         {section === "model" && (

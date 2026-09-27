@@ -367,6 +367,31 @@ def test_chat_stream_events(client):
     assert postprocess.json()["status"] == "completed"
 
 
+def test_chat_stream_answers_without_extra_thinking(client):
+    """回答不触发额外思考事件，也不写入独白，角色记录仍保持隔离。"""
+    conv = client.post("/api/conversations", json={}).json()
+    r = client.post("/api/chat", json={"conversation_id": conv["id"], "message": "你好"})
+    assert r.status_code == 200
+    events = parse_sse(r.text)
+    types = [e[0] for e in events]
+    assert not any(t.startswith("thinking.") for t in types)
+    assert types.index("context.completed") < types.index("model.started")
+    thinking_text = None
+
+    msgs = client.get(f"/api/conversations/{conv['id']}/messages").json()
+    assert msgs[-1]["role"] == "assistant"
+    assert msgs[-1]["thinking"] == thinking_text
+
+    agent_id = conv["agent_id"]
+    rows = client.get(f"/api/agents/{agent_id}/runs/history").json()
+    assert len(rows) == 1
+    assert rows[0]["conversation_id"] == conv["id"]
+    assert rows[0]["conversation_title"]
+    assert rows[0]["thinking"] == thinking_text
+    # 其他角色的视图必须保持隔离：不存在的角色查不到任何 Run。
+    assert client.get("/api/agents/no-such-agent/runs/history").json() == []
+
+
 def test_run_history_includes_tool_records(client):
     conv = client.post("/api/conversations", json={}).json()
     with SessionLocal() as session:
@@ -448,7 +473,7 @@ def test_duplicate_manual_memory_returns_409(client):
     assert len(client.get("/api/memories").json()) == 1
 
 
-def test_project_memory_requires_existing_project(client):
+def test_project_memory_requires_existing_project(client, tmp_path):
     missing = client.post(
         "/api/memories",
         json={
@@ -461,7 +486,7 @@ def test_project_memory_requires_existing_project(client):
     assert missing.status_code == 404
 
     project = client.post(
-        "/api/projects", json={"name": "JQ", "workspace_dir": "E:/Pycharm/JQ"}
+        "/api/projects", json={"name": "JQ", "workspace_dir": str(tmp_path)}
     ).json()
     created = client.post(
         "/api/memories",
@@ -612,9 +637,9 @@ def test_memory_update_and_disable(client):
     assert disabled.json()["is_active"] is False
 
 
-def test_memory_revision_history_scope_filters_and_expiry(client):
+def test_memory_revision_history_scope_filters_and_expiry(client, tmp_path):
     project = client.post(
-        "/api/projects", json={"name": "JQ", "workspace_dir": "E:/Pycharm/JQ"}
+        "/api/projects", json={"name": "JQ", "workspace_dir": str(tmp_path)}
     ).json()
     original = client.post(
         "/api/memories",

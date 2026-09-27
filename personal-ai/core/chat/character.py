@@ -1,6 +1,7 @@
 """聊天域 Character：身份、人格、用户画像 → System Prompt。"""
 
 import copy
+from pathlib import Path
 from string import Template
 
 import yaml
@@ -8,7 +9,11 @@ import yaml
 
 def load_character(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        character = yaml.safe_load(f)
+    instruction_file = character.get("custom_instructions_file")
+    if instruction_file:
+        character["custom_instructions"] = (Path(path).resolve().parent / instruction_file).read_text(encoding="utf-8")
+    return character
 
 
 def apply_agent_profile(character: dict, profile: dict | None) -> dict:

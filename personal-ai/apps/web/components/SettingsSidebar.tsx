@@ -5,7 +5,7 @@ import LogoutButton from "@/components/LogoutButton";
 import type { WorkspaceView } from "@/components/Sidebar";
 import type { AgentSettings } from "@/lib/api";
 
-export type SettingsView = "general" | "model" | "retrieval" | "appearance" | "account" | "skills" | "mcp" | "plugins";
+export type SettingsView = "general" | "model" | "retrieval" | "appearance" | "account" | "skills" | "mcp" | "plugins" | "web-search" | "memories" | "knowledge" | "activities";
 
 interface SettingsSidebarProps {
   onBack: () => void;
@@ -33,11 +33,31 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
       </button>
 
       <nav className="px-3 pb-5" aria-label="设置导航">
-        <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">基础设置</p>
+        <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">常用功能</p>
         <button type="button" onClick={() => onViewChange("general")} className={itemClass(view === "general")} aria-current={view === "general" ? "page" : undefined}>
           <span aria-hidden="true">☷</span>
-          角色设定
+          角色卡
         </button>
+        <button
+          type="button"
+          onClick={() => onOpenWorkspace("knowledge")}
+          className={itemClass(view === "knowledge")}
+          aria-current={view === "knowledge" ? "page" : undefined}
+        >
+          <span aria-hidden="true">▣</span>
+          世界书
+        </button>
+        <button
+          type="button"
+          onClick={() => onOpenWorkspace("memories")}
+          className={itemClass(view === "memories")}
+          aria-current={view === "memories" ? "page" : undefined}
+        >
+          <span aria-hidden="true">◇</span>
+          记忆
+        </button>
+        <button type="button" onClick={()=>onOpenWorkspace("activities")} className={itemClass(view === "activities")}><span aria-hidden="true">◷</span>活动</button>
+        <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">基础设置</p>
         <button type="button" onClick={() => onViewChange("model")} className={`${itemClass(view === "model")} mt-1`} aria-current={view === "model" ? "page" : undefined}>
           <span aria-hidden="true">◉</span>
           模型设置
@@ -56,6 +76,9 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
         </button>
 
         <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">Agent 能力</p>
+        <button type="button" onClick={() => onViewChange("web-search")} className={itemClass(view === "web-search")} aria-current={view === "web-search" ? "page" : undefined}>
+          <span aria-hidden="true">◎</span>联网搜索
+        </button>
         <button
           type="button"
           onClick={() => onViewChange("skills")}
@@ -74,23 +97,6 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
           插件
         </button>
 
-        <p className="mb-2 mt-6 px-3 text-xs font-medium text-zinc-400">数据与上下文</p>
-        <button
-          type="button"
-          onClick={() => onOpenWorkspace("memories")}
-          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-zinc-600 hover:bg-white hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
-        >
-          <span aria-hidden="true">◇</span>
-          记忆
-        </button>
-        <button
-          type="button"
-          onClick={() => onOpenWorkspace("knowledge")}
-          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm text-zinc-600 hover:bg-white hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
-        >
-          <span aria-hidden="true">▣</span>
-          知识库
-        </button>
       </nav>
 
       <div className="mt-auto hidden border-t border-zinc-200 p-4 md:block">

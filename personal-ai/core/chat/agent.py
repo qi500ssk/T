@@ -9,7 +9,6 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import AsyncIterator, Literal
 
 import anyio
@@ -18,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from core.chat.character import apply_agent_profile, load_character, render_system_prompt
 from core.chat.context import build_context, estimate_tokens
 from core.chat.continuation import find_continuation_context, is_continuation_request
-from core.chat.memory import extract_memories, save_memories
+from core.memory.conversation import extract_memories, save_memories
 from core.chat.intent import IntentResult, narrow_allowed_tools, route_intent
 from core.chat.checkpoints import (
     checkpoint_dict,
@@ -75,8 +74,6 @@ from infrastructure.database import (
 
 logger = logging.getLogger(__name__)
 MAX_SUMMARY_CHARS = 500
-SYSTEM_PROMPT_ROOT = Path(__file__).resolve().parents[2] / "prompts" / "system"
-THINKING_MAX_CHARS = 1200
 
 
 def _mcp_tool_guidance(mcp_clients: list | None) -> str:
@@ -169,9 +166,12 @@ async def _postprocess_turn(
             def _save_extracted():
                 with SessionLocal() as session:
                     conv = session.get(Conversation, conversation_id)
+                    from core.memory.candidates import retain_candidates
+                    admitted_candidates = retain_candidates(session, candidates, user_id, conv.agent_id if conv else None,
+                        conversation_id, settings.memory_min_importance, settings.memory_min_confidence)
                     return save_memories(
                         session,
-                        candidates,
+                        admitted_candidates,
                         user_id,
                         conversation_id,
                         settings.memory_min_importance,
@@ -640,25 +640,9 @@ async def run_chat(
             )
             yield AgentEvent("context.completed", context_stats)
             messages = [{"role": "system", "content": context.system}] + context.messages
-            # 角色思考（内心独白）：每次 Run 只做一次，放在所有生成阶段之前；
-            # 定时活动的后台 Run 没有观看者，跳过以节省调用。
+            # 回答直接进入生成流程，不再发起独立的内心独白调用。
             thinking_text = ""
             thinking_usage: dict = {}
-            if activity_id is None:
-                thinking_captured: list[dict] = []
-                async for event in _stream_thinking(
-                    provider,
-                    context.system,
-                    context.messages,
-                    run_id,
-                    conversation_id,
-                    approval_mode,
-                    thinking_captured,
-                ):
-                    yield event
-                thinking_text = str(thinking_captured[0]) if thinking_captured else ""
-                if len(thinking_captured) > 1:
-                    thinking_usage = dict(thinking_captured[1])
             if planning_document_mode:
                 yield AgentEvent(
                     "planning.started", {"run_id": run_id, "phase": "document"}
@@ -1153,12 +1137,13 @@ async def run_chat(
         return
     except Exception as exc:
         cancel_run_approvals(run_id)
+        error_message = str(exc).strip() or f"运行失败（{type(exc).__name__}），请检查服务连接或重试"
         if plan_id:
             try:
-                await anyio.to_thread.run_sync(finish_plan, plan_id, "failed", str(exc))
+                await anyio.to_thread.run_sync(finish_plan, plan_id, "failed", error_message)
             except Exception:
                 logger.exception("Plan 失败状态写入失败")
-        await _fail_run(run_id, "failed", str(exc))
+        await _fail_run(run_id, "failed", error_message)
         if plan_id:
             failure_reply = "规划模式未完成，系统已安全停止后续步骤。请重试或切换自主模式。"
             try:
@@ -1167,7 +1152,7 @@ async def run_chat(
                 yield AgentEvent("message.completed", {})
             except Exception:
                 logger.exception("Plan 失败说明写入失败")
-        yield AgentEvent("run.failed", {"run_id": run_id, "error": str(exc)})
+        yield AgentEvent("run.failed", {"run_id": run_id, "error": error_message})
         return
     finally:
         reset_coding_workspace(coding_workspace_token)
@@ -1292,58 +1277,6 @@ def _save_run_context_stats(run_id: str, context_stats: dict) -> None:
         if run is not None:
             run.context_stats = context_stats
             session.commit()
-
-
-async def _stream_thinking(
-    provider,
-    system: str,
-    messages: list[dict],
-    run_id: str,
-    conversation_id: str,
-    approval_mode: Literal["interactive", "deny"],
-    captured: list[dict],
-) -> AsyncIterator[AgentEvent]:
-    """回答前的角色内心独白：delta 转为 thinking 事件，不与正式回答混淆。
-
-    captured[0] 收集独白全文，captured[1] 收集本次调用的 token 用量。
-    """
-    thinking_messages = [
-        {
-            "role": "system",
-            "content": system
-            + "\n\n"
-            + (SYSTEM_PROMPT_ROOT / "thinking.md").read_text(encoding="utf-8"),
-        },
-        *messages,
-    ]
-    yield AgentEvent("thinking.started", {"run_id": run_id})
-    text = ""
-    async for event in execute_model_loop(
-        provider,
-        thinking_messages,
-        None,
-        set(),
-        run_id,
-        conversation_id,
-        approval_mode=approval_mode,
-        max_turns=1,
-        tool_budget=ToolCallBudget(0),
-    ):
-        if event.type == "executor.completed":
-            captured.append(dict(event.data.get("usage") or {}))
-            continue
-        if event.type == "message.delta":
-            chunk = str(event.data.get("content") or "")
-            if not chunk:
-                continue
-            text += chunk
-            if len(text) <= THINKING_MAX_CHARS:
-                yield AgentEvent("thinking.delta", {"run_id": run_id, "content": chunk})
-            continue
-        yield AgentEvent(event.type, event.data)
-    full_text = text.strip()[:THINKING_MAX_CHARS]
-    captured.insert(0, full_text)
-    yield AgentEvent("thinking.completed", {"run_id": run_id, "content": full_text})
 
 
 async def _finish_run(

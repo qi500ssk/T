@@ -15,7 +15,7 @@ import anyio
 
 from core.execution.permissions import create_approval, wait_for_approval
 from core.chat.checkpoints import create_checkpoint
-from core.chat.memory import normalize_memory_key
+from core.memory.conversation import normalize_memory_key
 from core.execution.tool_pipeline import ToolInvocation, run_post_tool_hooks, run_pre_tool_hooks
 from core.execution.tools import TOOLS, ToolValidationError, execute_tool, prepare_tool
 from infrastructure.config import settings

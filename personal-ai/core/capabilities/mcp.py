@@ -11,12 +11,14 @@ import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
+from functools import partial
 
 import yaml
 import httpx
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
 
@@ -28,7 +30,7 @@ logger = logging.getLogger(__name__)
 VALID_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
 VALID_MODEL_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 VALID_RISKS = {"low", "medium", "high"}
-VALID_TRANSPORTS = {"stdio", "streamable_http"}
+VALID_TRANSPORTS = {"stdio", "streamable_http", "sse"}
 UNSUPPORTED_CONTENT_MESSAGES = {
     "image": "工具返回了图片，P4 暂不展示",
     "audio": "工具返回了音频，P4 暂不播放",
@@ -47,6 +49,7 @@ class McpServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    timeout_ms: int = 30000
     default_risk_level: str = "high"
     allowed_tools: tuple[str, ...] = ()
     tool_risk_levels: dict[str, str] = field(default_factory=dict)
@@ -83,12 +86,12 @@ def _parse_server_config(name: str, raw: object) -> McpServerConfig:
         raise TypeError("Server 配置必须是对象")
     transport = str(raw.get("transport", "stdio")).strip().lower()
     if transport not in VALID_TRANSPORTS:
-        raise ValueError("transport 必须是 stdio 或 streamable_http")
+        raise ValueError("transport 必须是 stdio、streamable_http 或 sse")
     command = raw.get("command", "")
     url = raw.get("url", "")
     if transport == "stdio" and (not isinstance(command, str) or not command.strip()):
         raise ValueError("stdio Server 的 command 必须是非空字符串")
-    if transport == "streamable_http":
+    if transport in {"streamable_http", "sse"}:
         if not isinstance(url, str) or not url.strip():
             raise ValueError("Streamable HTTP Server 的 url 必须是非空字符串")
         if not re.fullmatch(r"https?://[^\s]+", url.strip()):
@@ -118,6 +121,9 @@ def _parse_server_config(name: str, raw: object) -> McpServerConfig:
         raise TypeError("enabled 必须是布尔值")
     env = _string_map(raw.get("env", {}), "env")
     headers = _string_map(raw.get("headers", {}), "headers")
+    timeout_ms = raw.get("timeout_ms", 30000)
+    if type(timeout_ms) is not int or not 1000 <= timeout_ms <= 300000:
+        raise ValueError("timeout_ms 必须是 1000 到 300000 的整数")
     return McpServerConfig(
         name=name,
         transport=transport,
@@ -126,6 +132,7 @@ def _parse_server_config(name: str, raw: object) -> McpServerConfig:
         url=url.strip() if isinstance(url, str) else "",
         env=env,
         headers=headers,
+        timeout_ms=timeout_ms,
         enabled=enabled,
         default_risk_level=default_risk,
         allowed_tools=allowed_tools,
@@ -220,7 +227,7 @@ class McpClient:
             raise RuntimeError("MCP Client 已连接")
         stack = AsyncExitStack()
         try:
-            async with asyncio.timeout(timeout or settings.tool_timeout_seconds):
+            async with asyncio.timeout(timeout or self.config.timeout_ms / 1000):
                 if self.config.transport == "stdio":
                     command = (
                         sys.executable
@@ -238,11 +245,17 @@ class McpClient:
                     read_stream, write_stream = await stack.enter_async_context(
                         stdio_client(params)
                     )
+                elif self.config.transport == "sse":
+                    read_stream, write_stream = await stack.enter_async_context(
+                        sse_client(self.config.url, headers=self.config.headers,
+                                   timeout=self.config.timeout_ms / 1000,
+                                   httpx_client_factory=partial(httpx.AsyncClient, follow_redirects=False))
+                    )
                 else:
                     http_client = await stack.enter_async_context(
                         httpx.AsyncClient(
                             headers=self.config.headers,
-                            timeout=settings.tool_timeout_seconds,
+                            timeout=self.config.timeout_ms / 1000,
                             follow_redirects=False,
                         )
                     )

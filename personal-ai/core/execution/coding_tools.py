@@ -70,7 +70,7 @@ def _is_sensitive_name(name: str) -> bool:
 
 
 def _service_files() -> set[Path]:
-    return {Path(settings.runtime_settings_file).resolve(), Path(settings.auth_setup_token_file).resolve()}
+    return {Path(settings.runtime_settings_file).resolve(), Path(settings.auth_setup_token_file).resolve(), Path(settings.workspace_grants_file).resolve(), Path(settings.workspace_grants_file).with_suffix(".tmp").resolve()}
 
 
 def _workspace_path(raw_path: str, *, allow_sensitive: bool = False) -> Path:

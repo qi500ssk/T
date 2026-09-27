@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import {
@@ -167,14 +166,14 @@ function SkillRow({
     : "bg-amber-50 text-amber-700";
 
   return (
-    <article className="border-b border-zinc-200 last:border-b-0">
-      <div className="flex min-h-24 items-center gap-4 px-5 py-4 sm:px-6">
-        <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-white text-lg shadow-sm ring-1 ring-zinc-200" aria-hidden="true">
+    <article className="overflow-hidden rounded-2xl bg-zinc-50 ring-1 ring-zinc-200/70">
+      <div className="flex flex-wrap items-start gap-3 p-5">
+        <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-white text-base ring-1 ring-zinc-200/70" aria-hidden="true">
           ✦
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-semibold text-zinc-950">{item.name}</h3>
+            <h3 className="break-all font-medium text-zinc-950">{item.name}</h3>
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusTone}`}>
               {statusLabel[item.status]}
             </span>
@@ -182,7 +181,7 @@ function SkillRow({
           <p className="mt-1 line-clamp-2 text-sm leading-6 text-zinc-600">{item.description}</p>
           {item.error && <p className="mt-1 text-xs text-amber-700">{item.error}</p>}
         </div>
-        <div className="ml-1 flex shrink-0 items-center gap-2 sm:gap-3">
+        <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto sm:gap-3">
           <button
             type="button"
             onClick={onExpand}
@@ -239,12 +238,12 @@ function SkillRow({
             </div>
             <div>
               <dt className="font-medium text-zinc-900">所需工具</dt>
-              <dd className="mt-1 text-zinc-600">{item.required_tools.join("、") || "无需工具"}</dd>
+              <dd className="mt-1 break-all text-zinc-600">{item.required_tools.join("、") || "无需工具"}</dd>
             </div>
           </dl>
           <div className="mt-4">
             <p className="text-sm font-medium text-zinc-900">执行说明</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-zinc-600">{item.instructions || "无法读取"}</p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-zinc-600">{item.instructions || "无法读取"}</p>
           </div>
         </div>
       )}
@@ -390,16 +389,16 @@ export default function SkillView() {
 
   return (
     <main id="main-content" className="min-w-0 flex-1 overflow-y-auto bg-white">
-      <div className="mx-auto w-full max-w-6xl px-5 py-8 sm:px-8 lg:px-14 lg:py-14">
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+      <div className="mx-auto w-full max-w-5xl px-5 py-10 sm:px-10">
+        <div className="flex flex-col gap-6">
           <div>
-            <p className="text-sm font-medium text-zinc-500">Agent 能力</p>
-            <h1 className="mt-2 text-4xl font-bold tracking-tight text-zinc-950 sm:text-5xl">技能</h1>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-zinc-600">
-              技能是 Agent 可选择使用的任务说明。启用后只把名称与用途加入目录，Agent 会在真正需要时按需读取完整说明。
+
+            <h1 className="text-3xl font-bold tracking-tight text-zinc-950">技能</h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
+              为 Agent 添加处理任务的方法。启用后，Agent 会在需要时读取并使用相应技能。
             </p>
           </div>
-          <label className="relative block w-full lg:w-96">
+          <label className="relative block w-full sm:ml-auto sm:w-72">
             <span className="sr-only">搜索技能</span>
             <svg className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
               <circle cx="11" cy="11" r="7" strokeWidth="1.8" />
@@ -409,12 +408,12 @@ export default function SkillView() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索技能…"
-              className="h-12 w-full rounded-2xl border border-zinc-200 bg-white pl-12 pr-4 text-sm outline-none transition focus:border-zinc-400 focus:ring-4 focus:ring-zinc-100"
+              className="h-11 w-full rounded-xl border border-zinc-200 bg-white pl-12 pr-4 text-sm outline-none transition focus:border-zinc-400 focus:ring-4 focus:ring-zinc-100"
             />
           </label>
         </div>
 
-        <div className="mt-10 flex flex-wrap items-center gap-3 border-b border-zinc-200 pb-5">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
           <div className="mr-auto">
             <span className="font-medium text-zinc-950">已发现 {items.length}</span>
             <span className="ml-3 text-sm text-zinc-500">已启用 {enabledCount}</span>
@@ -423,7 +422,7 @@ export default function SkillView() {
             type="button"
             onClick={() => void handleRefresh()}
             disabled={refreshing}
-            className="min-h-10 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:opacity-50"
+            className="min-h-11 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:opacity-50"
           >
             {refreshing ? "扫描中…" : "↻ 刷新"}
           </button>
@@ -439,10 +438,10 @@ export default function SkillView() {
             tabIndex={-1}
             onChange={(event) => void handleImport(Array.from(event.target.files ?? []))}
           />
-          <button type="button" onClick={() => folderInputRef.current?.click()} disabled={importing} className="min-h-10 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:opacity-50">
+          <button type="button" onClick={() => folderInputRef.current?.click()} disabled={importing} className="min-h-11 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:opacity-50">
             {importing ? "导入中…" : "导入文件夹"}
           </button>
-          <button type="button" onClick={() => setCreateOpen(true)} className="min-h-10 rounded-xl bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
+          <button type="button" onClick={() => setCreateOpen(true)} className="min-h-11 rounded-xl bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900">
             ＋ 新建
           </button>
         </div>
@@ -456,14 +455,14 @@ export default function SkillView() {
             {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-3xl bg-zinc-100 motion-reduce:animate-none" />)}
           </div>
         ) : (
-          <div className="mt-2 space-y-10">
+          <div className="mt-4 space-y-8">
             {groups.map((group) => group.items.length > 0 && (
               <section key={group.key} aria-labelledby={`skill-group-${group.key}`}>
                 <div className="mb-3 flex items-baseline gap-2">
-                  <h2 id={`skill-group-${group.key}`} className="text-lg font-semibold text-zinc-950">{group.title}</h2>
+                  <h2 id={`skill-group-${group.key}`} className="text-sm font-medium text-zinc-950">{group.title}</h2>
                   <span className="text-sm text-zinc-400">{group.items.length}</span>
                 </div>
-                <div className="overflow-hidden rounded-3xl bg-zinc-100 ring-1 ring-zinc-200">
+                <div className="space-y-3">
                   {group.items.map((item) => (
                     <SkillRow
                       key={item.id}
@@ -479,7 +478,7 @@ export default function SkillView() {
               </section>
             ))}
             {filtered.length === 0 && (
-              <div className="rounded-3xl border border-dashed border-zinc-300 px-6 py-16 text-center">
+              <div className="rounded-2xl border border-dashed border-zinc-300 px-6 py-16 text-center">
                 <p className="font-medium text-zinc-800">没有找到匹配的技能</p>
                 <p className="mt-2 text-sm text-zinc-500">换一个名称、描述或工具名试试。</p>
               </div>

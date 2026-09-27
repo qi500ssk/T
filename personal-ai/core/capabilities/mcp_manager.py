@@ -20,6 +20,7 @@ T = TypeVar("T")
 def config_to_document(config: McpServerConfig) -> dict:
     raw: dict = {
         "transport": config.transport,
+        "timeout_ms": config.timeout_ms,
         "enabled": config.enabled,
         "default_risk_level": config.default_risk_level,
     }
@@ -43,6 +44,7 @@ def public_config(config: McpServerConfig) -> dict:
     """不向设置页返回环境变量或认证 Header 的值。"""
     return {
         "name": config.name,
+        "timeout_ms": config.timeout_ms,
         "transport": config.transport,
         "command": config.command,
         "args": list(config.args),
@@ -123,8 +125,8 @@ class McpManager:
             if existing is not None and source == "user":
                 config = replace(
                     config,
-                    env=config.env or existing.env,
-                    headers=config.headers or existing.headers,
+                    env=config.env or (existing.env if (config.transport, config.command, config.args) == (existing.transport, existing.command, existing.args) else {}),
+                    headers=config.headers or (existing.headers if (config.transport, config.url) == (existing.transport, existing.url) else {}),
                 )
             await self._disconnect(name)
             self._configs[name] = config
@@ -165,6 +167,11 @@ class McpManager:
 
     async def test_config(self, name: str, raw: dict) -> dict:
         config = replace(_parse_server_config(name, raw), enabled=False)
+        existing = self._configs.get(name) if self._sources.get(name) == "user" else None
+        if existing:
+            config = replace(config,
+                env=config.env or (existing.env if (config.transport, config.command, config.args) == (existing.transport, existing.command, existing.args) else {}),
+                headers=config.headers or (existing.headers if (config.transport, config.url) == (existing.transport, existing.url) else {}))
         client = McpClient(config, cwd=self.cwd)
         try:
             await client.connect()
@@ -181,6 +188,22 @@ class McpManager:
             }
         finally:
             await client.close()
+
+    async def import_users(self, documents: dict[str, dict]) -> None:
+        configs = [replace(_parse_server_config(name, raw), enabled=False) for name, raw in documents.items()]
+        async with self._lock:
+            if any(config.name in self._configs for config in configs):
+                raise ValueError("存在同名服务器，请修改名称后导入；不会覆盖已有配置")
+            for config in configs:
+                self._configs[config.name] = config
+                self._sources[config.name] = "user"
+            try:
+                await self._save_user_configs()
+            except Exception:
+                for config in configs:
+                    self._configs.pop(config.name, None)
+                    self._sources.pop(config.name, None)
+                raise
 
     async def replace_external(
         self, source: str, configs: list[McpServerConfig]

@@ -110,12 +110,30 @@ def retrieve(
         )
     )
     query_builder = query_builder.filter(or_(Document.agent_id.is_(None), Document.agent_id == agent_id) if agent_id else Document.agent_id.is_(None))
+    # Story characters cannot bypass viewpoint admission via a selected source attachment.
+    # Their original experiences are read only from admitted CharacterMemory records.
+    if agent_id and agent_id.startswith("story-"):
+        from infrastructure.database import WorldFact, DocumentGraphChunk, CharacterStoryBinding
+        if not document_ids:
+            return []
+        binding = session.get(CharacterStoryBinding, agent_id)
+        query_builder = query_builder.filter(
+            ~Document.id.in_(session.query(WorldFact.document_id)),
+            ~Document.id.in_(session.query(DocumentGraphChunk.document_id)))
+        if binding and binding.document_id:
+            query_builder = query_builder.filter(Document.id != binding.document_id)
     if document_ids:
         query_builder = query_builder.filter(Document.id.in_(document_ids))
     elif agent_id:
         # 好友背景走确认后的记忆；自动回查整段可能绕过编辑/停用或带入邻近的未确认内容。
         # 原始资料仍可由用户显式选择附件进行核对。
         query_builder = query_builder.filter(Document.agent_id.is_(None))
+        # L2 世界文档不能作为全局资料自动绕过 L3 知情过滤。
+        from infrastructure.database import DocumentGraphChunk, WorldFact
+        query_builder = query_builder.filter(
+            ~Document.id.in_(session.query(DocumentGraphChunk.document_id)),
+            ~Document.id.in_(session.query(WorldFact.document_id)),
+        )
     rows = query_builder.all()
     if not rows:
         return []
