@@ -17,6 +17,10 @@ from typing import AsyncIterator
 import httpx
 
 
+class TransientModelError(RuntimeError):
+    """A temporary transport or upstream availability failure, safe to retry."""
+
+
 def model_transport_error(exc: httpx.RequestError) -> str:
     if isinstance(exc, httpx.TimeoutException):
         return "聊天模型请求超时，请检查模型服务或稍后重试（尚不能据此判断联网搜索是否可用）"
@@ -153,9 +157,11 @@ class OpenAICompatibleProvider:
                 async with self._direct_client() as direct:
                     response = await direct.post("/chat/completions", json=payload)
         except httpx.RequestError as exc:
-            raise RuntimeError(model_transport_error(exc)) from exc
+            raise TransientModelError(model_transport_error(exc)) from exc
         if response.status_code != 200:
             body = response.text[:300]
+            if response.status_code in {408, 429, 500, 502, 503, 504}:
+                raise TransientModelError(f"模型服务暂时不可用（HTTP {response.status_code}）")
             raise RuntimeError(f"LLM API 错误 {response.status_code}: {body}")
         choices = response.json().get("choices") or []
         if not choices:

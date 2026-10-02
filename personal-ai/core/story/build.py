@@ -1,13 +1,16 @@
 """Bounded, resumable worldbook writing with durable chapter checkpoints."""
 import asyncio
 import json
+from copy import deepcopy
 from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 from core.story.document import Story, Person, Lore, Event, markdown
 from core.files.workspaces import resolve_workspace, workspace_root
 from core.rag.retrieval import tokenize_for_bm25
 from core.chat.context import estimate_tokens
+from core.chat.gateway import TransientModelError
 from core.memory.admission import memory_plan
+from core.story.repair import normalize_chapter, validation_message, repair_evidence
 from infrastructure.database import SessionLocal, StoryBuild, DocumentChunk
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts/system"
@@ -72,6 +75,9 @@ def assembled(row):
 def quality(row):
     lengths = [sum(len(e["text"]) for e in chapter["events"]) for chapter in row.chapters]
     issues = []
+    memory_issues = (row.report or {}).get('memory_issues', [])
+    if memory_issues:
+        issues.append(f"{len(memory_issues)} 条角色记忆仍待补建或核实，正文已保留，世界书尚未完成")
     if len(row.plan.get("world_entries", [])) < 6: issues.append("世界设定条目不足六条，请检查地点、组织、规则、历史与文化是否覆盖")
     if len(row.chapters) < row.request["chapter_count"]: issues.append("仍有章节未完成")
     for i, length in enumerate(lengths):
@@ -82,7 +88,7 @@ def quality(row):
         if sum(len(p.get(k,"")) for k in ("description","personality","motivation","speech","relationships","boundaries","example_dialogue")) < 300:
             issues.append(f"{p['name']}：角色档案较简略，尚不足300字符，建议扩充")
     if row.plan.get("basis") != "original": issues.append("原作事实仍需核对所用来源；字数达标不代表原作覆盖完整")
-    return {"narrative_chars":sum(lengths), "chapter_chars":lengths, "events":sum(len(c["events"]) for c in row.chapters), "issues":issues}
+    return {"narrative_chars":sum(lengths), "chapter_chars":lengths, "events":sum(len(c["events"]) for c in row.chapters), "issues":issues, "memory_issues":memory_issues}
 
 async def run_build(job_id, provider, web=None):
     try:
@@ -105,24 +111,35 @@ async def run_build(job_id, provider, web=None):
             window = getattr(provider, "context_window_tokens", 131072)
             if estimate_tokens(system + user) + getattr(provider, "max_output_tokens", 6000) > window:
                 raise ValueError("需求和资料超过当前模型上下文预算，请选择更大上下文模型或缩小本次范围")
-            return json_text(await asyncio.wait_for(provider.complete([
-                {"role":"system","content":system}, {"role":"user","content":user}], temperature=0.4), timeout=180))
+            for transport_attempt in range(3):
+                try:
+                    raw = await asyncio.wait_for(provider.complete([
+                        {"role":"system","content":system}, {"role":"user","content":user}], temperature=0.4), timeout=180)
+                    break
+                except (TimeoutError, ConnectionError, OSError, TransientModelError):
+                    if transport_attempt == 2:
+                        raise
+                    await asyncio.sleep(2 ** transport_attempt)
+            return json_text(raw)
         if not row.plan:
             correction = ""
-            for attempt in range(2):
+            for attempt in range(4):
                 try:
                     plan = Plan.model_validate(await ask("story_plan.md", {"brief":spec["brief"], "chapter_count":spec["chapter_count"], "source_samples":sources[:8],"web_sources":research,"schema":Plan.model_json_schema(),"correction":correction}))
+                    if len(plan.chapters) != spec["chapter_count"] or plan.basis not in {"original","source_based","adaptation"} or len({p.id for p in plan.characters}) != len(plan.characters):
+                        raise ValueError("章节规划数量或人物身份不符合要求")
+                    people = {p.id for p in plan.characters}
+                    if len({l.id for l in plan.world_entries}) != len(plan.world_entries) or any(not set(l.known_by) <= people for l in plan.world_entries):
+                        raise ValueError("世界条目 ID 必须唯一，known_by 只能使用人物表中的 ID")
                     break
-                except (ValidationError, json.JSONDecodeError) as exc:
-                    correction = json.dumps([{ "field":".".join(str(x) for x in e["loc"]),"message":e["msg"]} for e in exc.errors()],ensure_ascii=False)[:1500] if isinstance(exc,ValidationError) else "返回的 JSON 不完整或语法错误，请只输出合法 JSON"
-                    if attempt: raise ValueError("大纲结构校验失败："+correction[:250]) from None
-            if len(plan.chapters) != spec["chapter_count"] or plan.basis not in {"original","source_based","adaptation"} or len({p.id for p in plan.characters}) != len(plan.characters):
-                raise ValueError("章节规划数量或人物身份不符合要求")
+                except ValueError as exc:
+                    correction = validation_message(exc)
+                    if attempt == 3: raise ValueError("大纲自动修复未成功："+correction[:250]) from None
             row.plan = plan.model_dump()
-            save_state(job_id, title=plan.title, plan=row.plan, status="awaiting_plan")
+            save_state(job_id, title=plan.title, plan=row.plan, status="writing")
             write_text(folder, "plan.json", json.dumps(row.plan, ensure_ascii=False, indent=2))
             if research: write_text(folder, "research-plan.json", json.dumps({"query":spec["research_query"],"result":research}, ensure_ascii=False, indent=2))
-            return  # Explicit plan review before spending on chapters.
+            # Starting the approved proposal authorizes writing every chapter.
         for index in range(len(row.chapters), len(row.plan["chapters"])):
             chapter = row.plan["chapters"][index]
             chapter_research = await web.search({"query":spec["research_query"]+" "+chapter["title"]}) if research else ""
@@ -132,30 +149,75 @@ async def run_build(job_id, provider, web=None):
                 "previous_events":[{"title":e["title"],"summary":e["text"][-200:]} for c in row.chapters[-2:] for e in c["events"]],
                 "source_excerpts":local_sources, "web_sources":chapter_research, "source_coverage":{"available_chunks":len(sources),"included_chunks":len(local_sources)}, "schema":ChapterOutput.model_json_schema()}
             error = ""
-            for attempt in range(2):
+            previous_output = None
+            for attempt in range(4):
                 try:
-                    data = await ask("story_chapter.md", {**payload, "correction":error})
+                    data = await ask("story_chapter.md", {**payload, "correction":error, "previous_output":previous_output})
+                    previous_output = data
+                    data = normalize_chapter(ChapterOutput.model_validate(data).model_dump(), row.plan['characters'])
                     output = ChapterOutput.model_validate(data)
-                    story = Story.model_validate({"format":"personal-ai-story-v1", "title":chapter["title"],
+                    story_data = {"format":"personal-ai-story-v1", "title":chapter["title"],
                         "basis":row.plan["basis"], "source_note":output.source_note or row.plan["source_note"],
-                        "characters":row.plan["characters"], "events":[e.model_dump() for e in output.events]})
+                        "characters":row.plan["characters"], "events":[e.model_dump() for e in output.events]}
+                    # Validate identity/structure before spending calls on evidence.
+                    structural = deepcopy(story_data)
+                    for event in structural['events']:
+                        for view in event['viewpoints']:
+                            if not view['memory'] or not view['quote'] or view['quote'] not in event['text']:
+                                view['knowledge'] = 'unknown'
+                    Story.model_validate(structural)
+                    if sum(len(e.text) for e in output.events) < spec["min_chapter_chars"]:
+                        raise ValueError("章节正文不足，不能用摘要充当完整章节；请展开具体过程，来源不足请补充资料后继续")
+                    existing_text = {e["text"].strip() for c in row.chapters for e in c["events"]}
+                    if any(e.text.strip() in existing_text for e in output.events):
+                        raise ValueError("章节重复了已保存事件，请按当前章范围撰写新内容")
+                    repaired, memory_issues = await repair_evidence(data, row.plan['characters'], ask)
+                    story_data['events'] = repaired['events']
+                    story = Story.model_validate(story_data)
                     renamed = {event.id:f"c{index+1}_e{n+1}" for n,event in enumerate(story.events)}
                     for n, event in enumerate(story.events):
                         event.parent_event_id = renamed.get(event.parent_event_id) if event.parent_event_id else None
                         event.id = f"c{index+1}_e{n+1}"
                         event.stage = f"{index+1:02d} {chapter['title']}"
-                    if sum(len(e.text) for e in story.events) < spec["min_chapter_chars"]:
-                        raise ValueError("章节正文不足，不能用摘要充当完整章节；请展开具体过程，来源不足请补充资料后继续")
+                    for issue in memory_issues:
+                        issue['event_id'] = renamed[issue['event_id']]
+                        issue['chapter'] = index + 1
                     break
                 except (ValueError, KeyError) as exc:
-                    error = str(exc)[:500]
-                    if attempt: raise ValueError(error) from None
-            existing_text = {e["text"].strip() for c in row.chapters for e in c["events"]}
-            if any(e.text.strip() in existing_text for e in story.events): raise ValueError("章节重复了已保存事件，请调整大纲后重建任务")
+                    error = validation_message(exc)
+                    if attempt == 3: raise ValueError(f"第 {index+1} 章经过三次自动修复仍未通过，已保留前面章节。原因：{error}") from None
+                    save_state(job_id, error=f"正在自动修复第 {index+1} 章（{attempt+1}/3），无需操作")
             row.chapters = [*row.chapters, story.model_dump()]
-            save_state(job_id, chapters=row.chapters, status="writing", report=quality(row))
+            row.report = {**(row.report or {}), 'memory_issues': [*(row.report or {}).get('memory_issues', []), *memory_issues]}
+            save_state(job_id, chapters=row.chapters, status="writing", report=quality(row), error="")
             write_text(folder, f"chapter-{index+1:02d}.md", markdown(story))
             write_text(folder, f"sources-{index+1:02d}.json", json.dumps({"documents":local_sources,"web":chapter_research}, ensure_ascii=False, indent=2))
+        # A complete narrative is not a complete character worldbook. Retry only
+        # unresolved perspectives against frozen chapters, never regenerate prose.
+        pending = (row.report or {}).get('memory_issues', [])
+        if pending:
+            save_state(job_id, status='writing', error='正文已保存，正在补建并校验角色记忆，无需操作')
+            for chapter_index in sorted({item['chapter'] - 1 for item in pending}):
+                chapter_data = deepcopy(row.chapters[chapter_index])
+                issues = [item for item in pending if item['chapter'] == chapter_index + 1]
+                events = {event['id']: event for event in chapter_data['events']}
+                for issue in issues:
+                    events[issue['event_id']]['viewpoints'].append(issue['viewpoint'])
+                repaired, unresolved = await repair_evidence(chapter_data, row.plan['characters'], ask)
+                for issue in unresolved:
+                    issue['chapter'] = chapter_index + 1
+                checked = Story.model_validate(repaired)
+                row.chapters = [*row.chapters[:chapter_index], checked.model_dump(), *row.chapters[chapter_index + 1:]]
+                pending = [item for item in pending if item['chapter'] != chapter_index + 1] + unresolved
+                row.report = {**(row.report or {}), 'memory_issues': pending}
+                save_state(job_id, chapters=row.chapters, report=quality(row))
+                write_text(folder, f'chapter-{chapter_index+1:02d}.md', markdown(checked))
+            if pending:
+                report = quality(row)
+                write_text(folder, 'quality.json', json.dumps(report, ensure_ascii=False, indent=2))
+                save_state(job_id, status='memory_incomplete', report=report,
+                           error=f'正文已写完，但还有 {len(pending)} 条角色记忆未通过证据校验，尚未生成最终世界书。补建时只处理这些记忆，不重写正文。')
+                return
         final = assembled(row)
         write_text(folder, "worldbook.md", markdown(final))
         write_text(folder, "worldbook.json", final.model_dump_json(indent=2))

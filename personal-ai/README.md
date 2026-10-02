@@ -13,7 +13,7 @@
 - 设置页选择本地或在线 Embedding；未下载模型时可用关键词检索
 - 自主模式与规划模式，支持中断、恢复和执行记录
 - 本地工具、Skill、声明式插件和 MCP Server
-- 可选联网搜索：在设置页填写 Tavily Key 并开启，由 AI 按问题决定是否搜索或读取网页；[使用说明](docs/web-search.md)
+- 可选联网搜索：在设置页填写 Tavily Key 并开启，由 AI 按问题决定是否搜索或读取网页
 - 高风险操作审批、工具白名单、超时和审计记录
 - 定时或一次性活动任务
 - Agent 人格、模型、上下文窗口和本地文件夹项目
@@ -164,10 +164,10 @@ personal-ai/
 ├── skills/                  本地 Skill
 ├── plugins/                 声明式插件
 ├── mcp_servers/             内置 MCP Server
-├── evaluation/              离线评测脚本
-├── tests/                   后端测试
+
+
 ├── data/                    本地运行数据，不提交 Git
-└── compose.yaml             仅用于读取旧 PostgreSQL 数据（正常运行不需要）
+└── compose.yaml             本机 PostgreSQL / pgvector 数据库服务
 ```
 
 后端依赖方向为 `apps/api → core → infrastructure`。前端负责展示状态和提交操作，不负责决定记忆召回、资料引用或工具权限。
@@ -188,32 +188,6 @@ uv run python -m scripts.migrate_sqlite_to_postgres --source data/personal-ai.db
 
 脚本先创建一致的 SQLite 副本，迁移所有业务表，逐行比对内容和向量，再修改 `.env`；报告与旧配置位于 `data/backups/postgres-switch-*`。原 SQLite 和旧 PostgreSQL 库保留。PostgreSQL 使用 `migrations/versions/`，SQLite 使用 `migrations/sqlite_versions/`。
 
-当前本机迁移记录与回退说明见 [PostgreSQL 切换记录](docs/postgresql-switch.md)。
-
-## 测试与检查
-
-```powershell
-uv run pytest -q
-```
-
-测试会自动创建并清理独立临时 SQLite 数据库，不使用正式数据库，不需要 Docker。
-
-前端检查：
-
-```powershell
-cd apps\web
-npm run lint
-npm run build
-```
-
-离线评测：
-
-```powershell
-uv run python -m evaluation.rag
-uv run python -m evaluation.memory
-uv run python -m evaluation.intent
-uv run python -m evaluation.planner
-```
 
 ## 安全说明
 

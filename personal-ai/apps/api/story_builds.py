@@ -1,7 +1,7 @@
 """Worldbook job control and explicit export/import actions."""
 import asyncio
 from types import SimpleNamespace
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import anyio
@@ -36,6 +36,7 @@ def snapshot(row, request):
     return {"id":row.id,"title":row.title,"status":status,"running":running,"completed":len(row.chapters),
         "total":row.request["chapter_count"],"output_path":str(output_path(row)),"plan":row.plan,
         "report":row.report,"error":row.error,"document_id":row.document_id,"request_message_id":row.request.get("message_id"),
+        "synopsis": next((e['text'][:180] for c in row.chapters for e in c['events']), ''),
         "files":[p.name for p in output_path(row).iterdir() if p.is_file() and p.suffix in {".md",".json"}]}
 
 def launch(job_id, request):
@@ -153,6 +154,20 @@ def download(job_id: str, name: str):
     path = folder / name
     if path.is_symlink() or path.resolve().parent != folder: raise HTTPException(404, "文件不可用")
     return FileResponse(path, filename=name)
+
+
+@router.get("/{job_id}/read")
+def read_generated_book(job_id: str, page: int = Query(default=0, ge=0)):
+    from core.story.reader import story_book, paginate
+    with SessionLocal() as session:
+        row = get_job(session, job_id)
+        if row.status not in {'review', 'imported'}:
+            raise HTTPException(409, '世界书尚未生成完成')
+        book = story_book(assembled(row))
+    pages = paginate(book.pop('sections'))
+    if page >= len(pages):
+        raise HTTPException(404, '页码不存在')
+    return {**book, 'id': job_id, 'page': page, 'total': len(pages), 'content': pages[page]}
 
 @router.post("/{job_id}/import")
 async def confirm_import(job_id: str, request: Request):

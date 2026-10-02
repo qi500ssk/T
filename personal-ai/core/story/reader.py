@@ -13,16 +13,7 @@ def read_book(document, settings):
         except (ValueError, UnicodeError):
             pass
     if story:
-        sections = [{"title": "阅读说明与资料来源", "text": story.source_note}]
-        for person in story.characters:
-            fields = [("description", "人物档案"), ("personality", "性格"), ("motivation", "目标"),
-                      ("speech", "说话方式"), ("relationships", "关系"), ("boundaries", "边界"),
-                      ("example_dialogue", "原创对话示例")]
-            sections.append({"title": "人物档案 · " + person.name,
-                "text": "\n\n".join(label + "：" + getattr(person, field) for field, label in fields if getattr(person, field))})
-        sections += [{"title": e.stage + " · " + e.title, "text": e.text} for e in story.events]
-        sections += [{"title": "世界设定 · " + item.title, "text": item.content} for item in story.world_entries]
-        return {"title": story.title, "synopsis": story.events[0].text[:180], "structured": True, "sections": sections}
+        return story_book(story)
     parsed = parse_document(path, document.file_type, settings)
     sections = []
     for block in parsed.blocks:
@@ -48,3 +39,16 @@ def paginate(sections, limit=1500):
             pages.append({"title": section["title"], "text": text[:end]})
             text = text[end:].lstrip()
     return pages
+
+
+def story_book(story):
+    sections = [{"title": "阅读说明与资料来源", "text": story.source_note}]
+    for person in story.characters:
+        fields = [("description", "人物档案"), ("personality", "性格"), ("motivation", "目标"),
+                  ("speech", "说话方式"), ("relationships", "关系"), ("boundaries", "边界"),
+                  ("example_dialogue", "原创对话示例")]
+        sections.append({"title": "人物档案 · " + person.name,
+            "text": "\n\n".join(label + "：" + getattr(person, field) for field, label in fields if getattr(person, field))})
+    sections += [{"title": e.stage + " · " + e.title, "text": e.text} for e in story.events]
+    sections += [{"title": "世界设定 · " + item.title, "text": item.content} for item in story.world_entries]
+    return {"title": story.title, "synopsis": story.events[0].text[:180], "structured": True, "sections": sections}

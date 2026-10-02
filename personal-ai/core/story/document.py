@@ -80,14 +80,14 @@ class Story(Strict):
             if event.parent_event_id and (event.parent_event_id == event.id or event.parent_event_id not in {e.id for e in self.events}):
                 raise ValueError("父事件必须引用另一个已有事件")
             if not set(event.participants) <= people:
-                raise ValueError("事件引用了不存在的人物")
+                raise ValueError(f"事件 {event.id} 引用了不存在的人物：{sorted(set(event.participants) - people)}；可用人物 ID：{sorted(people)}")
             if len({v.character_id for v in event.viewpoints}) != len(event.viewpoints):
                 raise ValueError("同一事件不能重复声明同一人物视角")
             for view in event.viewpoints:
                 if view.character_id not in people or not set(view.known_people) <= people:
-                    raise ValueError("视角引用了不存在的人物")
+                    raise ValueError(f"事件 {event.id} 的视角 {view.character_id} 引用了不存在的人物；可用人物 ID：{sorted(people)}")
                 if view.knowledge != "unknown" and (not view.memory or not view.quote or view.quote not in event.text):
-                    raise ValueError("知情记忆必须有正文中的连续原文依据")
+                    raise ValueError(f"事件 {event.id} 的视角 {view.character_id}：知情记忆必须有正文中的连续原文依据；quote 须逐字摘录该事件 text，memory 不可为空")
                 if view.knowledge == "direct" and view.character_id not in event.participants:
                     raise ValueError("亲历角色必须在事件参与者中")
         parents = {e.id: e.parent_event_id for e in self.events}
