@@ -1,6 +1,5 @@
 """全局配置：环境变量 + .env 文件（pydantic-settings）。"""
 
-from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from urllib.parse import urlparse
@@ -124,14 +123,9 @@ class Settings(BaseSettings):
     character_memory_tokens_budget: int = 1800
 
     # ---- Database ----
-    database_url: str = Field(default_factory=lambda: "sqlite:///" + Path(data_path("personal-ai.db")).as_posix())
+    database_url: str = "postgresql+psycopg://personal_ai:personal_ai_local@127.0.0.1:5432/personal_ai"
 
     # ---- API ----
-    auth_setup_token_file: str = Field(default_factory=lambda: data_path("auth-setup-token"))
-    auth_session_hours: int = Field(default=168, ge=1, le=720)
-    # 勾选“记住我”时的会话时长（默认 30 天）。
-    auth_session_remember_hours: int = Field(default=720, ge=1, le=8760)
-    auth_cookie_secure: bool = False  # 仅当页面通过 HTTPS 提供服务时设为 true
     cors_origins: str = (
         "http://localhost:4321,http://127.0.0.1:4321,"
         "http://localhost:4322,http://127.0.0.1:4322"

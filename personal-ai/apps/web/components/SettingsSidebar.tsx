@@ -1,11 +1,10 @@
 "use client";
 
 import Avatar, { agentAvatarUrl } from "@/components/Avatar";
-import LogoutButton from "@/components/LogoutButton";
 import type { WorkspaceView } from "@/components/Sidebar";
 import type { AgentSettings } from "@/lib/api";
 
-export type SettingsView = "general" | "model" | "retrieval" | "appearance" | "account" | "skills" | "mcp" | "plugins" | "web-search" | "memories" | "knowledge" | "activities";
+export type SettingsView = "general" | "model" | "retrieval" | "appearance" | "skills" | "mcp" | "plugins" | "web-search" | "memories" | "knowledge" | "activities";
 
 interface SettingsSidebarProps {
   onBack: () => void;
@@ -70,10 +69,6 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
           <span aria-hidden="true">◐</span>
           外观设置
         </button>
-        <button type="button" onClick={() => onViewChange("account")} className={`${itemClass(view === "account")} mt-1`} aria-current={view === "account" ? "page" : undefined}>
-          <span aria-hidden="true">⚿</span>
-          账号与安全
-        </button>
 
         <p className="mb-2 mt-5 px-3 text-xs font-medium text-zinc-400">Agent 能力</p>
         <button type="button" onClick={() => onViewChange("web-search")} className={itemClass(view === "web-search")} aria-current={view === "web-search" ? "page" : undefined}>
@@ -108,7 +103,6 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
           </div>
         </div>
       </div>
-      <LogoutButton />
     </aside>
   );
 }

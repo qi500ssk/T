@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { pickLocalDirectory } from "@/lib/api";
+import { fetchDirectories, pickLocalDirectory, type DirectoryListing } from "@/lib/api";
 
 export default function FolderPickerDialog({open,initialPath,onClose,onSelect}:{open:boolean;initialPath:string;onClose:()=>void;onSelect:(path:string,name?:string)=>Promise<void>}) {
   const ref=useRef<HTMLDialogElement>(null);
@@ -10,8 +10,21 @@ export default function FolderPickerDialog({open,initialPath,onClose,onSelect}:{
   const [picking,setPicking]=useState(false);
   const [saving,setSaving]=useState(false);
   const [error,setError]=useState("");
+  const [listing,setListing]=useState<DirectoryListing|null>(null);
   const busy=picking||saving;
   useEffect(()=>{const dialog=ref.current;if(!dialog)return;if(open&&!dialog.open){setName("");setPath(initialPath);setError("");dialog.showModal();}else if(!open&&dialog.open)dialog.close();},[open,initialPath]);
+  useEffect(()=>{
+    if(!open)return;
+    let cancelled=false;
+    fetchDirectories().then(result=>{if(!cancelled)setListing(result);}).catch(e=>{if(!cancelled)setError(String(e));});
+    return()=>{cancelled=true;};
+  },[open]);
+  async function browse(nextPath?:string){
+    setPicking(true);setError("");
+    try{const result=await fetchDirectories(nextPath);setListing(result);setPath(result.current_path??"");}
+    catch(e){setError(e instanceof Error?e.message:"无法读取文件夹");}
+    finally{setPicking(false);}
+  }
   async function pick(){const id=crypto.randomUUID();pickId.current=id;setPicking(true);setError("");try{const result=await pickLocalDirectory(id);if(pickId.current===id&&result.path)setPath(result.path);}catch(e){if(pickId.current===id)setError(e instanceof Error?e.message:"无法选择文件夹");}finally{if(pickId.current===id){pickId.current=null;setPicking(false);}}}
   async function create(){if(!path||busy)return;setSaving(true);setError("");try{await onSelect(path,name.trim());}catch(e){setError(e instanceof Error?e.message:"创建项目失败");}finally{setSaving(false);}}
   return <dialog ref={ref} onCancel={e=>{e.preventDefault();if(!busy)onClose();}} className="m-auto h-[min(80vh,42rem)] w-[min(94vw,46rem)] rounded-3xl bg-white p-0 text-zinc-950 shadow-2xl backdrop:bg-zinc-950/35" aria-labelledby="folder-dialog-title">
@@ -21,7 +34,13 @@ export default function FolderPickerDialog({open,initialPath,onClose,onSelect}:{
         <label className="grid gap-3 text-sm font-medium">项目名<input value={name} onChange={e=>setName(e.target.value)} maxLength={120} disabled={busy} placeholder="不填写则使用文件夹名称" className="h-12 w-full rounded-xl border border-zinc-200 px-4 font-normal outline-none focus:border-zinc-500"/></label>
         <section className="flex flex-1 flex-col"><h3 className="mb-3 text-sm font-medium">源文件夹</h3><div className="flex min-h-44 flex-1 flex-col items-center justify-center gap-5 rounded-2xl border border-zinc-200 p-6">
           {path&&<p className="max-w-full break-all text-center text-sm text-zinc-600">{path}</p>}
-          <button type="button" onClick={()=>void pick()} disabled={busy} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm hover:bg-zinc-50 disabled:opacity-50">{picking?"文件夹窗口已打开":path?"更换文件夹":"在此电脑中选择文件夹"}</button>
+          {listing?.native_picker_available===false?<div className="grid w-full gap-3">
+            <p className="text-xs text-zinc-500">选择挂载工作区中的文件夹</p>
+            <p className="break-all text-sm text-zinc-600">{listing.current_path}</p>
+            {listing.parent_path&&<button type="button" disabled={busy} onClick={()=>void browse(listing.parent_path!)} className="rounded-lg border p-2 text-left text-sm">返回上级文件夹</button>}
+            <div className="max-h-52 overflow-y-auto">{listing.directories.map(directory=><button key={directory.path} type="button" disabled={busy} onClick={()=>void browse(directory.path)} className="block w-full rounded-lg p-2 text-left text-sm hover:bg-zinc-50">📁 {directory.name}</button>)}</div>
+            <button type="button" disabled={busy} onClick={()=>setPath(listing.current_path??"")} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm hover:bg-zinc-50">使用当前文件夹</button>
+          </div>:<button type="button" onClick={()=>void pick()} disabled={busy||!listing} className="min-h-11 rounded-xl border border-zinc-200 px-5 text-sm hover:bg-zinc-50 disabled:opacity-50">{picking?"文件夹窗口已打开":path?"更换文件夹":"在此电脑中选择文件夹"}</button>}
         </div></section>
         {error&&<p role="alert" className="text-sm text-red-600">{error}</p>}
       </div>

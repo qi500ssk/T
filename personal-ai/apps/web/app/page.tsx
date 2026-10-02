@@ -17,7 +17,7 @@ import WebSearchSettingsView from "@/components/WebSearchSettingsView";
 import PluginView from "@/components/PluginView";
 import GeneralSettingsView from "@/components/GeneralSettingsView";
 import AppearanceSettingsView from "@/components/AppearanceSettingsView";
-import AccountSettingsView from "@/components/AccountSettingsView";
+
 import FolderPickerDialog from "@/components/FolderPickerDialog";
 import {
   createConversation,
@@ -300,7 +300,7 @@ export default function Home() {
               setAppSettings(value);
               setSelectedAgentId((current) => current ?? value.agents.active_agent_id);
             }} />
-          ) : settingsView === "memories" ? <MemoryWorkspace agents={appSettings?.agents.items} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} /> : settingsView === "knowledge" ? <KnowledgeView onAgentCreated={() => {void fetchAppSettings().then(setAppSettings);}} /> : settingsView === "activities" ? <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} /> : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "account" ? <AccountSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : settingsView === "web-search" ? <WebSearchSettingsView /> : <PluginView />}
+          ) : settingsView === "memories" ? <MemoryWorkspace agents={appSettings?.agents.items} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} /> : settingsView === "knowledge" ? <KnowledgeView onAgentCreated={() => {void fetchAppSettings().then(setAppSettings);}} /> : settingsView === "activities" ? <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} /> : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : settingsView === "web-search" ? <WebSearchSettingsView /> : <PluginView />}
         </>
       ) : (
         <>

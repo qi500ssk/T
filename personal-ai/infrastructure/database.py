@@ -1,4 +1,4 @@
-"""SQLAlchemy 数据层：PostgreSQL/pgvector 与 SQLite 回退。"""
+"""SQLAlchemy 数据层：PostgreSQL/pgvector。"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,7 +6,6 @@ import uuid
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     Float,
     ForeignKey,
     Index,
@@ -21,7 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from infrastructure.config import settings
 from sqlalchemy.engine import make_url
-from infrastructure.sqlite_types import UTCDateTime as DateTime, Vector as VECTOR, cosine_distance
+from infrastructure.database_types import UTCDateTime as DateTime, Vector as VECTOR
 
 
 def _uuid() -> str:
@@ -141,7 +140,6 @@ class AgentRun(Base):
             "uq_agent_runs_running_conversation",
             "conversation_id",
             unique=True,
-            sqlite_where=text("status = 'running'"),
             postgresql_where=text("status = 'running'"),
         ),
     )
@@ -249,7 +247,6 @@ class ToolRun(Base):
             "uq_tool_runs_idempotency_key",
             "idempotency_key",
             unique=True,
-            sqlite_where=text("idempotency_key IS NOT NULL"),
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
     )
@@ -526,65 +523,10 @@ class CharacterExtraction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-class AdminAccount(Base):
-    """第一版只允许一个管理员；现有 default 数据归这个账号使用。"""
-
-    __tablename__ = "admin_accounts"
-    __table_args__ = (CheckConstraint("id = 1", name="ck_single_admin"),)
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    username: Mapped[str] = mapped_column(String(80), unique=True)
-    password_hash: Mapped[str] = mapped_column(String(300))
-
-
-class RecoveryCode(Base):
-    """一次性账号恢复码；只保存 SHA-256 摘要，明文仅在生成时显示一次。"""
-
-    __tablename__ = "recovery_codes"
-    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("admin_accounts.id", ondelete="CASCADE"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class LoginSession(Base):
-    __tablename__ = "login_sessions"
-    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("admin_accounts.id", ondelete="CASCADE"))
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-
-
-from sqlalchemy import event
-from sqlalchemy.engine import make_url
-
-
-def build_sqlite_engine(url):
-    parsed = make_url(url)
-    if parsed.drivername not in {"sqlite", "sqlite+pysqlite"} or parsed.host or parsed.query:
-        raise ValueError("本地软件仅支持 SQLite 文件数据库，不接受远程数据库或 URI 参数")
-    if not parsed.database or parsed.database == ":memory:":
-        raise ValueError("请配置持久化 SQLite 文件路径")
-    path = Path(parsed.database).expanduser()
-    if str(path).startswith(("\\\\", "//")):
-        raise ValueError("数据库必须保存在本机，不能使用网络共享路径")
-    path = path.resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    result = create_engine(parsed.set(database=str(path)), connect_args={"check_same_thread": False, "timeout": 30})
-
-    @event.listens_for(result, "connect")
-    def configure(connection, record):
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.create_function("vector_cosine_distance", 2, cosine_distance, deterministic=True)
-    return result
-
-
 def build_database_engine(url):
     parsed = make_url(url)
-    if parsed.get_backend_name() == "sqlite":
-        return build_sqlite_engine(parsed)
     if parsed.get_backend_name() != "postgresql":
-        raise ValueError("仅支持 PostgreSQL 或 SQLite")
+        raise ValueError("仅支持 PostgreSQL + pgvector，请检查 DATABASE_URL")
     parsed = parsed.set(drivername="postgresql+psycopg")
     return create_engine(parsed, pool_pre_ping=True, connect_args={"connect_timeout": 10})
 
@@ -600,19 +542,18 @@ def init_db() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    _upgrade_sqlite_schema()
+    _upgrade_schema()
     _schema_ready = True
 
 
-def _upgrade_sqlite_schema() -> None:
-    """通过 Alembic 将 SQLite 升级到当前 schema。"""
+def _upgrade_schema() -> None:
+    """通过 Alembic 将 PostgreSQL 升级到当前 schema。"""
     from alembic import command
     from alembic.config import Config
 
     project_root = Path(__file__).resolve().parents[1]
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("script_location", str(project_root / "migrations"))
-    versions = "sqlite_versions" if engine.dialect.name == "sqlite" else "versions"
-    config.set_main_option("version_locations", str(project_root / "migrations" / versions))
+    config.set_main_option("version_locations", str(project_root / "migrations" / "versions"))
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
     command.upgrade(config, "head")

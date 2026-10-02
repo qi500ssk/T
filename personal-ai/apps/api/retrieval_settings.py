@@ -26,7 +26,7 @@ class RetrievalMaintenanceMiddleware:
         if scope["type"] != "http" or not scope["path"].startswith("/api/"):
             return await self.app(scope, receive, send)
         state = scope["app"].state
-        exempt = scope["path"].startswith(("/api/settings/retrieval", "/api/auth/"))
+        exempt = scope["path"].startswith("/api/settings/retrieval") or scope["path"] == "/api/health"
         if not exempt and getattr(state, "retrieval_maintenance", False):
             from starlette.responses import JSONResponse
             return await JSONResponse({"detail": "检索模型正在更新，请稍后重试"}, 503)(scope, receive, send)

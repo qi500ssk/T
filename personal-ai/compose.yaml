@@ -1,13 +1,13 @@
-# 本机 PostgreSQL + pgvector；仅监听回环地址，已有卷保持不变。
+# 在 personal-ai 目录运行 docker compose up -d --build。
 services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: personal-ai-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: personal_ai
+      POSTGRES_DB: ${POSTGRES_DB:-personal_ai}
       POSTGRES_USER: personal_ai
-      POSTGRES_PASSWORD: personal_ai_local
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-personal_ai_local}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -18,23 +18,64 @@ services:
       timeout: 5s
       retries: 12
 
-  postgres-test:
-    image: pgvector/pgvector:pg16
-    container_name: personal-ai-postgres-test
+  api:
+    build:
+      context: .
+      args:
+        LEGACY_EMBEDDING: ${LEGACY_EMBEDDING:-false}
     restart: unless-stopped
+    init: true
     environment:
-      POSTGRES_DB: personal_ai_test
-      POSTGRES_USER: personal_ai
-      POSTGRES_PASSWORD: personal_ai_test_local
-    ports:
-      - "127.0.0.1:5433:5432"
-    tmpfs:
-      - /var/lib/postgresql/data
+      DATABASE_URL: postgresql+psycopg://personal_ai:${POSTGRES_PASSWORD:-personal_ai_local}@postgres:5432/${POSTGRES_DB:-personal_ai}
+      PERSONAL_AI_DATA_DIR: /app/data
+      WORKSPACE_ROOT_DIR: /workspace
+      CODING_WORKSPACE_DIR: /workspace
+      CORS_ORIGINS: http://localhost:4321,http://127.0.0.1:4321
+    volumes:
+      - personal_ai_data:/app/data
+      - personal_ai_config:/app/config
+      - personal_ai_plugins:/app/plugins
+      - personal_ai_skills:/app/skills
+      - type: bind
+        source: ${WORKSPACE_DIR:-./data/workspace}
+        target: /workspace
+        bind:
+          create_host_path: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U personal_ai -d personal_ai_test"]
-      interval: 3s
-      timeout: 5s
-      retries: 20
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      start_period: 60s
+      retries: 6
+    stop_grace_period: 60s
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        API_INTERNAL_URL: http://api:8787
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:4321:4321"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4321').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 6s
+      start_period: 20s
+      retries: 6
 
 volumes:
   personal_ai_postgres:
+  personal_ai_data:
+  personal_ai_config:
+  personal_ai_plugins:
+  personal_ai_skills:

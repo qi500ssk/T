@@ -1,7 +1,7 @@
 """Offline one-time recovery codes for the local account."""
 
 from alembic import op
-from infrastructure.database import RecoveryCode
+import sqlalchemy as sa
 
 revision = "20260911_12"
 down_revision = "20260911_11"
@@ -10,8 +10,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    RecoveryCode.__table__.create(op.get_bind(), checkfirst=True)
+    if not sa.inspect(op.get_bind()).has_table("recovery_codes"):
+        op.create_table("recovery_codes",
+            sa.Column("account_id", sa.Integer(), sa.ForeignKey("admin_accounts.id", ondelete="CASCADE"), nullable=False),
+            sa.Column("code_hash", sa.String(64), primary_key=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("used_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
-    RecoveryCode.__table__.drop(op.get_bind())
+    op.drop_table("recovery_codes")

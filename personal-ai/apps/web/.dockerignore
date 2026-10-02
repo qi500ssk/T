@@ -1,0 +1,8 @@
+node_modules
+.next
+.env*
+*.log
+*.tsbuildinfo
+*-final.png
+AGENTS.md
+CLAUDE.md

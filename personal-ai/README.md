@@ -1,8 +1,8 @@
 # Personal AI
 
-一个可以下载到本机运行、长期使用的个人 AI Agent。项目提供流式对话、分层记忆、知识库检索、工具调用、任务规划和活动调度，并通过权限确认控制写文件、运行命令及 MCP 工具等操作。
+一个通过 Docker 在本机运行、长期使用的个人 AI Agent。项目提供流式对话、分层记忆、知识库检索、工具调用、任务规划和活动调度，并通过权限确认控制写文件、运行命令及 MCP 工具等操作。
 
-账号和业务数据默认保存在本机，不需要注册云端账号。使用云端模型时，本次回答所需的对话、记忆和资料片段会发送给所配置的模型服务；使用云端 Embedding 时，文档文本也会发送给该服务。完全离线使用需要同时配置本地模型与本地 Embedding。第一次打开页面即可创建本机账号，不需要注册任何云端服务；忘记密码时用创建账号时保存的一次性恢复码重设。
+业务数据保存在本机 PostgreSQL 和文件目录中。打开页面即可使用，无需创建账号或登录。使用云端模型时，对话、记忆和资料片段会发送给所配置的服务；完全离线使用需要同时配置本地聊天模型与本地 Embedding。
 
 ## 主要能力
 
@@ -23,64 +23,64 @@
 | 部分 | 技术 |
 |---|---|
 | 后端 | Python 3.11+、FastAPI、SQLAlchemy、Alembic |
-| 数据库 | PostgreSQL + pgvector（保留 SQLite 测试兼容） |
+| 数据库 | PostgreSQL + pgvector |
 | 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS 4 |
 | 检索 | pgvector 余弦相似度、BM25、RRF |
 | 协议 | HTTP、SSE、MCP |
 
-## 环境要求
+## Docker 一键部署
 
-- Python 3.11 或更高版本
-- [uv](https://docs.astral.sh/uv/)
-- Node.js 20 或更高版本
-
-## 快速开始
-
-### 1. 准备配置
+安装并启动 Docker Desktop（Windows 使用 Linux 容器），在 `personal-ai` 目录执行：
 
 ```powershell
-cd personal-ai
-Copy-Item .env.example .env
+docker compose up -d --build --wait
 ```
 
-已有 `.env` 时不要覆盖。`.env` 包含本机配置和密钥，不会提交到 Git。
-
-默认使用轻量多语言 MiniLM。首次启动没有下载模型时，自动使用真实的关键词检索，仍可上传文档和保存记忆。登录后在“设置 → 知识与记忆检索”选择本地模型并点击下载；确认弹窗会显示预计大小和实际保存目录，确认后才开始。已下载的缓存会标注“已下载”，复用缓存时只读取本地文件。下载后本地语义检索不需要 API Key。
-
-也可选择在线 Embedding 或始终使用关键词模式。`mock` 只用于测试，不适合评估检索效果。旧 `.env` 的显式配置仍保留；已有用户可在设置页切换并重建索引。
-
-### 2. 本机数据库
-
-当前开发环境使用本机 PostgreSQL + pgvector。先运行 `docker compose up -d postgres`，再启动后端。
-连接地址由 `.env` 的 `DATABASE_URL` 指定；不要覆盖已有连接地址，否则会打开另一个数据库。首次启动自动运行对应的 Alembic 迁移。
-SQLite 仍支持显式 `sqlite:///...` 连接，供测试和回退使用。上传文件与运行时配置目录不因切换数据库而改变。
-
-### 3. 启动后端
+访问 <http://localhost:4321> 即可使用，无需账号。首次构建需要联网下载镜像和依赖；之后在“设置 → 模型设置”配置聊天模型。前端、后端和 PostgreSQL 会按健康状态依次启动，后端自动执行数据库迁移。只向本机开放前端 4321 和数据库 5432，后端仅供容器内部访问。
 
 ```powershell
+docker compose ps                # 查看状态
+docker compose logs -f api web   # 查看日志
+docker compose stop             # 停止，保留数据
+docker compose up -d --build --wait  # 更新并启动
+```
+
+数据库、上传资料、模型缓存、运行时设置、MCP 配置、插件与技能都使用持久化卷。保留现有 `personal_ai_postgres` 卷；不要用 `docker compose down -v` 停止日常服务，它会删除数据卷。首次启动新容器不会自动导入原来宿主机的上传文件和设置。
+
+Docker 配置不把本机 `.env` 或密钥打入镜像，也不读取其中宿主机专用的文件路径。可在已有 `.env` 中加入这些 Docker 配置（没有 `.env` 也可直接启动）：
+
+```dotenv
+POSTGRES_DB=personal_ai
+POSTGRES_PASSWORD=personal_ai_local
+WORKSPACE_DIR=./data/workspace
+# LEGACY_EMBEDDING=true
+```
+
+已有数据库卷的密码和数据库名须与原安装一致；改变这些变量不会更改现有数据库密码，也不会在已有卷内自动新建数据库。当前本地开发的 `DATABASE_URL` 不会被 Docker 覆盖；若要使用其中的已有库，把 `POSTGRES_DB` 设为该连接地址最后的数据库名。
+
+工作区默认挂载宿主机 `data/workspace` 到容器 `/workspace`。Windows 可设置 `WORKSPACE_DIR=E:/你的项目目录`；创建项目时用页面目录浏览选择 `/workspace` 内的文件夹。Windows 原生目录选择器仅用于直接在 Windows 启动后端。文件夹之外的宿主机文件需明确增加挂载，容器不会自动访问电脑上的全部目录。
+
+连接宿主机上的聊天模型、Embedding 或 HTTP MCP 时，地址中的 `localhost` 应改用 `host.docker.internal`；宿主机服务还需要允许 Docker 网络访问。stdio MCP 在后端容器中运行，镜像内有 Python、Node.js/npm 和 Git；自定义 MCP 所需的浏览器或其他程序需要自行提供。已有 Sentence Transformers 格式模型需要取消 `LEGACY_EMBEDDING=true` 的注释并重新构建，且模型目录须放在挂载目录中；默认 FastEmbed 无需这些可选组件。
+
+## 本地开发
+
+需要 Python 3.11+、uv、Node.js 20+ 和 Docker。已有 `.env` 不要覆盖；新环境可复制 `.env.example`。
+
+```powershell
+docker compose up -d postgres
 uv sync
-uv run uvicorn apps.api.main:app --port 8787 --reload
+uv run uvicorn apps.api.main:app --host 127.0.0.1 --port 8787 --reload
 ```
 
-应用启动时会检查并应用尚未执行的 Alembic 数据库迁移。
-
-### 4. 启动前端
-
-另开一个终端：
+另开终端：
 
 ```powershell
-cd personal-ai/apps/web
-npm install
+cd apps/web
+npm ci
 npm run dev
 ```
 
-启动完成后访问：
-
-- 前端：<http://localhost:4321>
-- 后端：<http://localhost:8787>
-- 业务 API 需要登录；公开 API 文档入口已关闭。
-
-首次使用直接打开 <http://localhost:4321> 创建本机账号，然后在“设置 → 模型设置”中填写并测试模型配置。账号每台安装只有一个，只能在本机创建，不开放注册。
+数据库仅支持 PostgreSQL + pgvector，通过 `DATABASE_URL` 指定。前端仍使用 <http://localhost:4321>；运行时设置和文件默认保存在系统用户数据目录。
 
 ## 常用配置
 
@@ -134,16 +134,6 @@ npm run dev
 
 轻量 FastEmbed / ONNX 不需要 PyTorch；原有 Sentence Transformers 权重需要可选运行组件。使用该格式时运行 `uv sync --group legacy-embedding`，并用 `uv run --group legacy-embedding uvicorn apps.api.main:app --port 8787 --reload` 启动，或直接使用已安装这些组件的虚拟环境。普通 `uv run` 会同步默认依赖，可能移除可选组件；页面检测到缺少组件时会明确提示，不自动安装。
 
-## 账号与登录
-
-- 第一次打开页面时创建本机账号，密码至少 12 个字符；密码使用带随机盐的 scrypt 保存，会话令牌在数据库中只存摘要。
-- 登录页可选“记住我”，勾选后 30 天内免登录，否则默认 7 天。具体时长由 `AUTH_SESSION_HOURS` 和 `AUTH_SESSION_REMEMBER_HOURS` 控制。
-- “设置 → 账号与安全”可以修改密码或退出全部设备；改密码会撤销其他设备上的会话。
-- 创建账号时会生成 8 组一次性恢复码，只显示一次。忘记密码时在登录页选择“忘记密码？用恢复码重设”，输入用户名和其中任意一组即可设置新密码；用过的恢复码随即作废，重设会撤销全部登录会话。
-- 恢复码只保存 SHA-256 摘要，数据库里没有明文，也没有其他找回渠道。“设置 → 账号与安全”可以查看剩余组数并重新生成（旧的一批全部作废）。
-- 连续登录失败有全局限速，恢复码同样受限速保护。
-- 仅在从其他设备（非本机回环地址）访问时，首次设置才要求一次性设置码，内容在首次启动自动生成的 `data/auth-setup-token` 文件中；本机打开页面创建账号不需要它。
-
 ## 项目结构
 
 ```text
@@ -164,30 +154,18 @@ personal-ai/
 ├── skills/                  本地 Skill
 ├── plugins/                 声明式插件
 ├── mcp_servers/             内置 MCP Server
-
-
 ├── data/                    本地运行数据，不提交 Git
-└── compose.yaml             本机 PostgreSQL / pgvector 数据库服务
+└── compose.yaml             前端、后端与 PostgreSQL 一键部署
 ```
 
 后端依赖方向为 `apps/api → core → infrastructure`。前端负责展示状态和提交操作，不负责决定记忆召回、资料引用或工具权限。
 
 ## 数据存储
 
-- 账号、会话、角色记忆、长期记忆及世界书元数据保存在 PostgreSQL；上传文件、生成文件和模型设置仍保存在本机目录。
+- 会话、角色记忆、长期记忆及世界书元数据保存在 PostgreSQL；上传文件、生成文件和模型设置仍保存在本机目录。
 - 使用单个后端进程。pgvector 按模型与维度筛选后进行精确向量召回；关键词模式以 NULL 表示没有向量。当前未建立跨模型近似向量索引。
 - `.env`、数据库备份与运行时设置包含私密数据，不加入版本控制或发行包。
 - PostgreSQL 备份使用 `pg_dump -Fc`，并另行备份上传文件、worldbooks 文件夹和运行时设置。恢复前停止后端，优先恢复至新库，再切换连接。
-- SQLite 备份仍可使用 `python -m scripts.backup_database <新文件路径>`。
-
-从 SQLite 切回 PostgreSQL（先停止后端；只创建新目标库，不覆盖已有库）：
-
-```powershell
-uv run python -m scripts.migrate_sqlite_to_postgres --source data/personal-ai.db --target-env .env.postgresql-backup --database personal_ai_new --activate
-```
-
-脚本先创建一致的 SQLite 副本，迁移所有业务表，逐行比对内容和向量，再修改 `.env`；报告与旧配置位于 `data/backups/postgres-switch-*`。原 SQLite 和旧 PostgreSQL 库保留。PostgreSQL 使用 `migrations/versions/`，SQLite 使用 `migrations/sqlite_versions/`。
-
 
 ## 安全说明
 
@@ -195,7 +173,7 @@ uv run python -m scripts.migrate_sqlite_to_postgres --source data/personal-ai.db
 - 工具是否需要确认由后端风险等级和审批策略决定，MCP 配置中的风险等级是其中一部分。
 - 编码工具只能访问当前对话所属文件夹，并拒绝越界路径、敏感文件和符号链接。
 - 每个编码 Run 使用当前对话所属文件夹的独立目录上下文；未选择文件夹时编码工具不可用。
-- 登录保护全部业务接口，写请求还要求同源请求标记。这一层面向本机使用，不要在没有 HTTPS 和反向代理加固的情况下把端口暴露到公网。
+- 当前没有账号和登录，仅面向本机使用；Docker 端口绑定回环地址，写请求仍要求同源请求标记。
 
 ## License
 

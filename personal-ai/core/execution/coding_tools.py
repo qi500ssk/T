@@ -70,7 +70,7 @@ def _is_sensitive_name(name: str) -> bool:
 
 
 def _service_files() -> set[Path]:
-    return {Path(settings.runtime_settings_file).resolve(), Path(settings.auth_setup_token_file).resolve(), Path(settings.workspace_grants_file).resolve(), Path(settings.workspace_grants_file).with_suffix(".tmp").resolve()}
+    return {Path(settings.runtime_settings_file).resolve(), Path(settings.workspace_grants_file).resolve(), Path(settings.workspace_grants_file).with_suffix(".tmp").resolve()}
 
 
 def _workspace_path(raw_path: str, *, allow_sensitive: bool = False) -> Path:
@@ -96,7 +96,7 @@ def _workspace_path(raw_path: str, *, allow_sensitive: bool = False) -> Path:
             raise CodingToolError("不允许访问符号链接")
     resolved = (root / relative).resolve(strict=False)
     if resolved in _service_files():
-        raise CodingToolError("不允许访问服务的设置或登录凭据文件")
+        raise CodingToolError("不允许访问服务的设置或目录授权文件")
     try:
         resolved.relative_to(root)
     except ValueError as exc:

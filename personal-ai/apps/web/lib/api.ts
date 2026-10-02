@@ -6,38 +6,8 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set("X-Requested-With", "PersonalAI");
   const response = await fetch(url, { ...init, headers, credentials: "same-origin", cache: "no-store" });
-  if (response.status === 401 && !url.startsWith(`${API_URL}/auth/`)) {
-    window.dispatchEvent(new Event("personal-ai:unauthorized"));
-  }
   return response;
 }
-
-export interface AuthStatus {
-  setup_required: boolean;
-  authenticated: boolean;
-  username: string | null;
-  setup_token_required: boolean;
-}
-export const fetchAuthStatus = () => req<AuthStatus>(`${API_URL}/auth/status`);
-export const login = (username: string, password: string, remember: boolean) => req<{ ok: boolean }>(`${API_URL}/auth/login`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password, remember }),
-});
-export const setupAdmin = (username: string, password: string, setup_token: string) => req<{ ok: boolean; username: string; recovery_codes: string[] }>(`${API_URL}/auth/setup`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password, setup_token }),
-});
-export const recoverAccount = (username: string, recovery_code: string, new_password: string) => req<{ ok: boolean; username: string; recovery_codes_remaining: number }>(`${API_URL}/auth/recovery`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, recovery_code, new_password }),
-});
-export const changePassword = (current_password: string, new_password: string) => req<{ ok: boolean }>(`${API_URL}/auth/password`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_password, new_password }),
-});
-export interface RecoveryCodeSummary { total: number; used: number; remaining: number }
-export const fetchRecoveryCodes = () => req<RecoveryCodeSummary>(`${API_URL}/auth/recovery-codes`);
-export const regenerateRecoveryCodes = (password: string) => req<{ ok: boolean; recovery_codes: string[] }>(`${API_URL}/auth/recovery-codes`, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
-});
-export const logout = () => req<{ ok: boolean }>(`${API_URL}/auth/logout`, { method: "POST" });
-export const logoutAll = () => req<{ ok: boolean }>(`${API_URL}/auth/logout-all`, { method: "POST" });
 
 export interface Conversation {
   id: string;
@@ -449,6 +419,7 @@ export interface DirectoryListing {
   current_path: string | null;
   parent_path: string | null;
   directories: { name: string; path: string }[];
+  native_picker_available: boolean;
 }
 
 export type MemoryKind = "episodic" | "semantic" | "profile";

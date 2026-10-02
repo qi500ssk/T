@@ -1,4 +1,4 @@
-"""SQLite 向量 + BM25 + RRF 混合检索。"""
+"""PostgreSQL/pgvector + BM25 + RRF 混合检索。"""
 
 from __future__ import annotations
 

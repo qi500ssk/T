@@ -29,13 +29,10 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     with engine.connect() as connection:
-        if connection.dialect.name == "sqlite":
-            connection.exec_driver_sql("BEGIN IMMEDIATE")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            render_as_batch=connection.dialect.name == "sqlite",
         )
         with context.begin_transaction():
             context.run_migrations()

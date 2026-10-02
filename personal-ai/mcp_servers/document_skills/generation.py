@@ -31,6 +31,7 @@ _CJK_FONT_CANDIDATES = (
     Path("/System/Library/Fonts/PingFang.ttc"),
     Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
 )
 
 

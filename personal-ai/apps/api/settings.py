@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import string
 import uuid
 from pathlib import Path
@@ -637,6 +638,7 @@ def list_directories(
         "current_path": str(current),
         "parent_path": parent,
         "directories": directories,
+        "native_picker_available": sys.platform == "win32",
     }
 
 

@@ -26,6 +26,7 @@ apps/web/.env.*.local
 
 # Editors and local agent state
 AGENTS.md
+CLAUDE.md
 .idea/
 .vscode/
 .zcode/
@@ -33,3 +34,19 @@ AGENTS.md
 # Operating systems
 .DS_Store
 Thumbs.db
+
+# Local notes, manual tests and verification artifacts
+docs/
+tests/
+evaluation/
+worldbooks/
+.playwright-cli/
+*.tsbuildinfo
+apps/web/*-final.png
+apps/web/README.md
+config/README.md
+core/README.md
+core/**/README.md
+mcp_servers/README.md
+plugins/README.md
+skills/README.md

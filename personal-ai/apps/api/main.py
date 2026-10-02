@@ -11,12 +11,11 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, text
 from sqlalchemy.exc import IntegrityError
 
 from apps.api.chat import router as chat_router
-from apps.api.auth import AuthenticationMiddleware, router as auth_router
-from core.settings.auth import ensure_setup_token
+from apps.api.request_guard import RequestGuardMiddleware
 from core.files.workspaces import workspace_root
 from apps.api.activities import router as activities_router
 from apps.api.documents import router as documents_router
@@ -34,6 +33,7 @@ from apps.api.retrieval_settings import RetrievalMaintenanceMiddleware, router a
 from apps.api.character_memory import router as character_memory_router
 from apps.api.document_graph import router as document_graph_router
 from apps.api.stories import router as stories_router
+from apps.api.story_builds import router as story_builds_router
 from core.chat.images import resolve_image
 from core.chat.context import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from core.automation.activity import activity_worker, recover_interrupted_activities
@@ -147,7 +147,6 @@ async def lifespan(app: FastAPI):
         session.query(GraphOrganization).filter(GraphOrganization.status == "running").update(
             {"status": "paused", "error": "上次自动整理因退出中断，已保留进度，可继续"})
         session.commit()
-    ensure_setup_token()
     workspace_root().mkdir(parents=True, exist_ok=True)
     reject_all_approvals()
     recover_interrupted_runs()
@@ -252,7 +251,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Personal AI API", version="0.1.0", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(AuthenticationMiddleware)
+app.add_middleware(RequestGuardMiddleware)
 app.add_middleware(RetrievalMaintenanceMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -261,7 +260,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(chat_router)
-app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(activities_router)
 app.include_router(plans_router)
@@ -277,8 +275,14 @@ app.include_router(retrieval_settings_router)
 app.include_router(character_memory_router)
 app.include_router(document_graph_router)
 app.include_router(stories_router)
-from apps.api.story_builds import router as story_builds_router
 app.include_router(story_builds_router)
+
+
+@app.get("/api/health")
+def health():
+    with SessionLocal() as session:
+        session.execute(text("SELECT 1"))
+    return {"status": "ok"}
 
 
 class ApprovalRequest(BaseModel):
