@@ -22,7 +22,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 后端 | Python 3.11+、FastAPI、SQLAlchemy、Alembic |
+| 后端 | Python 3.11+、FastAPI、SQLAlchemy |
 | 数据库 | PostgreSQL + pgvector |
 | 前端 | Next.js 16、React 19、TypeScript、Tailwind CSS 4 |
 | 检索 | pgvector 余弦相似度、BM25、RRF |
@@ -36,7 +36,7 @@
 docker compose up -d --build --wait
 ```
 
-访问 <http://localhost:4321> 即可使用，无需账号。首次构建需要联网下载镜像和依赖；之后在“设置 → 模型设置”配置聊天模型。前端、后端和 PostgreSQL 会按健康状态依次启动，后端自动执行数据库迁移。只向本机开放前端 4321 和数据库 5432，后端仅供容器内部访问。
+访问 <http://localhost:4321> 即可使用，无需账号。首次构建需要联网下载镜像和依赖；之后在“设置 → 模型设置”配置聊天模型。前端、后端和 PostgreSQL 会按健康状态依次启动，后端启动时直接创建当前所需表结构。只向本机开放前端 4321 和数据库 5432，后端仅供容器内部访问。
 
 ```powershell
 docker compose ps                # 查看状态
@@ -149,7 +149,6 @@ personal-ai/
 │   ├── files/               生成文件和安全存储
 │   └── rag/                 文档解析、分块、向量化和检索
 ├── infrastructure/          配置、数据库模型和初始化
-├── migrations/              Alembic 数据库迁移
 ├── prompts/                 系统、记忆、检索和规划提示词
 ├── skills/                  本地 Skill
 ├── plugins/                 声明式插件

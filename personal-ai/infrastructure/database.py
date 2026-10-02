@@ -1,7 +1,6 @@
 """SQLAlchemy 数据层：PostgreSQL/pgvector。"""
 
 from datetime import datetime, timezone
-from pathlib import Path
 import uuid
 
 from sqlalchemy import (
@@ -542,18 +541,7 @@ def init_db() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    _upgrade_schema()
+    with engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        Base.metadata.create_all(bind=connection)
     _schema_ready = True
-
-
-def _upgrade_schema() -> None:
-    """通过 Alembic 将 PostgreSQL 升级到当前 schema。"""
-    from alembic import command
-    from alembic.config import Config
-
-    project_root = Path(__file__).resolve().parents[1]
-    config = Config(str(project_root / "alembic.ini"))
-    config.set_main_option("script_location", str(project_root / "migrations"))
-    config.set_main_option("version_locations", str(project_root / "migrations" / "versions"))
-    config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
-    command.upgrade(config, "head")

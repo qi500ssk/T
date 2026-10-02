@@ -26,8 +26,6 @@ COPY apps/api ./apps/api
 COPY apps/__init__.py ./apps/__init__.py
 COPY core ./core
 COPY infrastructure ./infrastructure
-COPY migrations ./migrations
-COPY alembic.ini ./
 COPY prompts ./prompts
 COPY mcp_servers ./mcp_servers
 COPY scripts/__init__.py scripts/mcp_demo_server.py ./scripts/
