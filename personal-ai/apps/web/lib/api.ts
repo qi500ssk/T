@@ -89,31 +89,6 @@ export interface KnowledgeDocument {
   updated_at: string;
 }
 
-export interface ChunkPreview {
-  id: string;
-  chunk_index: number;
-  section: string;
-  content: string;
-  page_start: number | null;
-  page_end: number | null;
-  char_start: number | null;
-  char_end: number | null;
-}
-
-export interface DocumentDetail extends KnowledgeDocument {
-  chunks: ChunkPreview[];
-}
-
-export interface SearchResult extends Omit<ChunkPreview, "id"> {
-  chunk_id: string;
-  document_id: string;
-  filename: string;
-  vector_score: number | null;
-  bm25_score: number | null;
-  rrf_score: number;
-  retrieval_rank: number;
-}
-
 export interface AgentEvent {
   event: string;
   data: Record<string, unknown>;
@@ -148,51 +123,6 @@ export interface Activity {
   updated_at: string;
 }
 
-export interface PlanStep {
-  id: string;
-  version: number;
-  position: number;
-  title: string;
-  instruction: string;
-  tool_hints: string[];
-  status: "pending" | "running" | "interrupted" | "completed" | "blocked" | "failed" | "superseded" | "cancelled";
-  output_summary: string | null;
-  error: string | null;
-}
-
-export interface Plan {
-  id: string;
-  run_id: string;
-  conversation_id: string;
-  activity_id: string | null;
-  goal: string;
-  status: "planning" | "running" | "interrupted" | "completed" | "failed" | "cancelled";
-  current_version: number;
-  replan_count: number;
-  error: string | null;
-  steps: PlanStep[];
-}
-
-export interface Checkpoint {
-  id: string;
-  run_id: string;
-  plan_id: string;
-  step_id: string | null;
-  sequence: number;
-  state: {
-    goal?: string;
-    current_step?: { id?: string; position?: number; title?: string } | number | null;
-    last_observation?: string;
-  };
-  workspace_snapshot: {
-    files?: { path: string; sha256: string }[];
-    git_head?: string | null;
-  };
-  capability_version: string | null;
-  status: string;
-  created_at: string;
-}
-
 export interface AgentRunState {
   id: string;
   conversation_id: string;
@@ -213,6 +143,7 @@ export interface RunPostprocessStatus {
 }
 
 export interface ConversationRunStats {
+  latest_cache_hit_rate: number | null;
   eligible_run_count: number;
   input_tokens: number;
   cached_input_tokens: number;
@@ -230,6 +161,8 @@ export interface RunHistoryTool {
 }
 
 export interface AgentRunHistory {
+  output_message?: string | null;
+  sources?: CitationSource[];
   id: string;
   conversation_id: string;
   conversation_title: string;
@@ -245,17 +178,6 @@ export interface AgentRunHistory {
   created_at: string;
   completed_at: string | null;
   tools: RunHistoryTool[];
-}
-
-export interface Capability {
-  kind: "tool" | "skill" | "mcp_server";
-  name: string;
-  description: string;
-  source: string;
-  risk_level: "low" | "medium" | "high" | null;
-  required_tools: string[];
-  enabled: boolean;
-  available: boolean;
 }
 
 export type SkillStatus = "enabled" | "disabled" | "missing_dependencies" | "invalid";
@@ -341,6 +263,9 @@ export interface PluginItem {
 }
 
 export interface AgentSettings {
+  is_builtin?: boolean;
+  opening_message?: string;
+  opening_options?: string[];
   name: string;
   role: string;
   language: string;
@@ -521,22 +446,11 @@ export const revokeProjectAccess = (
     { method: "DELETE" },
   );
 
-export const deleteProject = (id: string, deleteConversations = false) =>
-  req<{ ok: boolean }>(
-    `${API_URL}/projects/${encodeURIComponent(id)}${deleteConversations ? "?delete_conversations=true" : ""}`,
-    { method: "DELETE" },
-  );
-
 export const deleteConversation = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/conversations/${id}`, { method: "DELETE" });
 
 export const fetchMessages = (convId: string) =>
   req<ChatMessage[]>(`${API_URL}/conversations/${convId}/messages`);
-
-export const fetchDocuments = () => req<KnowledgeDocument[]>(`${API_URL}/documents`);
-
-export const fetchDocument = (id: string) =>
-  req<DocumentDetail>(`${API_URL}/documents/${id}`);
 
 export const documentContentUrl = (id: string, page?: number | null) =>
   `${API_URL}/documents/${id}/content${page ? `#page=${page}` : ""}`;
@@ -560,12 +474,6 @@ export const deleteStagedChatImage = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/chat/images/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
-
-export const deleteDocument = (id: string) =>
-  req<{ ok: boolean }>(`${API_URL}/documents/${id}`, { method: "DELETE" });
-
-export const searchPreview = (query: string, limit = 5) =>
-  req<SearchResult[]>(`${API_URL}/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 
 export const fetchMemories = (filters?: {
   scope_type?: Memory["scope_type"];
@@ -597,24 +505,8 @@ export const createMemory = (body: {
     body: JSON.stringify(body),
   });
 
-export const updateMemory = (
-  id: string,
-  body: Partial<Pick<Memory, "content" | "kind" | "importance" | "is_active" | "scope_type" | "scope_key">>,
-) =>
-  req<Memory>(`${API_URL}/memories/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
 export const deleteMemory = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/memories/${id}`, { method: "DELETE" });
-
-export const fetchMemoryHistory = (id: string) =>
-  req<Memory[]>(`${API_URL}/memories/${id}/history`);
-
-export const expireMemory = (id: string) =>
-  req<Memory>(`${API_URL}/memories/${id}/expire`, { method: "POST" });
 
 export const submitApproval = (approvalId: string, approved: boolean) =>
   req<ApprovalResponse>(`${API_URL}/approval`, {
@@ -658,28 +550,17 @@ export const runActivityNow = (id: string) =>
 export const deleteActivity = (id: string) =>
   req<{ ok: boolean }>(`${API_URL}/activities/${id}`, { method: "DELETE" });
 
-export const fetchConversationPlans = (conversationId: string) =>
-  req<Plan[]>(`${API_URL}/conversations/${conversationId}/plans`);
-
-export const fetchConversationCheckpoints = (conversationId: string) =>
-  req<Checkpoint[]>(`${API_URL}/conversations/${conversationId}/checkpoints`);
-
 export const fetchCurrentConversationRun = (conversationId: string) =>
   req<AgentRunState | null>(`${API_URL}/conversations/${conversationId}/runs/current`);
 
 export const fetchConversationRunStats = (conversationId: string) =>
   req<ConversationRunStats>(`${API_URL}/conversations/${conversationId}/runs/stats`);
 
-export const fetchConversationRunHistory = (conversationId: string) =>
-  req<AgentRunHistory[]>(`${API_URL}/conversations/${conversationId}/runs/history`);
-
 export const fetchAgentRunHistory = (agentId: string, limit = 100) =>
   req<AgentRunHistory[]>(`${API_URL}/agents/${encodeURIComponent(agentId)}/runs/history?limit=${limit}`);
 
 export const fetchRunPostprocessStatus = (runId: string) =>
   req<RunPostprocessStatus>(`${API_URL}/runs/${encodeURIComponent(runId)}/postprocess`);
-
-export const fetchCapabilities = () => req<Capability[]>(`${API_URL}/capabilities`);
 
 export const fetchSkills = () => req<SkillItem[]>(`${API_URL}/skills`);
 
@@ -805,13 +686,6 @@ export const importPluginFolder = (files: File[]) => {
 
 export const fetchAppSettings = () => req<AppSettings>(`${API_URL}/settings`);
 
-export const updateAgentSettings = (body: AgentSettings) =>
-  req<AgentSettings>(`${API_URL}/settings/agent`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
 export const createAgentProfile = (body: AgentProfileInput) =>
   req<AgentProfile>(`${API_URL}/settings/agents`, {
     method: "POST",
@@ -846,13 +720,6 @@ export const uploadAgentAvatar = (id: string, file: File) => {
     body,
   });
 };
-
-export const updateModelSettings = (body: ModelSettingsInput) =>
-  req<ModelSettings>(`${API_URL}/settings/model`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
 
 export const createModelProfile = (body: ModelProfileInput) =>
   req<ModelProfile>(`${API_URL}/settings/models`, {
@@ -953,41 +820,6 @@ export async function streamChat(
       const ev = parseEventBlock(buffer.slice(0, idx));
       buffer = buffer.slice(idx + 2);
       if (ev) onEvent(ev);
-    }
-  }
-}
-
-export async function streamResumeRun(
-  runId: string,
-  onEvent: (ev: AgentEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const resp = await apiFetch(`${API_URL}/chat/${encodeURIComponent(runId)}/resume`, {
-    method: "POST",
-    signal,
-  });
-  if (!resp.ok || !resp.body) {
-    const text = await resp.text();
-    let detail = text;
-    try {
-      detail = (JSON.parse(text) as { detail?: string }).detail ?? text;
-    } catch {
-      // 保留非 JSON 错误原文。
-    }
-    throw new Error(`恢复失败 ${resp.status}: ${detail}`);
-  }
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let index;
-    while ((index = buffer.indexOf("\n\n")) >= 0) {
-      const event = parseEventBlock(buffer.slice(0, index));
-      buffer = buffer.slice(index + 2);
-      if (event) onEvent(event);
     }
   }
 }

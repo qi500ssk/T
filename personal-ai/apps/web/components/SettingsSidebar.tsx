@@ -44,7 +44,7 @@ export default function SettingsSidebar({ onBack, onOpenWorkspace, view, onViewC
           aria-current={view === "knowledge" ? "page" : undefined}
         >
           <span aria-hidden="true">▣</span>
-          世界书
+          书籍
         </button>
         <button
           type="button"

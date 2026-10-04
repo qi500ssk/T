@@ -113,8 +113,9 @@ def _normalize_agents(raw: dict | None, fallback_agent: dict) -> dict:
             )
         )
         seen.add(profile_id)
-    if not items:
-        items = [_agent_profile(fallback_agent)]
+    from core.story.assistant import ASSISTANT_ID
+    if ASSISTANT_ID not in seen:
+        items.insert(0, _agent_profile(fallback_agent, profile_id=ASSISTANT_ID, profile_name="故事文档助手"))
     active_id = str(raw.get("active_agent_id") or "").strip()
     if active_id not in {item["id"] for item in items}:
         active_id = items[0]["id"]

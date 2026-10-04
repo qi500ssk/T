@@ -64,7 +64,7 @@ def write_text(folder, name, text):
         raise ValueError("输出文件不能为链接")
     temporary = folder / (name + ".tmp")
     if temporary.is_symlink(): raise ValueError("临时文件不能为链接")
-    temporary.write_text(text, encoding="utf-8")
+    temporary.write_text(text, encoding="utf-8", newline="")
     temporary.replace(target)
 
 def assembled(row):
@@ -77,7 +77,7 @@ def quality(row):
     issues = []
     memory_issues = (row.report or {}).get('memory_issues', [])
     if memory_issues:
-        issues.append(f"{len(memory_issues)} 条角色记忆仍待补建或核实，正文已保留，世界书尚未完成")
+        issues.append(f"{len(memory_issues)} 条角色记忆仍待补建或核实，正文已保留，书籍尚未完成")
     if len(row.plan.get("world_entries", [])) < 6: issues.append("世界设定条目不足六条，请检查地点、组织、规则、历史与文化是否覆盖")
     if len(row.chapters) < row.request["chapter_count"]: issues.append("仍有章节未完成")
     for i, length in enumerate(lengths):
@@ -178,7 +178,8 @@ async def run_build(job_id, provider, web=None):
                     for n, event in enumerate(story.events):
                         event.parent_event_id = renamed.get(event.parent_event_id) if event.parent_event_id else None
                         event.id = f"c{index+1}_e{n+1}"
-                        event.stage = f"{index+1:02d} {chapter['title']}"
+                        from core.story.books import CHAPTER
+                        event.stage = chapter['title'] if CHAPTER.match(chapter['title']) else f"第{index+1}章 {chapter['title']}"
                     for issue in memory_issues:
                         issue['event_id'] = renamed[issue['event_id']]
                         issue['chapter'] = index + 1
@@ -216,11 +217,19 @@ async def run_build(job_id, provider, web=None):
                 report = quality(row)
                 write_text(folder, 'quality.json', json.dumps(report, ensure_ascii=False, indent=2))
                 save_state(job_id, status='memory_incomplete', report=report,
-                           error=f'正文已写完，但还有 {len(pending)} 条角色记忆未通过证据校验，尚未生成最终世界书。补建时只处理这些记忆，不重写正文。')
+                           error=f'正文已写完，但还有 {len(pending)} 条角色记忆未通过证据校验，尚未生成最终书籍。补建时只处理这些记忆，不重写正文。')
                 return
         final = assembled(row)
         write_text(folder, "worldbook.md", markdown(final))
         write_text(folder, "worldbook.json", final.model_dump_json(indent=2))
+        from core.story.reader import story_book
+        from core.story.books import as_txt, as_epub
+        reading = story_book(final)
+        write_text(folder, "novel.txt", as_txt(reading["sections"]))
+        target = folder / "novel.epub"
+        if target.is_symlink() or getattr(target, "is_junction", lambda: False)():
+            raise ValueError("输出文件不能为链接")
+        target.write_bytes(as_epub(final.title, reading["sections"]))
         for person in final.characters:
             admitted = memory_plan(final,person.id)
             personal = lambda status: [item["view"].model_dump() | {"event_id":item["event"].id,"time":item["event"].time}

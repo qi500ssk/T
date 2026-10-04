@@ -120,7 +120,7 @@ def index_events(story):
     """World entries are indexed separately and only projected to declared knowers."""
     return [*story.events, *[Event(id="lore_"+l.id, stage="世界设定 · "+l.kind, title=l.title, text=l.content,
         viewpoints=[Viewpoint(character_id=p, knowledge="heard", memory=l.content[:1000], quote=l.content[:500], importance=4,
-            significance=["identity"], importance_reason="世界书明确声明该人物掌握的背景知识", confidence=1) for p in l.known_by]) for l in story.world_entries]]
+            significance=["identity"], importance_reason="书籍明确声明该人物掌握的背景知识", confidence=1) for p in l.known_by]) for l in story.world_entries]]
 
 
 def stable_id(*parts):

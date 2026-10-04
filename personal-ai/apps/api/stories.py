@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, ValidationError
 from core.story.document import parse_story, stable_id, markdown, index_events
 from core.story.importer import import_story
 from core.memory.admission import memory_plan, admission_preview
-from core.memory.world import digest
+from core.memory.evidence import digest
 from core.rag.ingestion import resolve_stored_file
 from infrastructure.config import settings
 from infrastructure.database import SessionLocal, Document, WorldFact, CharacterMemory, CharacterStoryBinding
@@ -50,7 +50,7 @@ def preview(body: Input):
 
 @router.post("/import")
 async def import_document(body: Input, request: Request):
-    if not body.confirmed: raise HTTPException(422, "请先预览并确认世界书")
+    if not body.confirmed: raise HTTPException(422, "请先预览并确认书籍")
     if request.app.state.character_tasks: raise HTTPException(409, "请等待当前资料任务结束")
     story = checked(body.text)
     try:
@@ -75,7 +75,7 @@ async def create_character(document_id: str, character_id: str, request: Request
     agents = store.snapshot()["agents"]
     agent_id = "story-" + stable_id(document_id, character_id)
     if any(a["id"] == agent_id for a in agents["items"]):
-        raise HTTPException(409, "此世界书中的人物已创建")
+        raise HTTPException(409, "此书籍中的人物已创建")
     profile = {"id":agent_id,"profile_name":person.name,"name":person.name,"role":"故事角色",
         "language":"zh-CN","tone":"自然","verbosity":"适中","humor":"适度","formality":"自然","proactivity":"适度",
         "custom_instructions":f"你正在扮演{person.name}。人物设定：{person.description}\n性格：{person.personality}\n目标：{person.motivation}\n说话方式：{person.speech}\n关系认知：{person.relationships}\n边界：{person.boundaries}\n对话示例：{person.example_dialogue}\n只依据当前角色的专属记忆回忆经历。不知道的事件不要冒充亲历，不使用其他角色的私有记忆，不因用户提到同名人物而改变身份。"}
@@ -103,9 +103,9 @@ async def create_character(document_id: str, character_id: str, request: Request
             event_facts = [fact_ids[stable_id(document_id,event.id,str(c.chunk_index))] for c in chunks if stable_id(document_id,event.id,str(c.chunk_index)) in fact_ids]
             source_chunks = [c for c in chunks if c.id in {f.chunk_id for f in event_facts}]
             if event_facts and len(event_facts) != event_facts[0].graph.get("source_chunk_count",len(event_facts)):
-                raise HTTPException(409, "故事来源片段不完整，请重新导入确认后的世界书")
+                raise HTTPException(409, "故事来源片段不完整，请重新导入确认后的书籍")
             if not event_facts or any(f.source_hash != digest(next(c.content for c in source_chunks if c.id == f.chunk_id)) for f in event_facts):
-                raise HTTPException(409, "故事事件来源已删除或修改，请重新导入确认后的世界书")
+                raise HTTPException(409, "故事事件来源已删除或修改，请重新导入确认后的书籍")
             fact = next((f for f in event_facts if view.quote in next(c.content for c in source_chunks if c.id == f.chunk_id)), event_facts[0])
             session.add(CharacterMemory(agent_id=agent_id, world_fact_id=fact.id, content=view.memory, source_quote=view.quote,
                 source_name=story.title, source_section=event.stage, document_id=document_id, chunk_id=fact.chunk_id,

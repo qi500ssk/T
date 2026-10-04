@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import StoryBuildProgress from "./StoryBuildProgress";
+import StoryOpening from "./StoryOpening";
 import remarkGfm from "remark-gfm";
 
 import Avatar, { DEFAULT_USER_AVATAR, agentAvatarUrl } from "@/components/Avatar";
@@ -68,7 +69,7 @@ interface ChatViewProps {
   onFinished: (conversationId: string) => void;
   /** 同步每个会话的侧栏运行状态；完成状态用于提示后台任务已经结束。 */
   onRunStatusChange: (conversationId: string, status: "running" | "completed" | "idle") => void;
-  onOpenSettings?: (view: "model") => void;
+  onOpenSettings?: (view: "model" | "knowledge") => void;
   projects: Project[];
   activeProjectId: string | null;
   onSelectProject: (id: string | null) => void;
@@ -116,6 +117,7 @@ function ContextMeter({
   maxOutputTokens,
   conversationTokens,
   cacheHitRate,
+  latestCacheHitRate,
   loading,
 }: {
   usage: ContextUsage | null;
@@ -123,6 +125,7 @@ function ContextMeter({
   maxOutputTokens: number;
   conversationTokens: number;
   cacheHitRate: number | null;
+  latestCacheHitRate: number | null;
   loading: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -208,7 +211,13 @@ function ContextMeter({
             <div className="h-full rounded-full bg-zinc-950 transition-all motion-reduce:transition-none" style={{ width: `${remainingPercent}%` }} />
           </div>
           <div className="mt-3 flex items-center justify-between border-t border-zinc-100 pt-3 text-sm">
-            <span className="text-zinc-500">平均缓存命中率</span>
+            <span className="text-zinc-500">本轮缓存命中率</span>
+            <span className="font-medium tabular-nums text-zinc-800">
+              {latestCacheHitRate === null ? "—" : `${latestCacheHitRate.toFixed(1)}%`}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center justify-between text-sm">
+            <span className="text-zinc-500">会话平均命中率</span>
             <span className="font-medium tabular-nums text-zinc-800">
               {cacheHitRate === null ? "—" : `${cacheHitRate.toFixed(1)}%`}
             </span>
@@ -232,6 +241,7 @@ function ChatComposer({
   contextUsage,
   conversationTokens,
   cacheHitRate,
+  latestCacheHitRate,
   contextLoading,
   hero = false,
   uploadBusy,
@@ -261,6 +271,7 @@ function ChatComposer({
   contextUsage: ContextUsage | null;
   conversationTokens: number;
   cacheHitRate: number | null;
+  latestCacheHitRate: number | null;
   contextLoading: boolean;
   hero?: boolean;
   uploadBusy: boolean;
@@ -402,7 +413,7 @@ function ChatComposer({
           className="h-10 shrink-0 rounded-xl border border-transparent bg-transparent px-3 text-sm font-medium text-zinc-700"
           menuMinWidth={144}
         />
-        <ContextMeter usage={contextUsage} contextWindowTokens={contextWindowTokens} maxOutputTokens={maxOutputTokens} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} loading={contextLoading} />
+        <ContextMeter usage={contextUsage} contextWindowTokens={contextWindowTokens} maxOutputTokens={maxOutputTokens} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} latestCacheHitRate={latestCacheHitRate} loading={contextLoading} />
         {environmentLocked ? <button type="button" onClick={() => onOpenSettings?.("model")} className="min-h-10 max-w-44 truncate rounded-xl bg-zinc-100 px-3 text-xs font-medium text-zinc-700 sm:max-w-64 sm:text-sm" title=".env 环境模型具有最高优先级">{settings?.model.model} · 环境锁定</button> : modelProfiles.length > 0 ? <SelectMenu value={selectedModelId} disabled={isStreaming} onChange={setSelectedModelId} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profile.model || "Mock"}${profile.is_default ? "（默认）" : ""}` }))} ariaLabel="本次对话使用的模型" className="h-10 min-w-0 max-w-28 rounded-xl border border-transparent bg-transparent px-2 text-xs text-zinc-600 sm:max-w-64 sm:px-3 sm:text-sm" menuMinWidth={288} align="end" /> : <button type="button" onClick={() => onOpenSettings?.("model")} className="min-h-10 rounded-xl bg-amber-50 px-2 text-xs font-medium text-amber-800 hover:bg-amber-100 sm:px-3 sm:text-sm">配置模型</button>}
         <button
           type={isStreaming ? "button" : "submit"}
@@ -673,6 +684,7 @@ export default function ChatView({
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [conversationTokens, setConversationTokens] = useState(0);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
+  const [latestCacheHitRate, setLatestCacheHitRate] = useState<number | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
   const [postprocess, setPostprocess] = useState<Record<string, RunPostprocessStatus>>({});
   const locallyCreatedConversationRef = useRef<string | null>(null);
@@ -731,6 +743,7 @@ export default function ChatView({
       setContextUsage(null);
       setConversationTokens(0);
       setCacheHitRate(null);
+      setLatestCacheHitRate(null);
       setPostprocess({});
       applyLiveSession(conversationId ? getLiveRunSession(conversationId) : null);
     };
@@ -803,9 +816,12 @@ export default function ChatView({
       .catch(() => { if (!cancelled) setCurrentRun(null); });
     fetchConversationRunStats(conversationId)
       .then((stats) => {
-        if (!cancelled) setCacheHitRate(stats.average_cache_hit_rate);
+        if (!cancelled) {
+          setCacheHitRate(stats.average_cache_hit_rate);
+          setLatestCacheHitRate(stats.latest_cache_hit_rate ?? null);
+        }
       })
-      .catch(() => { if (!cancelled) setCacheHitRate(null); });
+      .catch(() => { if (!cancelled) { setCacheHitRate(null); setLatestCacheHitRate(null); } });
     return () => {
       cancelled = true;
     };
@@ -856,7 +872,7 @@ export default function ChatView({
     [],
   );
 
-  const updateTrace = useCallback((ownerConversationId: string, key: string, label: string, status: TraceStatus, detail = "") => {
+  const updateTrace = useCallback((ownerConversationId: string, key: string, label: string, status: TraceStatus, detail = "", diagnostics?: string) => {
     updateLiveRunSession(ownerConversationId, (session) => {
       const items = session.runTrace;
       const existing = items.find((item) => item.key === key);
@@ -866,6 +882,7 @@ export default function ChatView({
         label,
         status,
         detail,
+        diagnostics,
         startedAt: existing?.startedAt ?? now,
         endedAt: status === "running" ? undefined : now,
       };
@@ -1007,7 +1024,7 @@ export default function ChatView({
         isStopping: false,
         contextUsage: null,
         contextLoading: true,
-        runTrace: [{ key: "analysis", label: "分析请求", detail: `当前理解：${compactText(text)}`, status: "running" }],
+        runTrace: [{ key: "analysis", label: "收到请求", detail: compactText(text), status: "running" }],
         startedAt,
         elapsedSeconds: 0,
         error: "",
@@ -1045,12 +1062,12 @@ export default function ChatView({
                   execution_mode: actualExecutionMode,
                 } : session.currentRun,
               }));
-              updateTrace(convId, "analysis", "分析请求", "completed", `当前理解：${compactText(text)}\n执行方式：${planningSkipped ? "这是非执行问题，无需制定计划，已由自主模式回答" : actualExecutionMode === "planned" ? "规划模式：生成 Markdown 实施方案，不执行任务或调用工具" : "自主模式：自行回答或选择已启用工具；有风险的操作仍需确认"}`);
+              updateTrace(convId, "analysis", "收到请求", "completed", compactText(text), `执行方式：${planningSkipped ? "无需制定计划，使用自主模式" : actualExecutionMode === "planned" ? "规划模式：生成 Markdown 实施方案" : "自主模式：回答或调用已启用工具"}`);
             } else if (ev.event === "intent.completed") {
               updateTrace(convId, "intent", "识别意图", "completed", `类型：${String(ev.data.intent ?? "conversation")} · 路由：${String(ev.data.source ?? "rule")} · 置信度：${Math.round(Number(ev.data.confidence ?? 0) * 100)}%`);
             } else if (ev.event === "context.started") {
               updateLiveRunSession(convId, (session) => ({ ...session, contextLoading: true }));
-              updateTrace(convId, "context", "装配上下文", "running", "正在读取会话、记忆和相关资料");
+              updateTrace(convId, "context", "参考会话与相关资料", "running", "正在读取会话、记忆和相关资料");
             } else if (ev.event === "context.completed") {
               const memories = Number(ev.data.memory_count ?? 0);
               const sources = Number(ev.data.source_count ?? 0);
@@ -1072,7 +1089,7 @@ export default function ChatView({
                 },
                 contextLoading: false,
               }));
-              updateTrace(convId, "context", "装配上下文", "completed", selected > 0 ? `限定 ${selected} 个附件；资料候选 ${knowledgeCandidates}，使用 ${sources}，裁剪 ${knowledgeExcluded}` : `记忆候选 ${memoryCandidates}，使用 ${memories}，裁剪 ${memoryExcluded}；资料使用 ${sources}`);
+              updateTrace(convId, "context", "参考会话与相关资料", "completed", `使用 ${memories} 条记忆、${sources} 个资料片段${selected > 0 ? `；检索范围限定为所选 ${selected} 个附件` : ""}。`, `记忆候选 ${memoryCandidates}，裁剪 ${memoryExcluded}；资料候选 ${knowledgeCandidates}，裁剪 ${knowledgeExcluded}`);
             } else if (ev.event === "planning.started") {
               const phase = String(ev.data.phase ?? "document");
               updateTrace(convId, "planning", phase === "document" ? "编写规划文档" : "恢复既有任务", "running", phase === "document" ? "正在整理目标、范围、技术方案、步骤和验收标准" : "正在从中断位置核对已完成步骤");
@@ -1085,7 +1102,7 @@ export default function ChatView({
             } else if (ev.event === "rag.retrieved") {
               const sources = (ev.data.sources as CitationSource[]) ?? [];
               updateLiveRunSession(convId, (session) => ({ ...session, streamingSources: sources }));
-              updateTrace(convId, "context", "装配上下文", "completed", `最终使用并引用 ${sources.length} 个资料片段`);
+              updateTrace(convId, "sources", "引用资料", "completed", sources.length ? sources.map((source) => `${source.filename}${source.section ? ` · ${source.section}` : ""}\n${compactText(source.excerpt, 180)}`).join("\n\n") : "没有引用资料片段");
             } else if (ev.event === "tool.proposed") {
               const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
               const tool = String(ev.data.tool ?? "tool");
@@ -1106,7 +1123,7 @@ export default function ChatView({
                 status,
                 String(ev.data.result_summary ?? ""),
               );
-              updateTrace(convId, `tool-${key}`, TOOL_LABELS[tool] ?? tool, status === "completed" ? "completed" : "failed", String(ev.data.result_summary ?? STATUS_LABELS[status]));
+              updateTrace(convId, `tool-${key}`, TOOL_LABELS[tool] ?? tool, status === "completed" ? "completed" : status === "rejected" ? "cancelled" : "failed", `操作对象 / 参数：${String(ev.data.args_summary ?? "未记录参数")}\n结果：${String(ev.data.result_summary ?? STATUS_LABELS[status])}`);
             } else if (ev.event === "tool.reused") {
               const key = `${String(ev.data.run_id)}-${String(ev.data.step_index)}`;
               const tool = String(ev.data.tool ?? "tool");
@@ -1186,11 +1203,14 @@ export default function ChatView({
                 running: false,
               }));
               if (activeConversationRef.current === convId) {
+                setLatestCacheHitRate(usage.cache_hit_rate == null ? null : Number(usage.cache_hit_rate));
                 setCacheHitRate(rawCacheHitRate === undefined || rawCacheHitRate === null ? null : Number(rawCacheHitRate));
               }
-              updateTrace(convId, "finished", "完成运行", "completed", `输入 ${Number(usage.prompt_tokens ?? 0)} tokens，输出 ${Number(usage.completion_tokens ?? 0)} tokens`);
+              const tools = getLiveRunSession(convId)?.toolActivities ?? [];
+              updateTrace(convId, "finished", "完成运行", "completed", tools.length ? `记录了 ${tools.length} 次工具操作，其中 ${tools.filter((tool) => tool.status === "completed").length} 次已完成。` : "本次没有调用工具，只生成对话回复或方案。", `输入 ${Number(usage.prompt_tokens ?? 0)} tokens，输出 ${Number(usage.completion_tokens ?? 0)} tokens`);
             } else if (ev.event === "message.completed") {
-              updateTrace(convId, "model", executionMode === "planned" ? "生成规划文档" : "生成回答", "completed", executionMode === "planned" ? "Markdown 实施方案已保存到当前对话" : "回答已生成并保存到当前对话");
+              const reply = getLiveRunSession(convId)?.streaming || String(ev.data.content ?? "");
+              updateTrace(convId, "model", executionMode === "planned" ? "生成规划文档" : "生成回答", "completed", reply ? compactText(reply, 600) : "回复已保存到当前对话", reply || undefined);
             } else if (ev.event === "planning.document.completed") {
               updateTrace(convId, "planning", "编写规划文档", "completed", "方案已生成；本次没有调用工具或执行任务");
             }
@@ -1389,7 +1409,7 @@ export default function ChatView({
 
   const effectiveAgent = agent ?? appSettings?.agent;
   const lastMessage = messages.at(-1);
-  const pendingQuestion = effectiveAgent?.custom_instructions?.includes("story-questions") && lastMessage?.role === "assistant" && (!lastMessage.status || lastMessage.status === "completed") && !composerLocked
+  const pendingQuestion = (effectiveAgent?.is_builtin || effectiveAgent?.custom_instructions?.includes("story-questions")) && lastMessage?.role === "assistant" && (!lastMessage.status || lastMessage.status === "completed") && !composerLocked
     ? parseStoryQuestions(lastMessage.content) : null;
   const effectiveSettings = appSettings && effectiveAgent
     ? { ...appSettings, agent: effectiveAgent }
@@ -1400,7 +1420,8 @@ export default function ChatView({
       {empty && !loading ? (
         <div className="flex min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8">
           <section className="m-auto w-full max-w-5xl py-6 sm:py-12" aria-label="新任务输入区">
-            <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} hero uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
+            {effectiveAgent?.is_builtin && <StoryOpening agent={effectiveAgent} disabled={composerLocked || uploadBusy} onSend={send} onLibrary={()=>onOpenSettings?.("knowledge")}/>}
+            <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} latestCacheHitRate={latestCacheHitRate} contextLoading={contextLoading} hero uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />
             {(composerNotice || error) && <p className={`mt-3 text-center text-sm ${error ? "text-red-600" : "text-emerald-700"}`} role={error ? "alert" : "status"}>{error || composerNotice}</p>}
           </section>
         </div>
@@ -1412,7 +1433,7 @@ export default function ChatView({
               {message.role === "assistant" && message.run_id ? <PostprocessIndicator value={postprocess[message.run_id]} /> : null}
             </div>)}
             <ToolActivityList items={toolActivities} />
-            {conversationId && effectiveAgent?.custom_instructions?.includes("story-build") && <StoryBuildProgress key={conversationId} conversationId={conversationId} revision={lastMessage?.id||""} />}
+            {conversationId && (effectiveAgent?.is_builtin || effectiveAgent?.custom_instructions?.includes("story-build")) && <StoryBuildProgress key={conversationId} conversationId={conversationId} revision={lastMessage?.id||""} />}
             {approvals.map((item) => <ApprovalCard key={item.approvalId} item={item} onSubmit={handleApproval} />)}
             {(streaming !== "" || (loading && conversationId)) && <div className="space-y-2">
               <MessageBubble role="assistant" content={streaming || "…"} citations={streamingSources} streaming={streaming !== "" && isStreaming} agent={effectiveAgent} />
@@ -1426,7 +1447,7 @@ export default function ChatView({
 
       {!empty && <div className="border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur sm:px-6">
         {pendingQuestion ? <StoryQuestions key={`${conversationId}:${lastMessage?.id}`} questions={pendingQuestion.questions.slice(0, 1)} disabled={composerLocked || uploadBusy || !(appSettings?.model_control.locked || selectedModelId)} onSubmit={async text => { if (!composerLocked && !uploadBusy) await send(text); }} /> :
-        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />}
+        <ChatComposer input={input} setInput={setInput} submit={submit} isStreaming={composerLocked} executionMode={executionMode} setExecutionMode={setExecutionMode} settings={effectiveSettings} selectedModelId={selectedModelId} setSelectedModelId={selectModel} contextUsage={contextUsage} conversationTokens={conversationTokens} cacheHitRate={cacheHitRate} latestCacheHitRate={latestCacheHitRate} contextLoading={contextLoading} uploadBusy={uploadBusy} onUpload={(file) => void handleUpload(file)} onOpenSettings={onOpenSettings} {...composerProps} />}
         {composerNotice && <p className="mx-auto mt-2 max-w-4xl px-1 text-xs text-emerald-700">{composerNotice}</p>}
       </div>}
     </main>

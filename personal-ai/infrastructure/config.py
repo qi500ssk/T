@@ -89,11 +89,11 @@ class Settings(BaseSettings):
 
     # ---- Files ----
     file_storage_dir: str = Field(default_factory=lambda: data_path("uploads"))
-    file_max_bytes: int = 10_485_760
+    file_max_bytes: int = 33_554_432
     file_allowed_extensions: str = ".pdf,.docx,.txt,.md"
     file_max_pages: int = 300
-    file_max_parsed_chars: int = 2_000_000
-    file_max_chunks: int = 5_000
+    file_max_parsed_chars: int = 8_000_000
+    file_max_chunks: int = 20_000
     docx_max_uncompressed_bytes: int = 52_428_800
     index_timeout_seconds: float = 180.0
     pdf_needs_ocr_min_chars: int = 100

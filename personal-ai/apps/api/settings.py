@@ -163,11 +163,15 @@ def _serialize(request: Request) -> dict:
         for item in models["items"]
     ]
     agents = snapshot["agents"]
+    from core.story.assistant import is_story_assistant, OPENING, OPENING_OPTIONS
     public_agents = [
         {
             **item,
             "avatar_url": _avatar_url(item["id"]),
             "is_active": item["id"] == agents["active_agent_id"],
+            "is_builtin": is_story_assistant(item["id"]),
+            "opening_message": OPENING if is_story_assistant(item["id"]) else "",
+            "opening_options": OPENING_OPTIONS if is_story_assistant(item["id"]) else [],
         }
         for item in agents["items"]
     ]
@@ -199,7 +203,10 @@ def _serialize(request: Request) -> dict:
                 Path(snapshot["workspace"]["coding_workspace_dir"]).expanduser().resolve()
             )
         },
-        "agent": {**snapshot["agent"], "avatar_url": _avatar_url(active_agent_id)},
+        "agent": {**snapshot["agent"], "avatar_url": _avatar_url(active_agent_id),
+            "is_builtin": is_story_assistant(active_agent_id),
+            "opening_message": OPENING if is_story_assistant(active_agent_id) else "",
+            "opening_options": OPENING_OPTIONS if is_story_assistant(active_agent_id) else []},
         "agents": {
             "active_agent_id": agents["active_agent_id"],
             "items": public_agents,
@@ -417,38 +424,39 @@ def update_agent_profile(agent_id: str, body: AgentProfileBody, request: Request
 
 @router.delete("/agents/{agent_id}")
 def delete_agent_profile(agent_id: str, request: Request):
+    from core.story.assistant import is_story_assistant
+    if is_story_assistant(agent_id):
+        raise HTTPException(409, "内置故事助手属于应用基础功能，可以编辑设定，但不能删除")
     agents, _ = _find_agent_profile(request, agent_id)
     if len(agents["items"]) <= 1:
         raise HTTPException(409, "至少保留一个角色预设")
-    if agents["active_agent_id"] == agent_id:
-        raise HTTPException(409, "请先使用另一个角色，再删除此预设")
+    from apps.api.projects import _delete_conversation_records, _unlink_images
+    from infrastructure.database import CharacterExtraction
+    from sqlalchemy import or_
+    if getattr(request.app.state, "character_tasks", {}):
+        raise HTTPException(409, "请等待角色生成或记忆构建完成后再删除")
     with SessionLocal() as session:
-        if session.query(Conversation.id).filter(Conversation.agent_id == agent_id).first():
-            raise HTTPException(409, "此角色仍有对话记录，请先删除这些对话")
-        if (
-            session.query(ProjectAgentAccess.project_id)
-            .filter(ProjectAgentAccess.agent_id == agent_id)
-            .first()
-        ):
-            raise HTTPException(409, "此角色仍有项目文件夹权限，请先从这些项目中移除")
-        if (
-            session.query(Memory.id)
-            .filter(Memory.scope_type == "agent", Memory.scope_key == agent_id)
-            .first()
-        ):
-            raise HTTPException(409, "此角色仍有独立记忆，请先删除这些记忆")
-        if session.query(CharacterMemory.id).filter(CharacterMemory.agent_id == agent_id).first():
-            raise HTTPException(409, "此角色仍有背景记忆或候选，请先在记忆页删除")
+        conversation_ids = [row.id for row in session.query(Conversation.id).filter_by(agent_id=agent_id)]
+        stored_images = _delete_conversation_records(session, conversation_ids)
+        session.query(Memory).filter(or_(
+            (Memory.scope_type == "agent") & (Memory.scope_key == agent_id),
+            Memory.source_conversation_id.in_(conversation_ids),
+        )).delete(synchronize_session=False)
+        for model in (CharacterMemory, CharacterExtraction, CharacterStoryBinding, CandidateMemory, ProjectAgentAccess):
+            session.query(model).filter_by(agent_id=agent_id).delete(synchronize_session=False)
+        session.query(CandidateMemory).filter(CandidateMemory.source_conversation_id.in_(conversation_ids)).delete(synchronize_session=False)
         previous = _store(request).snapshot()["agents"]
         agents["items"] = [item for item in agents["items"] if item["id"] != agent_id]
-        session.query(CharacterStoryBinding).filter_by(agent_id=agent_id).delete(synchronize_session=False)
-        session.query(CandidateMemory).filter_by(agent_id=agent_id).delete(synchronize_session=False)
+        if agents["active_agent_id"] == agent_id:
+            agents["active_agent_id"] = "story-author"
         try:
-            _store(request).update("agents", agents)
+            _activate_agent(request, agents)
             session.commit()
         except Exception:
-            session.rollback(); _store(request).update("agents", previous)
+            session.rollback()
+            _activate_agent(request, previous)
             raise
+    _unlink_images(stored_images)
     _delete_avatar(agent_id)
     return {"ok": True}
 

@@ -43,6 +43,11 @@ export default function Home() {
   const [view, setView] = useState<WorkspaceView | "settings">("chat");
   const [settingsView, setSettingsView] = useState<SettingsView>("general");
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  useEffect(() => {
+    const update = () => { void fetchAppSettings().then(setAppSettings).catch(console.error); };
+    window.addEventListener("personal-ai:agents-changed", update);
+    return () => window.removeEventListener("personal-ai:agents-changed", update);
+  }, []);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [pendingConversationKind, setPendingConversationKind] = useState<"friend" | "normal" | "project">("normal");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
@@ -298,7 +303,11 @@ export default function Home() {
           {settingsView === "general" || settingsView === "model" ? (
             <GeneralSettingsView section={settingsView} onUpdated={(value) => {
               setAppSettings(value);
-              setSelectedAgentId((current) => current ?? value.agents.active_agent_id);
+              const remaining = new Set(value.agents.items.map(item => item.id));
+              setSelectedAgentId(current => current && remaining.has(current) ? current : value.agents.active_agent_id);
+              if (activeConversation && !remaining.has(activeConversation.agent_id)) setActiveId(null);
+              setConversations(rows => rows.filter(row => remaining.has(row.agent_id)));
+              void refresh().catch(console.error);
             }} />
           ) : settingsView === "memories" ? <MemoryWorkspace agents={appSettings?.agents.items} agentId={chatAgentId ?? null} agentName={chatAgent?.name ?? "当前好友"} /> : settingsView === "knowledge" ? <KnowledgeView onAgentCreated={() => {void fetchAppSettings().then(setAppSettings);}} /> : settingsView === "activities" ? <ActivityView agentId={chatAgentId} onOpenConversation={(id) => void handleOpenActivityConversation(id)} /> : settingsView === "retrieval" ? <RetrievalSettingsView /> : settingsView === "appearance" ? <AppearanceSettingsView /> : settingsView === "skills" ? <SkillView /> : settingsView === "mcp" ? <McpView /> : settingsView === "web-search" ? <WebSearchSettingsView /> : <PluginView />}
         </>

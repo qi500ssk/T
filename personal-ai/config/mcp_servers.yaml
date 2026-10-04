@@ -1,6 +1,7 @@
 mcp_servers:
   demo:
     transport: stdio
+    timeout_ms: 30000
     enabled: true
     default_risk_level: high
     command: python
@@ -15,7 +16,8 @@ mcp_servers:
       random_number: high
   playwright:
     transport: stdio
-    enabled: false
+    timeout_ms: 30000
+    enabled: true
     default_risk_level: medium
     command: npx
     args:

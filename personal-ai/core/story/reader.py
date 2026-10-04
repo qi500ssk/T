@@ -14,6 +14,11 @@ def read_book(document, settings):
             pass
     if story:
         return story_book(story)
+    if document.file_type in {".txt", ".md"}:
+        from core.story.books import decode, split_chapters
+        sections = split_chapters(decode(path.read_bytes()), document.original_filename.rsplit(".", 1)[0])
+        return {"title": document.original_filename.rsplit(".", 1)[0], "synopsis": sections[0]["text"][:180] if sections else "暂无正文",
+            "structured": False, "sections": sections}
     parsed = parse_document(path, document.file_type, settings)
     sections = []
     for block in parsed.blocks:
@@ -26,29 +31,13 @@ def read_book(document, settings):
             "structured": False, "sections": sections}
 
 
-def paginate(sections, limit=1500):
-    pages = []
-    for section in sections:
-        text = section["text"].strip()
-        while text:
-            end = len(text) if len(text) <= limit else text.rfind("\n", limit // 2, limit)
-            if end <= 0:
-                boundaries = [text.rfind(mark, limit // 2, limit) for mark in "。！？.!?"]
-                last = max(boundaries)
-                end = last + 1 if last >= 0 else limit
-            pages.append({"title": section["title"], "text": text[:end]})
-            text = text[end:].lstrip()
-    return pages
-
-
 def story_book(story):
-    sections = [{"title": "阅读说明与资料来源", "text": story.source_note}]
-    for person in story.characters:
-        fields = [("description", "人物档案"), ("personality", "性格"), ("motivation", "目标"),
-                  ("speech", "说话方式"), ("relationships", "关系"), ("boundaries", "边界"),
-                  ("example_dialogue", "原创对话示例")]
-        sections.append({"title": "人物档案 · " + person.name,
-            "text": "\n\n".join(label + "：" + getattr(person, field) for field, label in fields if getattr(person, field))})
-    sections += [{"title": e.stage + " · " + e.title, "text": e.text} for e in story.events]
-    sections += [{"title": "世界设定 · " + item.title, "text": item.content} for item in story.world_entries]
+    sections = []
+    for event in story.events:
+        if sections and sections[-1]["stage"] == event.stage:
+            sections[-1]["text"] += "\n\n" + event.text
+        else:
+            from core.story.books import CHAPTER
+            title = event.stage if CHAPTER.match(event.stage) else f"第{len(sections)+1}章 {event.stage}"
+            sections.append({"title": title, "stage": event.stage, "text": event.text})
     return {"title": story.title, "synopsis": story.events[0].text[:180], "structured": True, "sections": sections}

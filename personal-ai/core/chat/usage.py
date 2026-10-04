@@ -29,7 +29,18 @@ def conversation_cache_stats(session, conversation_id: str) -> dict:
     run_count = int(row[0] or 0)
     input_tokens = int(row[1] or 0)
     cached_input_tokens = int(row[2] or 0)
+    latest = (
+        session.query(AgentRun)
+        .filter(AgentRun.conversation_id == conversation_id, AgentRun.status == "completed")
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .first()
+    )
     return {
+        "latest_cache_hit_rate": (
+            round(latest.cached_input_tokens / latest.input_tokens * 100, 1)
+            if latest and latest.input_tokens > 0 and latest.cached_input_tokens is not None
+            else None
+        ),
         "eligible_run_count": run_count,
         "input_tokens": input_tokens,
         "cached_input_tokens": cached_input_tokens,

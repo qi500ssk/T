@@ -6,7 +6,7 @@ from core.story.document import markdown, stable_id, index_events
 from core.rag.chunking import split_into_chunks
 from core.rag.parsers import ParsedBlock
 from core.rag.ingestion import save_file, content_hash, resolve_stored_file
-from core.memory.world import digest
+from core.memory.evidence import digest
 from infrastructure.database import Document, DocumentChunk, DocumentGraphChunk, WorldFact, SessionLocal
 
 

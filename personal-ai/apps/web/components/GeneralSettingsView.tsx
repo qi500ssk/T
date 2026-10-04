@@ -207,7 +207,7 @@ export default function GeneralSettingsView({ section, onUpdated }: { section: G
                       </button>
                       <div className="flex gap-1 px-1 pb-1">
                         {!profile.is_active && <button type="button" disabled={busy !== ""} onClick={() => void run("agent-select", async () => { await setActiveAgentProfile(profile.id); await refreshAgentSettings(`已切换为“${profile.profile_name}”`, profile.id); })} className="min-h-9 rounded-lg px-2 text-xs font-medium text-zinc-600 hover:bg-white disabled:opacity-40">使用此角色</button>}
-                        <button type="button" disabled={busy !== "" || profile.is_active} onClick={() => { if (window.confirm(`删除角色预设“${profile.profile_name}”？`)) void run("agent-delete", async () => { await deleteAgentProfile(profile.id); await refreshAgentSettings("角色预设已删除", settings.agents.active_agent_id); }); }} className="ml-auto min-h-9 rounded-lg px-2 text-xs text-red-600 hover:bg-red-50 disabled:text-zinc-300" title={profile.is_active ? "请先使用另一个角色" : "删除预设"}>删除</button>
+                        <button type="button" disabled={busy !== "" || profile.is_builtin} onClick={() => { if (window.confirm(`确认删除角色“${profile.profile_name}”及其全部记忆和会话？书籍会保留。`)) void run("agent-delete", async () => { await deleteAgentProfile(profile.id); await refreshAgentSettings("角色及其记忆和会话已删除", settings.agents.active_agent_id); }); }} className="ml-auto min-h-9 rounded-lg px-2 text-xs text-red-600 hover:bg-red-50 disabled:text-zinc-300" title={profile.is_builtin ? "内置助手可编辑，不可删除" : "删除角色及其记忆和会话"}>{profile.is_builtin ? "内置助手" : "删除"}</button>
                       </div>
                     </div>
                   ))}</div>

@@ -49,6 +49,19 @@ class StoryBuild(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class NovelReading(Base):
+    """One complete pass over an original novel, with durable usage and character results."""
+    __tablename__ = "novel_readings"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    request: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[list] = mapped_column(JSON, default=list)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Project(Base):
     """用户工作项目；会话（任务）可以归属到一个项目。"""
 
@@ -460,15 +473,6 @@ class CharacterMemory(Base):
     embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-
-class GraphOrganization(Base):
-    __tablename__ = "graph_organizations"
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
-    signature: Mapped[str] = mapped_column(String(64), default="")
-    status: Mapped[str] = mapped_column(String(20), default="pending")
-    state: Mapped[dict] = mapped_column(JSON, default=dict)
-    error: Mapped[str] = mapped_column(Text, default="")
 
 
 class PersonResolution(Base):

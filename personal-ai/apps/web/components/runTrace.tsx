@@ -15,6 +15,7 @@ export interface RunTraceItem {
   status: TraceStatus;
   startedAt?: number;
   endedAt?: number;
+  diagnostics?: string;
 }
 
 export const TOOL_LABELS: Record<string, string> = {
@@ -105,7 +106,7 @@ export function stepSeconds(item: RunTraceItem): number | null {
 }
 
 function toolTraceDetail(tool: RunHistoryTool, detailed: boolean) {
-  const base = `${tool.args_summary || "未记录参数"}${tool.result_summary ? `\n${tool.result_summary}` : ""}`;
+  const base = `操作对象 / 参数：${tool.args_summary || "未记录参数"}${tool.result_summary ? `\n结果：${tool.result_summary}` : "\n尚未记录执行结果"}`;
   if (!detailed) return base;
   const status = STATUS_LABELS[(tool.status as ToolStatus) in STATUS_LABELS ? (tool.status as ToolStatus) : "failed"];
   const risk = RISK_LABELS[tool.risk_level ?? ""] ?? "未知风险";
@@ -136,46 +137,47 @@ export function historicalTraceItems(run: AgentRunHistory, detailed = false): Ru
   const items: RunTraceItem[] = [
     {
       key: "analysis",
-      label: "分析请求",
+      label: "收到请求",
       status: "completed",
-      detail: `当前理解：${detailed ? run.input_message || "历史请求" : compactText(run.input_message || "历史请求")}\n执行方式：${run.execution_mode === "planned" ? "规划模式" : "自主模式"}`,
+      detail: detailed ? run.input_message || "历史请求" : compactText(run.input_message || "历史请求"),
     },
   ];
   if (run.thinking?.trim()) {
     items.push({
       key: "thinking",
-      label: "思考回应",
+      label: "角色内心独白",
       status: "completed",
-      detail: detailed ? run.thinking.trim() : compactText(run.thinking),
+      detail: "查看角色生成的内心独白",
+      diagnostics: detailed ? run.thinking.trim() : compactText(run.thinking),
     });
   }
-  if (Object.keys(intent).length > 0) {
-    items.push({
-      key: "intent",
-      label: "识别意图",
-      status: "completed",
-      detail: `类型：${String(intent.intent ?? "conversation")} · 路由：${String(intent.source ?? "default")} · 置信度：${Math.round(Number(intent.confidence ?? 0) * 100)}%`,
-    });
-  }
-  items.push({
+  if (Object.keys(context).length > 0) items.push({
     key: "context",
-    label: "装配上下文",
+    label: "参考会话与相关资料",
     status: "completed",
-    detail: Object.keys(context).length > 0
-      ? contextDetail(context, detailed)
-      : "上下文已装配；该历史 Run 未保存详细统计",
+    detail: `本次回答使用了 ${Number(context.memory_count ?? 0)} 条记忆、${Number(context.source_count ?? 0)} 个资料片段。`,
+    diagnostics: `${contextDetail(context, true)}${Object.keys(intent).length ? `\n意图：${String(intent.intent ?? "未知")} · 路由：${String(intent.source ?? "未知")} · 置信度：${Math.round(Number(intent.confidence ?? 0) * 100)}%` : ""}`,
+  });
+  if (run.sources?.length) items.push({
+    key: "sources",
+    label: "引用资料",
+    status: "completed",
+    detail: run.sources.map((source) => `${source.filename}${source.section ? ` · ${source.section}` : ""}\n${compactText(source.excerpt, 180)}`).join("\n\n"),
   });
   for (const [index, tool] of run.tools.entries()) {
     const status: TraceStatus = tool.status === "completed"
       ? "completed"
       : tool.status === "rejected"
         ? "cancelled"
-        : "failed";
+        : ["running", "pending", "proposed", "pending_approval"].includes(tool.status)
+          ? run.status === "running" ? "running" : "cancelled"
+          : "failed";
     items.push({
       key: `tool-${tool.id || index}`,
       label: TOOL_LABELS[tool.tool] ?? tool.tool,
       status,
-      detail: toolTraceDetail(tool, detailed),
+      detail: toolTraceDetail(tool, false),
+      diagnostics: `工具：${tool.tool}\n${toolTraceDetail(tool, true)}`,
     });
   }
   if (run.status === "completed") {
@@ -183,19 +185,21 @@ export function historicalTraceItems(run: AgentRunHistory, detailed = false): Ru
       key: "model",
       label: run.execution_mode === "planned" ? "生成规划文档" : "生成回答",
       status: "completed",
-      detail: "内容已生成并保存到当前对话",
+      detail: run.output_message ? compactText(run.output_message, detailed ? 600 : 180) : "回复已保存到对话；该记录没有保存可展示的回复内容。",
+      diagnostics: run.output_message || undefined,
     });
   }
   const finalStatus: TraceStatus = run.status === "failed"
     ? "failed"
     : ["cancelled", "interrupted"].includes(run.status)
       ? "cancelled"
-      : "completed";
+      : run.status === "running" ? "running" : "completed";
   items.push({
     key: "finished",
-    label: finalStatus === "failed" ? "结束运行" : finalStatus === "cancelled" ? "停止运行" : "完成运行",
+    label: finalStatus === "failed" ? "运行失败" : finalStatus === "cancelled" ? "停止运行" : finalStatus === "running" ? "任务进行中" : "完成运行",
     status: finalStatus,
-    detail: run.error || `输入 ${run.input_tokens || 0} tokens，输出 ${run.output_tokens || 0} tokens`,
+    detail: run.error || (run.tools.length ? `记录了 ${run.tools.length} 次工具操作，其中 ${run.tools.filter((tool) => tool.status === "completed").length} 次已完成。` : run.status !== "completed" ? "尚未记录工具操作或完成的回复。" : run.execution_mode === "planned" ? "本次仅生成方案，没有执行工具操作。" : "本次没有调用工具，只生成对话回复。"),
+    diagnostics: `输入 ${run.input_tokens || 0} tokens，输出 ${run.output_tokens || 0} tokens`,
   });
   return items;
 }
@@ -206,9 +210,11 @@ export function runElapsedSeconds(run: AgentRunHistory) {
 }
 
 export function RunStepsList({ items }: { items: RunTraceItem[] }) {
+  const technical = items.filter((item) => item.key === "intent");
+  const visible = items.filter((item) => item.key !== "intent");
   return (
-    <ol className="space-y-6">
-      {items.map((item) => {
+    <><ol className="space-y-5">
+      {visible.map((item) => {
         const seconds = stepSeconds(item);
         return (
           <li key={item.key} className="relative text-sm">
@@ -218,17 +224,22 @@ export function RunStepsList({ items }: { items: RunTraceItem[] }) {
             >
               {traceIcon(item.key)}
             </span>
-            <p className={`flex flex-wrap items-center gap-2 ${item.status === "failed" ? "text-red-600" : "text-zinc-500"}`}>
+            <p className={`flex flex-wrap items-center gap-2 ${item.status === "failed" ? "text-red-600" : "text-zinc-800"}`}>
               <span className="font-medium">{item.label}</span>
               {item.status === "running" && <span className="text-xs text-blue-500">进行中</span>}
               {item.status === "cancelled" && <span className="text-xs">已停止</span>}
+              {item.status === "failed" && <span className="text-xs">失败</span>}
               {seconds != null && seconds > 0 && <span className="text-xs tabular-nums text-zinc-400">{formatElapsed(seconds)}</span>}
             </p>
             {item.detail && <p className="mt-2 whitespace-pre-line break-words text-[13px] leading-6 text-zinc-700">{item.detail}</p>}
+            {item.diagnostics && <details className="mt-2 text-xs text-zinc-500">
+              <summary className="w-fit cursor-pointer rounded py-1 focus-visible:outline-2 focus-visible:outline-zinc-900">{item.key === "thinking" ? "展开内心独白" : item.key === "model" ? "查看完整回复" : "技术详情"}</summary>
+              <p className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-50 p-3 leading-6">{item.diagnostics}</p>
+            </details>}
           </li>
         );
       })}
-    </ol>
+    </ol>{technical.length > 0 && <details className="mt-4 text-xs text-zinc-500"><summary className="w-fit cursor-pointer py-2">路由信息</summary>{technical.map((item) => <p key={item.key} className="whitespace-pre-wrap break-words leading-6">{item.detail}</p>)}</details>}</>
   );
 }
 

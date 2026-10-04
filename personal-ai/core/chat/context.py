@@ -84,6 +84,7 @@ class Context:
     knowledge_candidate_count: int = 0
     knowledge_exclusions: list[dict] = field(default_factory=list)
     character_memory_ids: list[str] = field(default_factory=list)
+    selected_document_ids: list[str] = field(default_factory=list)
 
 
 def build_context(
@@ -102,11 +103,20 @@ def build_context(
     document_ids: list[str] | None = None,
     knowledge_intent: bool | None = None,
     retrieval_query: str | None = None,
+    dynamic_system_addendum: str = "",
 ) -> Context:
     """按 Memory → RAG → Summary → Recent 的优先级组装且不超过总预算。"""
     config = rag_settings or settings
     query_text = retrieval_query or message
     conversation = session.get(Conversation, conversation_id)
+    from core.story.assistant import is_story_assistant
+    independent_story = bool(conversation and is_story_assistant(conversation.agent_id))
+    if independent_story and not document_ids:
+        from infrastructure.database import AgentRun
+        previous_runs = session.query(AgentRun.context_stats).filter(AgentRun.conversation_id == conversation_id,
+            AgentRun.context_stats.is_not(None)).order_by(AgentRun.created_at.desc()).limit(50)
+        document_ids = next((stats.get("selected_document_ids") for (stats,) in previous_runs
+            if stats and stats.get("selected_document_ids")), None)
     project_id = conversation.project_id if conversation else None
     conversation_rows = (
         session.query(Message.id, Message.content)
@@ -143,6 +153,10 @@ def build_context(
         combined_system += "\n\n" + system_addendum
     base_system = _truncate_to_budget(combined_system, system_budget)
     system_parts = [base_system] if base_system else []
+    # 本轮路由建议仍是系统指令，但放在历史之后，避免打断稳定前缀。
+    dynamic_addendum = _truncate_to_budget(dynamic_system_addendum, max(0, system_budget - estimate_tokens(base_system) - 8)) if dynamic_system_addendum else ""
+    if dynamic_addendum:
+        system_parts.append(dynamic_addendum)
     memory_section = ""
     knowledge_section = ""
     summary_section = ""
@@ -157,14 +171,15 @@ def build_context(
     def total_cost(parts: list[str] | None = None, messages: list[dict] | None = None) -> int:
         text = effective_system(parts)
         text_cost = estimate_tokens(text) if text else 0
-        return text_cost + sum(_content_token_estimate(item["content"]) for item in (messages or [])) + query_cost
+        # 分成首尾两条 system 消息后，分别估算会多出少量取整成本。
+        return text_cost + sum(_content_token_estimate(item["content"]) for item in (messages or [])) + query_cost + 8
 
     from core.memory.character import recall_character_memories
     character_rows = recall_character_memories(session, conversation.agent_id if conversation else None,
-                                               query_text, embedding_provider)
+                                               query_text, embedding_provider) if not independent_story else []
     for row in character_rows:
-        from core.memory.graph import graph_data
-        metadata = graph_data(row)
+        from core.memory.metadata import memory_metadata
+        metadata = memory_metadata(row)
         # Use the character's actual recollection; a display preview may omit negations or endings.
         compact_content = row.content
         relation_text = "；".join(f'{r["subject"]}—{r["predicate"]}—{r["object"]}' for r in metadata["relationships"][:3])
@@ -235,7 +250,7 @@ def build_context(
     )
     knowledge_candidate_count = 0
     knowledge_exclusions: list[dict] = []
-    if config.rag_enabled and should_retrieve:
+    if config.rag_enabled and should_retrieve and (not independent_story or document_ids):
         results = retrieve(
             session,
             embedding_provider,
@@ -351,13 +366,17 @@ def build_context(
         picked_desc = candidate
 
     messages = list(reversed(picked_desc))
+    # 摘要沿用现有更新策略；每轮召回的参考内容放在最近对话之后。
+    system = "\n\n".join(part for part in (base_system, summary_section) if part)
+    dynamic_system = "\n\n".join(part for part in (dynamic_addendum, character_section, memory_section, knowledge_section) if part)
+    if dynamic_system:
+        messages.append({"role": "system", "content": dynamic_system})
     messages.append({"role": "user", "content": _multimodal_content(context_message, current_images)})
-    system = effective_system()
     final_cost = (estimate_tokens(system) if system else 0) + sum(
         _content_token_estimate(item["content"]) for item in messages
     )
     token_breakdown = {
-        "messages": sum(_content_token_estimate(item["content"]) for item in messages),
+        "messages": sum(_content_token_estimate(item["content"]) for item in messages if item["role"] != "system"),
         "system": 0,
         "memory": 0,
         "knowledge": 0,
@@ -367,17 +386,20 @@ def build_context(
     accounted_parts: list[str] = []
     for key, section in (
         ("system", base_system),
+        ("summary", summary_section),
+        ("other", dynamic_addendum),
         ("memory", character_section),
         ("memory", memory_section),
         ("knowledge", knowledge_section),
-        ("summary", summary_section),
     ):
+        if key == "other":
+            accounted_parts = []
         if not section:
             continue
         previous_cost = estimate_tokens("\n\n".join(accounted_parts)) if accounted_parts else 0
         accounted_parts.append(section)
         token_breakdown[key] += estimate_tokens("\n\n".join(accounted_parts)) - previous_cost
-    token_breakdown["other"] = max(0, final_cost - sum(token_breakdown.values()))
+    token_breakdown["other"] += max(0, final_cost - sum(token_breakdown.values()))
     return Context(
         system=system,
         messages=messages,
@@ -392,4 +414,5 @@ def build_context(
         knowledge_candidate_count=knowledge_candidate_count,
         knowledge_exclusions=knowledge_exclusions,
         character_memory_ids=character_memory_ids,
+        selected_document_ids=list(document_ids or []),
     )

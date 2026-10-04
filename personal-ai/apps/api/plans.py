@@ -72,6 +72,8 @@ def _run_history_item(session, run: AgentRun) -> dict:
         "intent": run.intent_json,
         "context_stats": run.context_stats,
         "thinking": assistant_message.thinking if assistant_message else None,
+        "output_message": assistant_message.content if assistant_message else None,
+        "sources": (assistant_message.citations or []) if assistant_message else [],
         "input_tokens": run.input_tokens,
         "output_tokens": run.output_tokens,
         "error": run.error,

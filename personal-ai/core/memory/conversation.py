@@ -135,6 +135,9 @@ def _resolve_scope(
     agent_id: str | None,
 ) -> tuple[str, str]:
     """无法判断或 project 缺少上下文时，一律保守降级到 conversation scope。"""
+    from core.story.assistant import is_story_assistant
+    if is_story_assistant(agent_id):
+        return "conversation", conversation_id
     if scope_type not in _SCOPES:
         scope_type = "conversation"
     if (agent_id or "").startswith("story-") and scope_type == "project":
@@ -160,6 +163,11 @@ def _recall_filters(
     now: datetime,
 ) -> list:
     """召回硬过滤：用户、状态、有效期和作用域，向量候选与词法候选共用。"""
+    from core.story.assistant import is_story_assistant
+    if is_story_assistant(agent_id):
+        return [Memory.user_id == user_id, Memory.is_active.is_(True), Memory.status == "active",
+            Memory.scope_type == "conversation", Memory.scope_key == (conversation_id or ""),
+            or_(Memory.expires_at.is_(None), Memory.expires_at > now)]
     scope_conditions = [and_(Memory.scope_type == "global", Memory.scope_key == "global")]
     if agent_id:
         scope_conditions.append(

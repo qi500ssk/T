@@ -31,9 +31,9 @@ from apps.api.projects import router as projects_router
 from apps.api.images import image_dict, router as images_router
 from apps.api.retrieval_settings import RetrievalMaintenanceMiddleware, router as retrieval_settings_router
 from apps.api.character_memory import router as character_memory_router
-from apps.api.document_graph import router as document_graph_router
 from apps.api.stories import router as stories_router
 from apps.api.story_builds import router as story_builds_router
+from apps.api.novel_readings import router as novel_readings_router
 from core.chat.images import resolve_image
 from core.chat.context import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 from core.automation.activity import activity_worker, recover_interrupted_activities
@@ -138,14 +138,15 @@ async def lifespan(app: FastAPI):
     app.state.retrieval_task = None
     app.state.retrieval_job = {"status": "idle", "processed": 0, "total": 0}
     app.state.character_tasks = {}
-    from infrastructure.database import CharacterExtraction, DocumentGraphChunk, GraphOrganization
+    from infrastructure.database import NovelReading
+    with SessionLocal() as session:
+        session.query(NovelReading).filter(NovelReading.status.in_(["pending", "searching", "reading", "checking"])).update(
+            {"status": "paused", "error": "应用重启，已保存阅读进度，可继续"})
+        session.commit()
+    from infrastructure.database import CharacterExtraction
     with SessionLocal() as session:
         session.query(CharacterExtraction).filter(CharacterExtraction.status == "running").update(
             {"status": "failed", "error": "上次提取因退出而中断，草稿保留，可重新提取"})
-        session.query(DocumentGraphChunk).filter(DocumentGraphChunk.status == "running").update(
-            {"status": "failed", "error": "上次提取中断，可继续未完成片段"})
-        session.query(GraphOrganization).filter(GraphOrganization.status == "running").update(
-            {"status": "paused", "error": "上次自动整理因退出中断，已保留进度，可继续"})
         session.commit()
     workspace_root().mkdir(parents=True, exist_ok=True)
     reject_all_approvals()
@@ -273,9 +274,11 @@ app.include_router(projects_router)
 app.include_router(images_router)
 app.include_router(retrieval_settings_router)
 app.include_router(character_memory_router)
-app.include_router(document_graph_router)
 app.include_router(stories_router)
 app.include_router(story_builds_router)
+app.include_router(novel_readings_router)
+from apps.api.books import router as books_router
+app.include_router(books_router)
 
 
 @app.get("/api/health")

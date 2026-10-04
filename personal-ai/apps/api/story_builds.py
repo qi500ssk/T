@@ -37,13 +37,13 @@ def snapshot(row, request):
         "total":row.request["chapter_count"],"output_path":str(output_path(row)),"plan":row.plan,
         "report":row.report,"error":row.error,"document_id":row.document_id,"request_message_id":row.request.get("message_id"),
         "synopsis": next((e['text'][:180] for c in row.chapters for e in c['events']), ''),
-        "files":[p.name for p in output_path(row).iterdir() if p.is_file() and p.suffix in {".md",".json"}]}
+        "files":[p.name for p in output_path(row).iterdir() if p.is_file() and p.suffix in {".md",".json",".txt",".epub"}]}
 
 def launch(job_id, request):
     tasks = request.app.state.character_tasks
     key = "story:"+job_id
     if key in tasks: raise HTTPException(409, "任务已在运行")
-    if any(k.startswith("story:") for k in tasks): raise HTTPException(409, "请先停止或完成当前世界书任务")
+    if any(k.startswith("story:") for k in tasks): raise HTTPException(409, "请先停止或完成当前书籍任务")
     if settings.llm_provider == "unconfigured": raise HTTPException(409, "请先配置聊天模型")
     config = SimpleNamespace(**settings.model_dump())
     # Chapter outputs are bounded independently of the whole book.
@@ -65,7 +65,8 @@ def conversation_proposal(session, conversation_id, request):
     if not conversation:
         raise HTTPException(404, "对话不存在")
     profile = next((p for p in request.app.state.runtime_settings_store.snapshot()["agents"]["items"] if p["id"] == conversation.agent_id), None)
-    if not profile or "story-build" not in profile.get("custom_instructions", ""):
+    from core.story.assistant import is_story_assistant
+    if not profile or (not is_story_assistant(conversation.agent_id) and "story-build" not in profile.get("custom_instructions", "")):
         raise HTTPException(404, "此对话不是故事创作对话")
     message = session.query(Message).filter_by(conversation_id=conversation_id, role="assistant", status="completed").order_by(Message.created_at.desc()).first()
     proposal = parse_proposal(message.content) if message else None
@@ -113,7 +114,7 @@ async def create(body: BuildInput, request: Request):
     try: path = resolve_workspace(body.output_dir) if body.output_dir else default_output_dir()
     except ValueError as exc: raise HTTPException(422, str(exc)) from None
     if settings.llm_provider == "unconfigured": raise HTTPException(409, "请先配置聊天模型")
-    if any(k.startswith("story:") for k in request.app.state.character_tasks): raise HTTPException(409, "已有世界书任务正在运行")
+    if any(k.startswith("story:") for k in request.app.state.character_tasks): raise HTTPException(409, "已有书籍任务正在运行")
     with SessionLocal() as session:
         if body.document_ids and session.query(Document).filter(Document.id.in_(set(body.document_ids)),Document.status=="indexed").count()!=len(set(body.document_ids)):
             raise HTTPException(422, "所选资料不存在或尚未索引")
@@ -149,7 +150,7 @@ async def stop(job_id: str, request: Request):
 def download(job_id: str, name: str):
     with SessionLocal() as session: row = get_job(session, job_id)
     folder = output_path(row)
-    if "/" in name or "\\" in name or name not in {p.name for p in folder.iterdir() if p.suffix in {".md",".json"}}:
+    if "/" in name or "\\" in name or name not in {p.name for p in folder.iterdir() if p.suffix in {".md",".json",".txt",".epub"}}:
         raise HTTPException(404, "文件不存在")
     path = folder / name
     if path.is_symlink() or path.resolve().parent != folder: raise HTTPException(404, "文件不可用")
@@ -158,16 +159,17 @@ def download(job_id: str, name: str):
 
 @router.get("/{job_id}/read")
 def read_generated_book(job_id: str, page: int = Query(default=0, ge=0)):
-    from core.story.reader import story_book, paginate
+    from core.story.reader import story_book
     with SessionLocal() as session:
         row = get_job(session, job_id)
         if row.status not in {'review', 'imported'}:
-            raise HTTPException(409, '世界书尚未生成完成')
+            raise HTTPException(409, '书籍尚未生成完成')
         book = story_book(assembled(row))
-    pages = paginate(book.pop('sections'))
+    pages = book.pop('sections')
     if page >= len(pages):
         raise HTTPException(404, '页码不存在')
-    return {**book, 'id': job_id, 'page': page, 'total': len(pages), 'content': pages[page]}
+    return {**book, 'id': job_id, 'page': page, 'total': len(pages), 'content': pages[page],
+        'chapters': [{'title': s['title'], 'characters': len(s['text'])} for s in pages]}
 
 @router.post("/{job_id}/import")
 async def confirm_import(job_id: str, request: Request):

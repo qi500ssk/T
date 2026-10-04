@@ -1,16 +1,9 @@
 """角色经历管理与来源可核对的异步提取。"""
-import asyncio
-from types import SimpleNamespace
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
 import anyio
 
-from core.memory.character import MemoryDraft, extract_document, fingerprint, memory_dict, resolve_character_memories
-from core.memory.builder import build_character_drafts
-from core.memory.graph import build_memory_graph
-from core.chat.gateway import build_provider
-from infrastructure.config import settings
-from infrastructure.database import CharacterMemory, CharacterExtraction, Document, DocumentChunk, SessionLocal
+from core.memory.character import MemoryDraft, fingerprint, memory_dict, resolve_character_memories
+from infrastructure.database import CharacterMemory, CharacterExtraction, SessionLocal
 from infrastructure.database import CandidateMemory, Memory, Conversation
 from datetime import datetime, timezone
 
@@ -22,10 +15,6 @@ def character(request, agent_id):
     if profile is None:
         raise HTTPException(404, "角色不存在")
     return profile
-
-
-class ExtractBody(BaseModel):
-    document_id: str = Field(min_length=1, max_length=32)
 
 
 class SaveBody(MemoryDraft):
@@ -61,17 +50,6 @@ def review_candidate(agent_id: str, candidate_id: str, action: str, request: Req
         if not count: raise HTTPException(409, "候选未写入，可能已有重复记忆")
         row.status = "confirmed"; session.commit()
         return {"ok":True}
-
-
-@router.get("/{agent_id}/memory-graph")
-def memory_graph(agent_id: str, request: Request, status: str = "active"):
-    profile = character(request, agent_id)
-    if status not in {"active", "draft", "disabled", "rejected"}:
-        raise HTTPException(422, "记忆状态无效")
-    with SessionLocal() as session:
-        rows = session.query(CharacterMemory).filter(CharacterMemory.agent_id == agent_id,
-            CharacterMemory.status == status).order_by(CharacterMemory.id).all()
-        return build_memory_graph(resolve_character_memories(session, rows), profile["name"])
 
 
 @router.get("/{agent_id}/memories")
@@ -110,43 +88,6 @@ async def create(agent_id: str, body: MemoryDraft, request: Request):
         session.add(row)
         session.commit()
         return memory_dict(row)
-
-
-@router.post("/{agent_id}/extract", status_code=202)
-async def extract(agent_id: str, body: ExtractBody, request: Request):
-    profile = character(request, agent_id)
-    state = request.app.state
-    if state.character_tasks:
-        raise HTTPException(409, "已有资料正在提取，请等待完成")
-    if settings.llm_provider == "unconfigured":
-        raise HTTPException(409, "请先在模型设置中配置用于提取的聊天模型")
-    with SessionLocal() as session:
-        document = session.get(Document, body.document_id)
-        if document is None or document.status != "indexed":
-            raise HTTPException(422, "请先上传并完成资料解析")
-        if document.agent_id not in {None, agent_id}:
-            raise HTTPException(409, "这份资料已属于其他角色，请使用该角色的资料")
-        count = session.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).count()
-        if not 1 <= count <= 300:
-            raise HTTPException(422, "每次支持 1–300 个片段，请按章节拆分资料")
-        try:
-            provider = build_provider(SimpleNamespace(**settings.model_dump()))
-        except Exception:
-            raise HTTPException(422, "聊天模型初始化失败，请检查模型设置") from None
-        document.agent_id = agent_id
-        job = CharacterExtraction(agent_id=agent_id, document_id=document.id, total=count)
-        session.add(job)
-        try:
-            session.commit()
-        except Exception:
-            await provider.close()
-            raise
-        job_id = job.id
-    budget = max(512, settings.llm_context_window_tokens - settings.llm_max_output_tokens - 512)
-    task = asyncio.create_task(extract_document(job_id, profile["name"], provider, budget))
-    state.character_tasks[job_id] = task
-    task.add_done_callback(lambda _: state.character_tasks.pop(job_id, None))
-    return {"id": job_id}
 
 
 @router.patch("/{agent_id}/memories/{memory_id}")
@@ -214,30 +155,3 @@ def delete(agent_id: str, memory_id: str, request: Request):
         session.delete(row)
         session.commit()
     return {"ok": True}
-
-
-class BuildBody(BaseModel):
-    fact_ids: list[str] = Field(min_length=1, max_length=20)
-    character_name: str = Field(min_length=1, max_length=100)
-
-
-@router.post("/{agent_id}/memories/from-world")
-async def build_from_world(agent_id: str, body: BuildBody, request: Request):
-    character(request, agent_id)
-    tasks = request.app.state.character_tasks
-    if tasks:
-        raise HTTPException(409, "已有记忆提取正在运行，请稍后再试")
-    if settings.llm_provider == "unconfigured":
-        raise HTTPException(409, "请先配置聊天模型")
-    try:
-        provider = build_provider(SimpleNamespace(**settings.model_dump()))
-    except Exception:
-        raise HTTPException(422, "聊天模型初始化失败") from None
-    key = f"builder:{agent_id}"
-    task = asyncio.create_task(build_character_drafts(agent_id, body.character_name, body.fact_ids, provider,
-        max(512, settings.llm_context_window_tokens - settings.llm_max_output_tokens - 512)))
-    tasks[key] = task
-    try:
-        return await task
-    finally:
-        tasks.pop(key, None)

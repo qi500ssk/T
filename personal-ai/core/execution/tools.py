@@ -531,7 +531,7 @@ def tool_schemas(names: set[str]) -> list[dict]:
                 "parameters": tool.input_schema,
             },
         }
-        for name, tool in TOOLS.items()
+        for name, tool in sorted(TOOLS.items())
         if name in names
     ]
 

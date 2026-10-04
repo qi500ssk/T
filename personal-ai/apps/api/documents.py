@@ -67,19 +67,20 @@ def list_worldbooks():
 
 @router.get("/worldbooks/{document_id}")
 def read_worldbook(document_id: str, page: int = Query(default=0, ge=0)):
-    from core.story.reader import read_book, paginate
+    from core.story.reader import read_book
     with SessionLocal() as session:
         row = session.get(Document, document_id)
         if row is None:
-            raise HTTPException(404, "世界书不存在")
+            raise HTTPException(404, "书籍不存在")
         try:
             book = read_book(row, settings)
         except (OSError, ValueError):
             raise HTTPException(422, "无法读取原文，请检查文件格式或重新上传") from None
-    pages = paginate(book.pop("sections"))
+    pages = book.pop("sections")
     if page >= max(1, len(pages)):
         raise HTTPException(404, "页码不存在")
     return {**book, "id": document_id, "page": page, "total": len(pages),
+            "chapters": [{"title": section["title"], "characters": len(section["text"])} for section in pages],
             "content": pages[page] if pages else {"title": "正文", "text": "暂无正文"}}
 
 
@@ -97,7 +98,7 @@ def _chunk_dict(chunk: DocumentChunk) -> dict:
 
 
 @router.post("/files", status_code=201)
-async def upload_file(request: Request, file: UploadFile = File(...)):
+async def upload_file(request: Request, file: UploadFile = File(...), worldbook: bool = False):
     data = await file.read(settings.file_max_bytes + 1)
     if len(data) > settings.file_max_bytes:
         raise HTTPException(413, f"文件大小超过限制：{settings.file_max_bytes} 字节")
@@ -123,6 +124,21 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         extension = validate_file(data, original_filename, file.content_type or "", settings)
     except UnsupportedFileError as exc:
         raise HTTPException(415, str(exc)) from exc
+
+    if worldbook and extension in {".txt", ".md"}:
+        from core.story.novel_reading import save_source
+        text = None
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeError:
+                continue
+        if not text or len(text) > settings.file_max_parsed_chars:
+            raise HTTPException(422, "文件编码无效或超过解析文字上限")
+        doc_id = await anyio.to_thread.run_sync(save_source, text, Path(original_filename).stem)
+        with SessionLocal() as session:
+            return _document_dict(session.get(Document, doc_id))
 
     digest = content_hash(data)
     with SessionLocal() as session:

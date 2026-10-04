@@ -101,6 +101,9 @@ def retrieve(
     document_ids: list[str] | None = None,
     agent_id: str | None = None,
 ) -> list[RetrievalResult]:
+    if agent_id and agent_id.startswith("novel-"):
+        # Experiences come from grounded character memories, not omniscient source passages.
+        return []
     query_builder = (
         session.query(DocumentChunk, Document)
         .join(Document, Document.id == DocumentChunk.document_id)
@@ -112,7 +115,7 @@ def retrieve(
     query_builder = query_builder.filter(or_(Document.agent_id.is_(None), Document.agent_id == agent_id) if agent_id else Document.agent_id.is_(None))
     # Story characters cannot bypass viewpoint admission via a selected source attachment.
     # Their original experiences are read only from admitted CharacterMemory records.
-    if agent_id and agent_id.startswith("story-"):
+    if agent_id and agent_id.startswith("story-") and agent_id != "story-author":
         from infrastructure.database import WorldFact, DocumentGraphChunk, CharacterStoryBinding
         if not document_ids:
             return []

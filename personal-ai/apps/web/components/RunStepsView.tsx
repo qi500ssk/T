@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchAgentRunHistory, type AgentRunHistory, type Conversation } from "@/lib/api";
 import {
   RunStepsList,
+  TOOL_LABELS,
   compactText,
   formatElapsed,
   historicalTraceItems,
@@ -12,7 +13,6 @@ import {
 } from "@/components/runTrace";
 import {
   getLiveRunSession,
-  listLiveRunSessionIds,
   subscribeLiveRunSession,
 } from "@/components/liveRuns";
 
@@ -59,11 +59,11 @@ export default function RunStepsView({
   // 任何一条事件到达都让整个视图重算（本地 App，事件频率可接受）。
   useEffect(() => {
     const bump = () => setVersion((value) => value + 1);
-    const unsubscribe = listLiveRunSessionIds().map((conversationId) =>
-      subscribeLiveRunSession(conversationId, bump),
+    const unsubscribe = agentConversations.map((conversation) =>
+      subscribeLiveRunSession(conversation.id, bump),
     );
     return () => unsubscribe.forEach((dispose) => dispose());
-  }, []);
+  }, [agentConversations]);
 
   const loadHistory = (quiet = false) => {
     if (!agentId) {
@@ -104,6 +104,7 @@ export default function RunStepsView({
       .filter((entry): entry is { conversationId: string; session: NonNullable<typeof entry.session> } => (
         entry.session != null
         && (entry.session.running || entry.session.runTrace.length > 0 || Boolean(entry.session.thinking.trim()))
+        && (entry.session.running || !history.some((run) => run.id === entry.session?.runId))
       )),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [agentConversations, history, version],
@@ -131,12 +132,12 @@ export default function RunStepsView({
     <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-white">
       <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-7 lg:px-10">
         <header className="border-b border-zinc-200 pb-5">
-          <p className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-400">Agent pipeline</p>
+          <p className="text-xs font-medium tracking-wide text-zinc-400">{agentName}的工作记录</p>
           <div className="mt-1 flex flex-wrap items-end justify-between gap-4">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-zinc-950">处理步骤</h1>
               <p className="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-500">
-                每个 AI 好友的处理过程彼此独立。这里只显示 {agentName} 的记录：思考、意图、上下文装配、工具调用与回答生成的完整明细。
+                查看每次请求实际参考了什么、执行了哪些操作，以及得到什么结果。操作参数和执行结果来自运行记录。
               </p>
             </div>
             <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-right shadow-sm">
@@ -166,10 +167,10 @@ export default function RunStepsView({
                   <RunStepsList items={session.runTrace} />
                 </div>
                 {session.thinking.trim() && (
-                  <div className="ml-2 mt-4 border-l border-zinc-200 pl-7">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">本次思考</h3>
+                  <details className="ml-2 mt-4 border-l border-zinc-200 pl-7">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-400">角色内心独白</summary>
                     <p className="mt-2 whitespace-pre-line break-words text-[13px] leading-6 text-zinc-500">{session.thinking}</p>
-                  </div>
+                  </details>
                 )}
               </div>
             ))}
@@ -212,7 +213,7 @@ export default function RunStepsView({
                       <span className="text-zinc-300">·</span>
                       <span className="tabular-nums">{formatElapsed(runElapsedSeconds(run))}</span>
                       <span className="text-zinc-300">·</span>
-                      <span className="tabular-nums">输入 {run.input_tokens || 0} / 输出 {run.output_tokens || 0} tokens</span>
+                      <span>{run.tools.length ? `${run.tools.length} 次工具操作` : run.execution_mode === "planned" ? "仅生成方案" : run.status === "completed" ? "仅对话回复" : "尚无工具记录"}</span>
                       <button
                         type="button"
                         onClick={() => setExpanded((value) => (value === run.id ? null : run.id))}
@@ -223,6 +224,7 @@ export default function RunStepsView({
                       </button>
                     </div>
                     <p className="mt-2 break-words text-sm leading-6 text-zinc-700">{compactText(run.input_message, 160)}</p>
+                    <p className="mt-2 break-words text-[13px] leading-6 text-zinc-500">{run.tools.length ? `操作：${[...new Set(run.tools.map((tool) => TOOL_LABELS[tool.tool] ?? tool.tool))].join("、")}` : run.output_message ? `回复：${compactText(run.output_message, 160)}` : run.status === "running" ? "正在生成回复…" : "未调用工具；展开查看回复与运行结果。"}</p>
                     {run.error && <p className="mt-1 break-words text-xs text-red-700">{run.error}</p>}
                     {open && (
                       <div className="ml-2 mt-4 border-l border-zinc-200 pl-7 pt-2">

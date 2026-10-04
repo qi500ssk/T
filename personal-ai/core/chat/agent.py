@@ -167,7 +167,9 @@ async def _postprocess_turn(
                 with SessionLocal() as session:
                     conv = session.get(Conversation, conversation_id)
                     from core.memory.candidates import retain_candidates
-                    admitted_candidates = retain_candidates(session, candidates, user_id, conv.agent_id if conv else None,
+                    from core.story.assistant import is_story_assistant
+                    admitted_candidates = candidates if conv and is_story_assistant(conv.agent_id) else retain_candidates(
+                        session, candidates, user_id, conv.agent_id if conv else None,
                         conversation_id, settings.memory_min_importance, settings.memory_min_confidence)
                     return save_memories(
                         session,
@@ -505,6 +507,11 @@ async def run_chat(
             system_prompt = await anyio.to_thread.run_sync(
                 render_system_prompt, character, settings.system_prompt_file
             )
+            from core.story.assistant import is_story_assistant
+            if conversation and is_story_assistant(conversation.agent_id):
+                from pathlib import Path
+                workflow = Path(__file__).resolve().parents[2] / "prompts/system/story_workflow.md"
+                system_prompt += "\n\n" + workflow.read_text(encoding="utf-8")
             # 规划文档不接收任何工具定义，从模型调用层保证它只能输出文本。
             schemas = (
                 tool_schemas(allowed_tools)
@@ -527,6 +534,7 @@ async def run_chat(
             if planning_document_mode:
                 # Skill/MCP 提示包含工具用法，规划文档模式不应把这些执行指令交给模型。
                 system_addendum = ""
+                dynamic_system_addendum = ""
             else:
                 skill_prompt = render_skill_instructions(active_skills)
                 mcp_prompt = _mcp_tool_guidance(mcp_clients)
@@ -556,11 +564,10 @@ async def run_chat(
                     for item in (
                         skill_prompt,
                         mcp_prompt,
-                        intent_tool_prompt,
-                        memory_tool_prompt,
                     )
                     if item
                 )
+                dynamic_system_addendum = "\n\n".join(item for item in (intent_tool_prompt, memory_tool_prompt) if item)
             continuation_context = None
             if is_continuation_request(message):
                 with SessionLocal() as session:
@@ -571,10 +578,10 @@ async def run_chat(
                         exclude_run_id=None if resume else run_id,
                     )
                 if continuation_context:
-                    system_addendum = "\n\n".join(
+                    dynamic_system_addendum = "\n\n".join(
                         item
                         for item in (
-                            system_addendum,
+                            dynamic_system_addendum,
                             continuation_context.system_addendum(),
                         )
                         if item
@@ -599,6 +606,7 @@ async def run_chat(
                         embedding_provider,
                         settings,
                         system_addendum=system_addendum,
+                        dynamic_system_addendum=dynamic_system_addendum,
                         document_ids=document_ids,
                         # 未命中稳定规则时保留旧的零成本 RAG 查询门控，避免
                         # “某资料里写了什么”这类长尾表达被默认路由误伤。
@@ -626,6 +634,7 @@ async def run_chat(
                 "knowledge_candidate_count": context.knowledge_candidate_count,
                 "knowledge_exclusion_reasons": _reason_counts(context.knowledge_exclusions),
                 "selected_document_count": len(document_ids or []),
+                "selected_document_ids": context.selected_document_ids,
                 "token_estimate": context.token_estimate,
                 "max_tokens": context.max_tokens,
                 "context_window_tokens": model_context_window,
