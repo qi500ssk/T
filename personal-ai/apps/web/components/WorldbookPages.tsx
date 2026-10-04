@@ -31,7 +31,14 @@ export default function WorldbookPages({page,busy,onPage}:{page:BookPage;busy:bo
   const [toc,setToc]=useState(false);
   const [size,setSize]=useState(19);
   const [theme,setTheme]=useState("paper");
-  useEffect(()=>{try {setSize(Number(localStorage.getItem("reader.font"))||19);setTheme(localStorage.getItem("reader.theme")||"paper");}catch{}},[]);
+  useEffect(()=>{
+    const frame=requestAnimationFrame(()=>{try {
+      setSize(Math.min(28,Math.max(14,Number(localStorage.getItem("reader.font"))||19)));
+      const savedTheme=localStorage.getItem("reader.theme");
+      setTheme(savedTheme&&["paper","white","night"].includes(savedTheme)?savedTheme:"paper");
+    }catch{}});
+    return ()=>cancelAnimationFrame(frame);
+  },[]);
   useEffect(()=>{reader.current?.scrollTo({top:0,behavior:"instant"});if(page.id)try{localStorage.setItem("reader.progress."+page.id,String(page.page));}catch{}},[page.id,page.page]);
   const palette=theme==="night"?"bg-zinc-900 text-zinc-200":theme==="white"?"bg-white text-zinc-800":"bg-[#f8f3e8] text-[#423c32]";
   return <div ref={container} className={"flex min-h-0 flex-1 flex-col "+palette+(expanded?" fixed inset-0 z-[100] h-dvh w-screen":fullscreen?" h-dvh w-screen":"")}>
